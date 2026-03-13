@@ -1,0 +1,72 @@
+# IntelliJ IDEA
+.idea
+.fleet
+.cursor
+
+# Temporary ditectories
+tmp*
+
+# Helm
+charts/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+bin/
+build/
+!.github/actions/build/
+!.gitlab/actions/build/
+develop-eggs/
+dist/
+eggs/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+static/downloads/*
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+
+# Django stuff:
+*.log
+*.pot
+
+# MacOs
+.DS_Store
+
+# Virtual environment
+.venv
+venv
+
+# Local dotenv changes
+.env
+.env.*
+
+# Development secrets (file provider)
+.secrets.json
+
+# Data lake (file provider)
+.lake/
+
+# Logs (file provider)
+.logs/

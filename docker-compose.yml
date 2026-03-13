@@ -1,0 +1,55 @@
+name: aurelion
+
+networks:
+  aurelion:
+    driver: bridge
+
+volumes:
+  aurelion_postgresql:
+  aurelion_rabbitmq:
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: aurelion_postgresql
+    hostname: postgresql
+    restart: on-failure
+    command: >
+      postgres -c max_connections=900
+    init: true
+    networks:
+      - aurelion
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    volumes:
+      - aurelion_postgresql:/data
+    environment:
+      PGDATA: "/data"
+      POSTGRES_PASSWORD: "aurelion"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aurelion"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    container_name: aurelion_rabbitmq
+    hostname: rabbitmq
+    restart: on-failure
+    networks:
+      - aurelion
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - aurelion_rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

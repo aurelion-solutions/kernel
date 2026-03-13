@@ -1,0 +1,125 @@
+[project]
+name = "aurelion-kernel"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "argon2-cffi>=25.1.0",
+    "pika>=1.3.2",
+    "asyncpg>=0.31.0",
+    "dotenv>=0.9.9",
+    "fastapi>=0.128.0",
+    "pydantic-settings>=2.12.0",
+    "pydantic[email]>=2.12.5",
+    "pyjwt>=2.10.1",
+    "sqlalchemy[asyncio]>=2.0.45",
+    "uvicorn[standard]>=0.40.0",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "alembic>=1.18.1",
+    "httpx>=0.28.1",
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.14.13",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src"]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib"
+
+[tool.mypy]
+files = ["src", "tests"]
+ignore_missing_imports = true
+pretty = true
+python_version = "3.13"
+show_error_codes = true
+strict = true
+warn_unreachable = true
+
+[tool.ruff]
+src=["src"]
+exclude = [
+    "ops/db_versions",
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+indent-width = 4
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+ignore = [
+    "B028",
+    "B905",
+    "E203",
+    "E722",
+    "E731",
+    "UP008",
+    "UP022",
+    "UP028",
+    "UP031",
+    "UP032",
+]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "UP",
+]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"src/**/__init__.py" = ["F405", "F403", "F401", "E402", "I"]
+
+[tool.ruff.format]
+docstring-code-format = false
+docstring-code-line-length = "dynamic"
+indent-style = "space"
+line-ending = "auto"
+quote-style = "single"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+known-third-party = [
+  "dagster",
+  "django", "graphene", "graphene_django", "pydantic",
+  "requests", "rich", "yaml", "polars", "neo4j", "ldap3",
+  "minio", "pytest", "confluent_kafka", "openpyxl", "chromadb",
+]
+force-sort-within-sections = true
+no-lines-before = ["first-party", "local-folder"]

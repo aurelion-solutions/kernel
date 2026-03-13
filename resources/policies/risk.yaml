@@ -1,0 +1,221 @@
+rules:
+  # --- ITDR (Identity Threat Detection & Response) ---
+
+  - id: risk_credential_compromised
+    kind: risk
+    when:
+      threat.has_indicator: credential_compromised
+    then:
+      abstract_state: disabled
+      risk_level: critical
+      actions:
+        - force_password_reset
+        - revoke_all_sessions
+    precedence: 300
+
+  - id: risk_nhi_credential_exposed
+    kind: risk
+    when:
+      subject.kind: nhi
+      threat.has_indicator: credential_exposed
+    then:
+      abstract_state: disabled
+      risk_level: critical
+      actions:
+        - rotate_credential
+        - revoke_all_tokens
+      signals:
+        - nhi_credential_incident
+    precedence: 300
+
+  - id: risk_session_hijack
+    kind: risk
+    when:
+      threat.has_indicator: session_hijack
+    then:
+      risk_level: critical
+      actions:
+        - kill_session
+        - force_reauth
+      signals:
+        - session_hijack_incident
+    precedence: 290
+
+  - id: risk_token_replay
+    kind: risk
+    when:
+      threat.has_indicator: token_replay
+    then:
+      risk_level: critical
+      actions:
+        - revoke_token
+        - force_reauth
+      signals:
+        - token_replay_incident
+    precedence: 290
+
+  - id: risk_impossible_travel
+    kind: risk
+    when:
+      threat.has_indicator: impossible_travel
+    then:
+      risk_level: high
+      actions:
+        - revoke_session
+        - require_step_up_mfa
+      signals:
+        - impossible_travel_review
+    precedence: 250
+
+  - id: risk_mfa_bombing
+    kind: risk
+    when:
+      threat.has_indicator: mfa_bombing
+    then:
+      risk_level: high
+      actions:
+        - block_mfa_prompts
+        - revoke_all_sessions
+      signals:
+        - mfa_bombing_incident
+    precedence: 250
+
+  - id: risk_brute_force
+    kind: risk
+    when:
+      threat.failed_auth_count: "> 10"
+    then:
+      risk_level: high
+      actions:
+        - temporary_lockout
+        - notify_security_team
+    precedence: 240
+
+  # --- UEBA (User and Entity Behavior Analytics) ---
+
+  - id: risk_score_critical
+    kind: risk
+    when:
+      threat.risk_score: "> 0.9"
+    then:
+      risk_level: critical
+      abstract_state: suspended
+      actions:
+        - revoke_all_sessions
+      signals:
+        - ueba_critical
+    precedence: 280
+
+  - id: risk_score_high
+    kind: risk
+    when:
+      threat.risk_score: "0.7..0.9"
+    then:
+      risk_level: high
+      signals:
+        - ueba_high_review
+    precedence: 180
+
+  - id: risk_dormant_reactivation
+    kind: risk
+    when:
+      threat.days_since_last_login: "> 90"
+    then:
+      risk_level: medium
+      abstract_state: suspended
+      signals:
+        - dormant_reactivation_review
+    precedence: 200
+
+  # --- Static risk rules ---
+
+  - id: risk_admin_no_mfa
+    kind: risk
+    when:
+      target.privilege_level: admin
+      subject.mfa_enabled: false
+    then:
+      risk_level: critical
+      actions:
+        - require_mfa_enrollment
+      signals:
+        - admin_without_mfa
+    precedence: 220
+
+  - id: risk_prod_admin
+    kind: risk
+    when:
+      target.privilege_level: admin
+      target.environment: production
+    then:
+      risk_level: high
+      signals:
+        - high_risk_access
+    precedence: 150
+
+  # --- CIAM risk rules ---
+
+  - id: risk_account_takeover
+    kind: risk
+    when:
+      subject.kind: customer
+      threat.has_indicator: account_takeover
+    then:
+      abstract_state: disabled
+      risk_level: critical
+      actions:
+        - revoke_all_sessions
+        - force_password_reset
+        - notify_customer_email
+    precedence: 300
+
+  - id: risk_credential_stuffing
+    kind: risk
+    when:
+      subject.kind: customer
+      threat.has_indicator: credential_stuffing
+    then:
+      risk_level: high
+      actions:
+        - require_captcha
+        - rate_limit_auth
+      signals:
+        - credential_stuffing_detected
+    precedence: 260
+
+  - id: risk_bot_detected
+    kind: risk
+    when:
+      subject.kind: customer
+      threat.has_indicator: bot_detected
+    then:
+      risk_level: high
+      actions:
+        - block_request
+        - require_captcha
+    precedence: 250
+
+  - id: risk_device_anomaly
+    kind: risk
+    when:
+      subject.kind: customer
+      threat.has_indicator: device_anomaly
+    then:
+      risk_level: medium
+      actions:
+        - require_step_up_mfa
+      signals:
+        - device_anomaly_review
+    precedence: 200
+
+  - id: risk_customer_no_mfa_enterprise
+    kind: risk
+    when:
+      subject.kind: customer
+      subject.plan_tier: enterprise
+      subject.mfa_enabled: false
+    then:
+      risk_level: medium
+      signals:
+        - recommend_mfa_enrollment
+    precedence: 130

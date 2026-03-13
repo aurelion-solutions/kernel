@@ -1,0 +1,96 @@
+- application: ad
+  map:
+    enabled:
+      concrete: "userAccountControl=512"
+      actions:
+        - ensure_account
+        - enable
+    disabled:
+      concrete: "userAccountControl=514"
+      actions:
+        - disable
+    suspended:
+      concrete: "userAccountControl=514"
+      actions:
+        - disable
+        - notify_manager
+    grace:
+      concrete: "userAccountControl=512"
+      actions:
+        - enable
+        - schedule_disable
+    pending:
+      concrete: null
+      actions: []
+
+- application: jira
+  map:
+    enabled:
+      concrete: active
+      actions:
+        - ensure_account
+    disabled:
+      concrete: inactive
+      actions:
+        - revoke_access
+    pending:
+      concrete: inactive
+      actions: []
+
+- application: github
+  map:
+    enabled:
+      concrete: member
+      actions:
+        - ensure_membership
+    disabled:
+      concrete: removed
+      actions:
+        - remove_membership
+
+- application: stripe_billing
+  map:
+    enabled:
+      concrete: active
+      actions:
+        - ensure_subscription
+    disabled:
+      concrete: canceled
+      actions:
+        - cancel_subscription
+    suspended:
+      concrete: past_due
+      actions:
+        - restrict_to_readonly
+        - send_payment_reminder
+    grace:
+      concrete: canceling
+      actions:
+        - allow_data_export
+        - schedule_cancel
+    pending:
+      concrete: incomplete
+      actions: []
+
+- application: customer_portal
+  map:
+    enabled:
+      concrete: active
+      actions:
+        - ensure_access
+    disabled:
+      concrete: blocked
+      actions:
+        - revoke_access
+    suspended:
+      concrete: readonly
+      actions:
+        - set_readonly
+    grace:
+      concrete: export_only
+      actions:
+        - enable_data_export
+    pending:
+      concrete: verify_email
+      actions:
+        - show_verification_page

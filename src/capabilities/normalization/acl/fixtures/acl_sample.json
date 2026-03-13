@@ -1,0 +1,8 @@
+[
+  {"resource_external_id": "/repo/core/src", "resource_kind": "folder",
+   "verb": "read",  "effect": "allow", "environment": "production", "data_sensitivity": "financial"},
+  {"resource_external_id": "/repo/core/src", "resource_kind": "folder",
+   "verb": "write", "effect": "allow", "environment": "production", "data_sensitivity": "financial"},
+  {"resource_external_id": "/repo/public/docs", "resource_kind": "folder",
+   "verb": "read",  "effect": "allow", "environment": "production", "data_sensitivity": "public"}
+]
