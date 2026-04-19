@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+import src.capabilities.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
 from src.core.db.base import Base
 from src.core.db.deps import get_db
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all

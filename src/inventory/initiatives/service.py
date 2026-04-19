@@ -179,6 +179,7 @@ class InitiativeService:
             merge_emit_log_participant_fields(
                 {
                     'initiative_id': str(initiative_id),
+                    'access_fact_id': str(initiative.access_fact_id),
                     'changed_fields': sorted(list(changes.keys())),
                 },
                 actor_component=_COMPONENT,
@@ -199,6 +200,7 @@ class InitiativeService:
                     merge_emit_log_participant_fields(
                         {
                             'initiative_id': str(initiative_id),
+                            'access_fact_id': str(initiative.access_fact_id),
                             'at': str(new_valid_until),
                         },
                         actor_component=_COMPONENT,

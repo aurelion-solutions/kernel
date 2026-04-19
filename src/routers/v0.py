@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 from fastapi import APIRouter
+from src.capabilities.effective_access.routes import router as effective_grants_router
 from src.capabilities.ingest.routes import router as connector_results_router
 from src.capabilities.policy.routes import router as policy_router
 from src.capabilities.provisioning.routes import router as provisioning_router
@@ -34,6 +35,7 @@ router = APIRouter()
 router.include_router(applications_router)
 router.include_router(provisioning_router)
 router.include_router(reconciliation_router)
+router.include_router(effective_grants_router)
 router.include_router(persons_router)
 router.include_router(accounts_router)
 router.include_router(customers_router)
