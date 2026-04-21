@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -22,6 +20,8 @@ from src.inventory.artifact_bindings.models import ArtifactBinding
 from src.inventory.artifact_bindings.service import ArtifactBindingService
 from src.inventory.resources.models import Resource
 from src.inventory.resources.service import ResourceService
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 from src.platform.logs.factory import LogSinkFactory
 from src.platform.logs.providers.file import FileLogSink
 from src.platform.logs.service import LogService
@@ -32,24 +32,32 @@ from src.platform.logs.service import LogService
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def log_service(tmp_path) -> LogService:
+    from pathlib import Path
 
-
-@pytest.fixture
-def log_service(log_path: Path) -> LogService:
+    log_path: Path = tmp_path / 'logs.jsonl'
     factory = LogSinkFactory()
     factory.register('file', lambda: FileLogSink(path=log_path))
     return LogService(factory=factory, provider_name='file')
 
 
 @pytest.fixture
-def acl_service(log_service: LogService) -> ACLNormalizerService:
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
+
+
+@pytest.fixture
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
+
+
+@pytest.fixture
+def acl_service(log_service: LogService, event_service: EventService) -> ACLNormalizerService:
     return ACLNormalizerService(
-        artifact_service=AccessArtifactService(log_service=log_service),
-        resource_service=ResourceService(log_service=log_service),
-        access_fact_service=AccessFactService(log_service=log_service),
-        binding_service=ArtifactBindingService(log_service=log_service),
+        artifact_service=AccessArtifactService(event_service=event_service),
+        resource_service=ResourceService(event_service=event_service),
+        access_fact_service=AccessFactService(event_service=event_service),
+        binding_service=ArtifactBindingService(event_service=event_service),
         log_service=log_service,
     )
 
@@ -115,7 +123,7 @@ async def _make_prerequisites(session) -> dict:
 async def test_ingest_and_normalize_creates_artifact_resource_fact_binding(
     acl_service: ACLNormalizerService,
     session_factory,
-    log_path: Path,
+    capturing_events: CapturingEventService,
 ) -> None:
     """All four rows are created; created_fact=True, created_resource=True; events emitted."""
     async with session_factory() as session:
@@ -138,20 +146,18 @@ async def test_ingest_and_normalize_creates_artifact_resource_fact_binding(
     assert result.access_fact_id is not None
     assert result.binding_id is not None
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    event_types = [r.get('event_type') for r in records]
-    assert event_types.count('access_artifact.created') == 1
-    assert event_types.count('resource.created') == 1
-    assert event_types.count('access_fact.created') == 1
-    assert event_types.count('artifact_binding.created') == 1
+    event_types = [e.event_type for e in capturing_events.emitted]
+    assert event_types.count('inventory.access_artifact.created') == 1
+    assert event_types.count('inventory.resource.created') == 1
+    assert event_types.count('inventory.access_fact.created') == 1
+    assert event_types.count('inventory.artifact_binding.created') == 1
 
 
 @pytest.mark.asyncio
 async def test_second_ingest_on_same_resource_reuses_resource(
     acl_service: ACLNormalizerService,
     session_factory,
-    log_path: Path,
+    capturing_events: CapturingEventService,
 ) -> None:
     """Two different verbs on the same resource_external_id → 1 resource, 2 facts."""
     async with session_factory() as session:
@@ -181,18 +187,16 @@ async def test_second_ingest_on_same_resource_reuses_resource(
     assert result1.access_fact_id != result2.access_fact_id
     assert result2.created_fact is True
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    event_types = [r.get('event_type') for r in records]
-    assert event_types.count('resource.created') == 1
-    assert event_types.count('access_fact.created') == 2
+    event_types = [e.event_type for e in capturing_events.emitted]
+    assert event_types.count('inventory.resource.created') == 1
+    assert event_types.count('inventory.access_fact.created') == 2
 
 
 @pytest.mark.asyncio
 async def test_replay_does_not_duplicate_access_fact(
     acl_service: ACLNormalizerService,
     session_factory,
-    log_path: Path,
+    capturing_events: CapturingEventService,
 ) -> None:
     """Same payload twice → 2 artifacts, 2 bindings, 1 fact; second call has created_fact=False."""
     async with session_factory() as session:
@@ -223,12 +227,10 @@ async def test_replay_does_not_duplicate_access_fact(
     assert result2.access_fact_id == result1.access_fact_id
     assert result2.artifact_id != result1.artifact_id
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    event_types = [r.get('event_type') for r in records]
-    assert event_types.count('access_fact.created') == 1
-    assert event_types.count('access_artifact.created') == 2
-    assert event_types.count('artifact_binding.created') == 2
+    event_types = [e.event_type for e in capturing_events.emitted]
+    assert event_types.count('inventory.access_fact.created') == 1
+    assert event_types.count('inventory.access_artifact.created') == 2
+    assert event_types.count('inventory.artifact_binding.created') == 2
 
 
 @pytest.mark.asyncio

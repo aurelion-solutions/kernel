@@ -21,8 +21,10 @@ from src.platform.logs.schemas import (
     new_root_log_event,
 )
 from src.platform.logs.service import LogService
+from src.platform.logs.testing import CapturingLogSink
 
 __all__ = [
+    'CapturingLogSink',
     'NoOpLogService',
     'FileLogSink',
     'noop_log_service',

@@ -58,6 +58,7 @@ async def create_nhi(
             status_code=404,
             detail='Application not found',
         ) from None
+    await session.commit()
     return NHIRead.model_validate(nhi)
 
 
@@ -124,6 +125,7 @@ async def add_nhi_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this NHI: {body.key}',
         ) from None
+    await session.commit()
     return NHIAttributeRead.model_validate(attr)
 
 
@@ -141,3 +143,4 @@ async def remove_nhi_attribute(
         raise HTTPException(status_code=404, detail='NHI not found') from None
     except NHIAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='NHI attribute not found') from None
+    await session.commit()

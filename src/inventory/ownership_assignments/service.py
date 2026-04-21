@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""OwnershipAssignment service — business logic and operational log emission."""
+"""OwnershipAssignment service — business logic and event emission."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -23,8 +24,8 @@ from src.inventory.ownership_assignments.repository import (
 from src.inventory.ownership_assignments.repository import (
     list_ownership_assignments as repo_list,
 )
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.ownership_assignments'
 
@@ -62,10 +63,10 @@ class OwnershipAssignmentDuplicateError(Exception):
 
 
 class OwnershipAssignmentService:
-    """Orchestrates ownership assignment operations and operational log emission."""
+    """Orchestrates ownership assignment operations and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_assignment(
         self,
@@ -75,8 +76,9 @@ class OwnershipAssignmentService:
         resource_id: uuid.UUID | None = None,
         account_id: uuid.UUID | None = None,
         kind: OwnershipKind,
+        correlation_id: str | None = None,
     ) -> OwnershipAssignment:
-        """Create an ownership assignment. Validates XOR and FK references."""
+        """Create an ownership assignment and emit inventory.ownership_assignment.created."""
         if (resource_id is None) == (account_id is None):
             raise OwnershipAssignmentTargetRequiredError('Exactly one of resource_id or account_id must be provided')
 
@@ -121,22 +123,25 @@ class OwnershipAssignmentService:
                 raise OwnershipAssignmentTargetRequiredError('XOR constraint violated') from exc
             raise
 
-        self._log.emit_safe(
-            'ownership_assignment.created',
-            LogLevel.INFO,
-            'Ownership assignment created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.ownership_assignment.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'assignment_id': str(assignment.id),
                     'subject_id': str(subject_id),
                     'resource_id': str(resource_id) if resource_id is not None else None,
                     'account_id': str(account_id) if account_id is not None else None,
                     'kind': kind.value,
                 },
-                actor_component=_COMPONENT,
-                target_id='ownership_assignment',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(assignment.id),
+            )
         )
         return assignment
 
@@ -145,21 +150,8 @@ class OwnershipAssignmentService:
         session: AsyncSession,
         assignment_id: uuid.UUID,
     ) -> OwnershipAssignment | None:
-        """Get ownership assignment by id. Logs retrieval when found."""
-        assignment = await repo_get_by_id(session, assignment_id)
-        if assignment is not None:
-            self._log.emit_safe(
-                'ownership_assignment.retrieved',
-                LogLevel.INFO,
-                'Ownership assignment retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'assignment_id': str(assignment_id)},
-                    actor_component=_COMPONENT,
-                    target_id='ownership_assignment',
-                ),
-            )
-        return assignment
+        """Get ownership assignment by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_by_id(session, assignment_id)
 
     async def list_assignments(
         self,
@@ -187,13 +179,17 @@ class OwnershipAssignmentService:
         self,
         session: AsyncSession,
         assignment_id: uuid.UUID,
+        correlation_id: str | None = None,
     ) -> None:
-        """Delete ownership assignment by id. Raises NotFoundError if missing."""
+        """Delete ownership assignment by id and emit inventory.ownership_assignment.deleted.
+
+        Raises NotFoundError if missing.
+        """
         assignment = await repo_get_by_id(session, assignment_id)
         if assignment is None:
             raise OwnershipAssignmentNotFoundError(assignment_id)
 
-        # Snapshot FKs before delete — attributes may expire after flush
+        # Snapshot FKs before delete — ORM attributes may expire after flush; needed for envelope payload below
         snap_subject_id = assignment.subject_id
         snap_resource_id = assignment.resource_id
         snap_account_id = assignment.account_id
@@ -201,20 +197,24 @@ class OwnershipAssignmentService:
 
         await repo_delete(session, assignment)
 
-        self._log.emit_safe(
-            'ownership_assignment.deleted',
-            LogLevel.INFO,
-            'Ownership assignment deleted',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        # target_id uses method-arg assignment_id — post-delete ORM attribute access on the detached row is unsafe
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.ownership_assignment.deleted',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'assignment_id': str(assignment_id),
                     'subject_id': str(snap_subject_id),
                     'resource_id': str(snap_resource_id) if snap_resource_id is not None else None,
                     'account_id': str(snap_account_id) if snap_account_id is not None else None,
                     'kind': snap_kind.value,
                 },
-                actor_component=_COMPONENT,
-                target_id='ownership_assignment',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(assignment_id),
+            )
         )

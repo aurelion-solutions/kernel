@@ -11,7 +11,6 @@ from src.platform.logs.providers.elk import ElkLogSink
 from src.platform.logs.providers.file import FileLogSink
 from src.platform.logs.providers.fluentd import FluentdLogSink
 from src.platform.logs.providers.loki import LokiLogSink
-from src.platform.logs.providers.mq import RabbitMQLogSink
 from src.platform.logs.providers.nagios import NagiosLogSink
 from src.platform.logs.providers.qradar import QradarLogSink
 from src.platform.logs.providers.rsyslog import RsyslogLogSink
@@ -25,14 +24,21 @@ class UnsupportedProviderError(Exception):
 
 
 class LogSinkFactory:
-    """Resolves LogSink by provider name. Uses lazy instantiation."""
+    """Resolves LogSink by provider name. Uses lazy instantiation.
+
+    The ``'mq'`` provider is NOT registered at import time because
+    :class:`~src.platform.logs.providers.mq.RabbitMQLogSink` requires a shared
+    :class:`~src.core.mq.async_publisher.AsyncRabbitMQPublisher` that is only
+    available after application startup.  The ``'mq'`` factory is wired in the
+    FastAPI lifespan (``src/runtimes/platform_api/main.py``) via
+    :meth:`register`.
+    """
 
     def __init__(self) -> None:
         self._providers: dict[str, Callable[[], LogSink]] = {}
         self._register_defaults()
 
     def _register_defaults(self) -> None:
-        self.register('mq', lambda: RabbitMQLogSink())
         self.register('file', lambda: FileLogSink())
         self.register('elk', lambda: ElkLogSink())
         self.register('loki', lambda: LokiLogSink())

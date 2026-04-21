@@ -12,10 +12,11 @@ Env vars:
     AURELION_RABBITMQ_PORT           (default: 5672)
     AURELION_RABBITMQ_USERNAME       (default: guest)
     AURELION_RABBITMQ_PASSWORD       (default: guest)
-    AURELION_LOGS_EXCHANGE           (default: aurelion.logs)
+    AURELION_EVENTS_EXCHANGE         (default: aurelion.events)
     AURELION_EAS_PROJECTION_QUEUE    (default: eas.projection.incremental)
-    AURELION_EAS_PROJECTION_BINDINGS (default: inventory.access_facts.*,inventory.initiatives.*)
+    AURELION_EAS_PROJECTION_BINDINGS (default: inventory.access_fact.*,inventory.initiative.*)
     AURELION_LOG_SINK_PROVIDER       (default: file)
+    AURELION_EVENTS_PROVIDER         (default: mq)
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.effective_access.service import EffectiveAccessProjectionService
 from src.core.db.session import SessionLocal
 from src.core.mq.rabbitmq import declare_consumer_topology
+from src.platform.events.factory import event_sink_factory
+from src.platform.events.service import EventService
 from src.platform.logs.factory import log_sink_factory
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import LogService
@@ -55,9 +58,13 @@ def _str_env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _get_events_provider() -> str:
+    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
+
+
 def _parse_binding_keys(raw: str | None) -> list[str]:
     if not raw:
-        return ['inventory.access_facts.*', 'inventory.initiatives.*']
+        return ['inventory.access_fact.*', 'inventory.initiative.*']
     return [item.strip() for item in raw.split(',') if item.strip()]
 
 
@@ -72,16 +79,19 @@ def main() -> None:
     username = os.environ.get('AURELION_RABBITMQ_USERNAME') or None
     password = os.environ.get('AURELION_RABBITMQ_PASSWORD') or None
 
-    exchange = _str_env('AURELION_LOGS_EXCHANGE', 'aurelion.logs')
+    exchange = _str_env('AURELION_EVENTS_EXCHANGE', 'aurelion.events')
     queue = _str_env('AURELION_EAS_PROJECTION_QUEUE', 'eas.projection.incremental')
     bindings_raw = os.environ.get('AURELION_EAS_PROJECTION_BINDINGS')
     bindings = _parse_binding_keys(bindings_raw)
     sink_provider = _str_env('AURELION_LOG_SINK_PROVIDER', 'file')
 
     log_service = LogService(factory=log_sink_factory, provider_name=sink_provider)
+    event_service = EventService(sink=event_sink_factory.get(_get_events_provider()))
 
-    def projection_service_factory(session: AsyncSession, ls: LogService) -> EffectiveAccessProjectionService:
-        return EffectiveAccessProjectionService(session, ls)
+    def projection_service_factory(
+        session: AsyncSession, event_service: EventService
+    ) -> EffectiveAccessProjectionService:
+        return EffectiveAccessProjectionService(session, event_service=event_service)
 
     user = username if username is not None else 'guest'
     passwd = password if password is not None else 'guest'
@@ -99,11 +109,10 @@ def main() -> None:
     )
 
     log_service.emit_safe(
-        'eas.projection.consumer.started',
-        LogLevel.INFO,
-        f'Starting MQ EAS projection consumer: {host}:{port} exchange={exchange} queue={queue}',
-        'eas.projection.consumer',
-        {'host': host, 'port': port, 'exchange': exchange, 'queue': queue, 'bindings': bindings},
+        level=LogLevel.INFO,
+        message=f'Starting MQ EAS projection consumer: {host}:{port} events_exchange={exchange} queue={queue}',
+        component='eas.projection.consumer',
+        payload={'host': host, 'port': port, 'events_exchange': exchange, 'queue': queue, 'bindings': bindings},
     )
 
     def _callback(
@@ -115,9 +124,11 @@ def main() -> None:
         try:
             handle_message(
                 body,
+                routing_key=method.routing_key,
                 session_factory=SessionLocal,
                 projection_service_factory=projection_service_factory,
                 log_service=log_service,
+                event_service=event_service,
             )
         finally:
             ch.basic_ack(delivery_tag=method.delivery_tag)

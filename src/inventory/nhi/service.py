@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""NHI service for coordinating repository and log emission."""
+"""NHI service — business logic and event emission."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -29,8 +32,10 @@ from src.inventory.nhi.repository import (
     list_nhi_attributes as repo_list_nhi_attributes,
 )
 from src.platform.applications.repository import get_application_by_id as repo_get_application_by_id
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
+
+_COMPONENT = 'inventory.nhi'
 
 
 class NHINotFoundError(Exception):
@@ -76,10 +81,10 @@ class DuplicateNHIAttributeError(Exception):
 
 
 class NHIService:
-    """Orchestrates NHI CRUD and log emission."""
+    """Orchestrates NHI CRUD and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_nhi(
         self,
@@ -91,8 +96,9 @@ class NHIService:
         is_locked: bool = False,
         owner_employee_id: uuid.UUID | None = None,
         application_id: uuid.UUID | None = None,
+        correlation_id: str | None = None,
     ) -> NHI:
-        """Create an NHI and emit nhi.created. Validates optional FKs when set."""
+        """Create an NHI. Emits inventory.nhi.created. Validates optional FKs when set."""
         if owner_employee_id is not None:
             emp = await repo_get_employee_by_id(session, owner_employee_id)
             if emp is None:
@@ -111,19 +117,22 @@ class NHIService:
             owner_employee_id=owner_employee_id,
             application_id=application_id,
         )
-        self._log.emit_safe(
-            'nhi.created',
-            LogLevel.INFO,
-            'NHI created',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.nhi.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'nhi_id': str(nhi.id),
                     'external_id': nhi.external_id,
                 },
-                actor_component='identity-core',
-                target_id='nhi',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(nhi.id),
+            )
         )
         return nhi
 
@@ -132,21 +141,8 @@ class NHIService:
         session: AsyncSession,
         nhi_id: uuid.UUID,
     ) -> NHI | None:
-        """Get NHI by id. Emits nhi.retrieved when found."""
-        nhi = await repo_get_nhi_by_id(session, nhi_id)
-        if nhi is not None:
-            self._log.emit_safe(
-                'nhi.retrieved',
-                LogLevel.INFO,
-                'NHI retrieved',
-                'identity-core',
-                merge_emit_log_participant_fields(
-                    {'nhi_id': str(nhi_id)},
-                    actor_component='identity-core',
-                    target_id='nhi',
-                ),
-            )
-        return nhi
+        """Get NHI by id. No event emitted (Q1 — nhi.retrieved dropped, audit deferred to future audit.* slice)."""
+        return await repo_get_nhi_by_id(session, nhi_id)
 
     async def list_nhi(self, session: AsyncSession) -> list[NHI]:
         """List all NHIs."""
@@ -169,8 +165,9 @@ class NHIService:
         nhi_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> NHIAttribute:
-        """Add attribute to NHI. Emits nhi.attribute.added. Raises on duplicate key."""
+        """Add attribute to NHI. Emits inventory.nhi.attribute_added. Raises on duplicate key."""
         nhi = await repo_get_nhi_by_id(session, nhi_id)
         if nhi is None:
             raise NHINotFoundError(nhi_id)
@@ -183,19 +180,22 @@ class NHIService:
             )
         except IntegrityError:
             raise DuplicateNHIAttributeError(nhi_id, key) from None
-        self._log.emit_safe(
-            'nhi.attribute.added',
-            LogLevel.INFO,
-            'NHI attribute added',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.nhi.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'nhi_id': str(nhi_id),
                     'key': key,
                 },
-                actor_component='identity-core',
-                target_id='nhi',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(nhi_id),
+            )
         )
         return attr
 
@@ -204,22 +204,29 @@ class NHIService:
         session: AsyncSession,
         nhi_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from NHI. Emits nhi.attribute.removed. Raises if not found."""
+        """Remove attribute from NHI. Emits inventory.nhi.attribute_removed. Raises if not found."""
         nhi = await repo_get_nhi_by_id(session, nhi_id)
         if nhi is None:
             raise NHINotFoundError(nhi_id)
         deleted = await repo_delete_nhi_attribute(session, nhi_id, key)
         if not deleted:
             raise NHIAttributeNotFoundError(nhi_id, key)
-        self._log.emit_safe(
-            'nhi.attribute.removed',
-            LogLevel.INFO,
-            'NHI attribute removed',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {'nhi_id': str(nhi_id), 'key': key},
-                actor_component='identity-core',
-                target_id='nhi',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.nhi.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'nhi_id': str(nhi_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(nhi_id),
+            )
         )

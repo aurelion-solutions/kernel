@@ -6,38 +6,41 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from types import SimpleNamespace
 import uuid
 
 from pydantic import ValidationError
 import pytest
+from sqlalchemy.exc import IntegrityError
 from src.inventory.threat_facts.schemas import ThreatFactUpsert
 from src.inventory.threat_facts.service import (
     ThreatFactAccountNotFoundError,
+    ThreatFactConflictError,
     ThreatFactService,
     ThreatFactSubjectNotFoundError,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> ThreatFactService:
-    return ThreatFactService(log_service=log_service)
+def service(event_service: EventService) -> ThreatFactService:
+    return ThreatFactService(event_service=event_service)
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +109,10 @@ def _make_payload(**kwargs: object) -> ThreatFactUpsert:
 @pytest.mark.asyncio
 async def test_upsert_first_time_emits_created_event(
     service: ThreatFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """First upsert returns (fact, created=True) and emits threat_fact.created."""
+    """First upsert returns (fact, created=True) and emits inventory.threat_fact.created."""
     async with session_factory() as session:
         subject_id = await _make_subject(session)
         payload = _make_payload(
@@ -123,25 +126,31 @@ async def test_upsert_first_time_emits_created_event(
     assert fact.id is not None
     assert fact.risk_score == 0.7
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created_events = [r for r in records if r.get('event_type') == 'threat_fact.created']
-    assert len(created_events) == 1
-    assert created_events[0]['component'] == 'inventory.threat_facts'
-    payload_data = created_events[0]['payload']
-    assert 'active_indicators_count' in payload_data
-    assert isinstance(payload_data['active_indicators_count'], int)
+    emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.threat_facts'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(fact.id)
+    payload_data = envelope.payload
+    assert payload_data['fact_id'] == str(fact.id)
+    assert payload_data['subject_id'] == str(subject_id)
+    assert payload_data['account_id'] is None
+    assert payload_data['risk_score'] == 0.7
     assert payload_data['active_indicators_count'] == 2
     assert 'active_indicators' not in payload_data
+    assert payload_data['failed_auth_count'] == 0
+    assert isinstance(payload_data['observed_at'], str)
 
 
 @pytest.mark.asyncio
 async def test_upsert_second_time_emits_updated_event(
     service: ThreatFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """Second upsert for same subject returns created=False and emits threat_fact.updated."""
+    """Second upsert for same subject returns created=False and emits inventory.threat_fact.updated."""
     async with session_factory() as session:
         subject_id = await _make_subject(session)
         payload1 = _make_payload(risk_score=0.3)
@@ -159,19 +168,54 @@ async def test_upsert_second_time_emits_updated_event(
     assert fact2.id == fact1_id
     assert fact2.risk_score == 0.9
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    updated_events = [r for r in records if r.get('event_type') == 'threat_fact.updated']
-    assert len(updated_events) == 1
-    created_events = [r for r in records if r.get('event_type') == 'threat_fact.created']
-    assert len(created_events) == 1
+    created_emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
+    assert len(created_emitted) == 1
+    updated_emitted = capturing_events.filter_by_type('inventory.threat_fact.updated')
+    assert len(updated_emitted) == 1
+    assert updated_emitted[0].target_id == str(fact1_id)
+    assert updated_emitted[0].payload['risk_score'] == 0.9
 
 
 @pytest.mark.asyncio
-async def test_upsert_unknown_subject_raises_422(
+async def test_upsert_dual_branch_emits_exactly_one_of_each(
     service: ThreatFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
+) -> None:
+    """create + update + update → exactly 1 .created + 2 .updated, in order."""
+    async with session_factory() as session:
+        subject_id = await _make_subject(session)
+        await service.upsert_threat_fact(session, subject_id=subject_id, payload=_make_payload(risk_score=0.1))
+        await session.commit()
+
+    async with session_factory() as session:
+        await service.upsert_threat_fact(session, subject_id=subject_id, payload=_make_payload(risk_score=0.2))
+        await session.commit()
+
+    async with session_factory() as session:
+        await service.upsert_threat_fact(session, subject_id=subject_id, payload=_make_payload(risk_score=0.3))
+        await session.commit()
+
+    created_emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
+    updated_emitted = capturing_events.filter_by_type('inventory.threat_fact.updated')
+    assert len(created_emitted) == 1
+    assert len(updated_emitted) == 2
+
+    # verify ordering: .created before .updated
+    all_emitted = capturing_events.emitted
+    types = [e.event_type for e in all_emitted]
+    assert types == [
+        'inventory.threat_fact.created',
+        'inventory.threat_fact.updated',
+        'inventory.threat_fact.updated',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_upsert_unknown_subject_raises_and_does_not_emit(
+    service: ThreatFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
 ) -> None:
     """Non-existent subject_id raises ThreatFactSubjectNotFoundError; no event emitted."""
     async with session_factory() as session:
@@ -182,23 +226,54 @@ async def test_upsert_unknown_subject_raises_422(
                 payload=_make_payload(),
             )
 
-    assert not log_path.exists() or log_path.read_text().strip() == ''
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
-async def test_upsert_unknown_account_raises_422(
+async def test_upsert_unknown_account_raises_and_does_not_emit(
     service: ThreatFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """Valid subject but bogus account_id raises ThreatFactAccountNotFoundError; no event."""
+    """Valid subject but bogus account_id raises ThreatFactAccountNotFoundError; no event emitted."""
     async with session_factory() as session:
         subject_id = await _make_subject(session)
         payload = _make_payload(account_id=uuid.uuid4())
         with pytest.raises(ThreatFactAccountNotFoundError):
             await service.upsert_threat_fact(session, subject_id=subject_id, payload=payload)
 
-    assert not log_path.exists() or log_path.read_text().strip() == ''
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_conflict_raises_and_does_not_emit(
+    service: ThreatFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """repo_upsert raises IntegrityError(pgcode=23505) → ThreatFactConflictError; no event emitted."""
+    orig = SimpleNamespace(pgcode='23505', sqlstate='23505')
+    fake_exc = IntegrityError('stmt', {}, orig)
+
+    async def _raise(*args, **kwargs):  # noqa: ARG001
+        raise fake_exc
+
+    monkeypatch.setattr('src.inventory.threat_facts.service.repo_upsert', _raise)
+
+    async with session_factory() as session:
+        subject_id = await _make_subject(session)
+        await session.commit()
+
+    async with session_factory() as session:
+        with pytest.raises(ThreatFactConflictError):
+            await service.upsert_threat_fact(
+                session,
+                subject_id=subject_id,
+                payload=_make_payload(),
+            )
+
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
@@ -211,12 +286,12 @@ async def test_upsert_rejects_risk_score_out_of_range_via_schema() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_threat_fact_emits_retrieved_event(
+async def test_get_threat_fact_does_not_emit_event(
     service: ThreatFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_threat_fact emits threat_fact.retrieved INFO event when found."""
+    """get_threat_fact returns fact without emitting any event (Q1 — read-side audit dropped)."""
     async with session_factory() as session:
         subject_id = await _make_subject(session)
         fact, _ = await service.upsert_threat_fact(
@@ -227,13 +302,71 @@ async def test_get_threat_fact_emits_retrieved_event(
         await session.commit()
         fact_id = fact.id
 
+    capturing_events.clear()
+
     async with session_factory() as session:
         found = await service.get_threat_fact(session, fact_id)
 
     assert found is not None
+    assert found.id == fact_id
+    assert capturing_events.emitted == []
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'threat_fact.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['payload']['fact_id'] == str(fact_id)
+
+@pytest.mark.asyncio
+async def test_get_threat_fact_missing_returns_none_no_emit(
+    service: ThreatFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """get_threat_fact returns None and does not emit when fact is not found."""
+    async with session_factory() as session:
+        result = await service.get_threat_fact(session, uuid.uuid4())
+
+    assert result is None
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_propagates_correlation_id(
+    service: ThreatFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """upsert_threat_fact propagates an explicit correlation_id into the envelope."""
+    async with session_factory() as session:
+        subject_id = await _make_subject(session)
+        await service.upsert_threat_fact(
+            session,
+            subject_id=subject_id,
+            payload=_make_payload(),
+            correlation_id='trace-threat-xyz',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-threat-xyz'
+
+
+@pytest.mark.asyncio
+async def test_upsert_generates_correlation_id_when_omitted(
+    service: ThreatFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """upsert_threat_fact generates a uuid4 hex correlation_id when caller omits it."""
+    async with session_factory() as session:
+        subject_id = await _make_subject(session)
+        await service.upsert_threat_fact(
+            session,
+            subject_id=subject_id,
+            payload=_make_payload(),
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
+    assert len(emitted) == 1
+    cid = emitted[0].correlation_id
+    assert isinstance(cid, str)
+    assert len(cid) == 32
+    assert all(c in '0123456789abcdef' for c in cid)

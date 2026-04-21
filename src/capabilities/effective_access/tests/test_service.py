@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Integration tests for EffectiveAccessProjectionService — 8 test cases.
+"""Integration tests for EffectiveAccessProjectionService (Phase 10 Step 20 rewrite).
 
-Uses a slice-local CapturingLogService duck-typed fake (~20 lines).
-Does NOT reuse CapturingLogSink (wrong layer) or any platform log test double.
+Uses ``CapturingEventService`` from the platform events testing module.
+No slice-local ``CapturingLogService`` — DROP variant: service has no LogService.
 """
 
 from __future__ import annotations
@@ -30,48 +30,24 @@ from src.capabilities.effective_access.service import (
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import InitiativeType
 from src.inventory.subjects.models import SubjectKind
-from src.platform.logs.schemas import LogLevel
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
+
 # ---------------------------------------------------------------------------
-# CapturingLogService — slice-local duck-typed fake (~20 lines)
+# Helpers for event service construction
 # ---------------------------------------------------------------------------
 
 
-class CapturingLogService:
-    """Minimal fake that captures every emit_safe call as a plain tuple."""
+def _capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
-    def __init__(self) -> None:
-        self.events: list[tuple[str, LogLevel, str, str, dict[str, Any], dict[str, Any]]] = []
 
-    def emit_safe(
-        self,
-        event_type: str,
-        level: LogLevel,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> None:
-        self.events.append((event_type, level, message, component, payload, kwargs))
-
-    def emit_log(
-        self,
-        event_type: str,
-        level: LogLevel,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> None:
-        self.events.append((event_type, level, message, component, payload, kwargs))
-
-    def emit_event_safe(self, event: Any) -> None:
-        pass
-
-    def emit_event(self, event: Any) -> None:
-        pass
+def _event_service(capturing: CapturingEventService) -> EventService:
+    return EventService(sink=capturing)
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +180,8 @@ async def test_project_access_fact_happy_path(session_factory) -> None:
         fact_id = await _make_access_fact(session, subject_id, resource_id)
         await _make_initiative(session, fact_id)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         summary = await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
 
         assert summary.rows_inserted == 1
@@ -239,8 +215,8 @@ async def test_project_access_fact_idempotency(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing1 = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
         s1 = await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
         await session.commit()
 
@@ -256,8 +232,8 @@ async def test_project_access_fact_idempotency(session_factory) -> None:
             .all()
         )
 
-        log2 = CapturingLogService()
-        svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+        capturing2 = _capturing_events()
+        svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
         s2 = await svc2.project_access_fact(access_fact_id=fact_id, now=_NOW)
         await session.flush()
 
@@ -291,8 +267,8 @@ async def test_project_access_fact_deny(session_factory) -> None:
         fact_id = await _make_access_fact(session, subject_id, resource_id, effect='deny')
         await _make_initiative(session, fact_id)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
 
         row = await session.execute(
@@ -322,8 +298,8 @@ async def test_project_access_fact_birth_tombstone(session_factory) -> None:
         await _make_initiative(session, fact_id, valid_from=t1, valid_until=t1)
 
         now = datetime(2026, 7, 1, tzinfo=UTC)
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         summary = await svc.project_access_fact(access_fact_id=fact_id, now=now)
 
         assert summary.rows_tombstoned == 1
@@ -338,7 +314,7 @@ async def test_project_access_fact_birth_tombstone(session_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — event emission: exactly one eas.projection.completed, payload shape
+# Test 5 — event emission: exactly one eas.projection.completed, envelope shape
 # ---------------------------------------------------------------------------
 
 
@@ -350,25 +326,28 @@ async def test_project_access_fact_event_emission(session_factory) -> None:
         fact_id = await _make_access_fact(session, subject_id, resource_id)
         await _make_initiative(session, fact_id)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         summary = await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
 
-        assert len(log.events) == 1
-        event_type, level, message, component, payload, kwargs = log.events[0]
-        assert event_type == 'eas.projection.completed'
-        assert level == LogLevel.INFO
-        assert component == 'effective_access'
-        assert payload['mode'] == 'batch'
-        assert payload['change_kind'] is None
-        assert payload['scope_kind'] == 'access_fact'
-        assert payload['scope_id'] == str(fact_id)
-        assert payload['rows_upserted'] == 1
-        assert payload['rows_inserted'] == 1
-        assert payload['rows_tombstoned'] == 0
-        assert payload['rows_skipped'] == 0
-        assert payload['triggered_by'] == 'api'
-        assert str(summary.correlation_id) == kwargs.get('correlation_id')
+        assert len(capturing.emitted) == 1
+        envelope = capturing.emitted[0]
+        assert envelope.event_type == 'eas.projection.completed'
+        assert envelope.actor_id == 'capabilities.effective_access'
+        assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+        assert envelope.target_kind == EventParticipantKind.SYSTEM
+        assert envelope.target_id == str(fact_id)
+        assert envelope.payload['mode'] == 'batch'
+        assert envelope.payload['change_kind'] is None
+        assert envelope.payload['scope_kind'] == 'access_fact'
+        assert envelope.payload['scope_id'] == str(fact_id)
+        assert envelope.payload['rows_upserted'] == 1
+        assert envelope.payload['rows_inserted'] == 1
+        assert envelope.payload['rows_tombstoned'] == 0
+        assert envelope.payload['rows_skipped'] == 0
+        assert envelope.payload['triggered_by'] == 'api'
+        assert envelope.correlation_id == str(summary.correlation_id)
+        assert envelope.causation_id is None
 
         await session.rollback()
 
@@ -386,8 +365,8 @@ async def test_project_access_fact_no_event_on_exception(session_factory) -> Non
         fact_id = await _make_access_fact(session, subject_id, resource_id)
         await _make_initiative(session, fact_id)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
 
         with patch(
             'src.capabilities.effective_access.service.upsert_effective_grants',
@@ -398,8 +377,8 @@ async def test_project_access_fact_no_event_on_exception(session_factory) -> Non
 
         # Only eas.projection.failed may appear (from projector ValueError path),
         # but NOT eas.projection.completed — in this case no events at all
-        completed_events = [e for e in log.events if e[0] == 'eas.projection.completed']
-        assert completed_events == []
+        completed_envelopes = capturing.filter_by_type('eas.projection.completed')
+        assert completed_envelopes == []
         await session.rollback()
 
 
@@ -437,18 +416,18 @@ async def test_project_application_happy_path(session_factory) -> None:
             fid = await _make_access_fact(session, subject_id, resource.id)
             await _make_initiative(session, fid)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         summary = await svc.project_application(application_id=app_id, now=_NOW)
 
         assert summary.rows_upserted == 3
         assert summary.rows_inserted == 3
         assert summary.scope_kind == ProjectionScopeKind.APPLICATION
 
-        assert len(log.events) == 1
-        event_type, _, _, _, payload, _ = log.events[0]
-        assert event_type == 'eas.projection.completed'
-        assert payload['rows_upserted'] == 3
+        assert len(capturing.emitted) == 1
+        envelope = capturing.emitted[0]
+        assert envelope.event_type == 'eas.projection.completed'
+        assert envelope.payload['rows_upserted'] == 3
 
         await session.rollback()
 
@@ -471,8 +450,8 @@ async def test_project_application_cross_kind_partition_routing(session_factory)
         nhi_fact_id = await _make_access_fact(session, nhi_subject_id, resource_id)
         await _make_initiative(session, nhi_fact_id)
 
-        log = CapturingLogService()
-        svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
         summary = await svc.project_application(application_id=app_id, now=_NOW)
         await session.flush()
 
@@ -712,8 +691,8 @@ class TestIncrementalApply:
             fact_id = await _make_access_fact(session, subject_id, resource_id)
             await _make_initiative(session, fact_id)
 
-            log = CapturingLogService()
-            svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+            capturing = _capturing_events()
+            svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
             summary = await svc.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -734,16 +713,16 @@ class TestIncrementalApply:
             assert grant.tombstoned_at is None
             assert grant.observed_at == _T0
 
-            assert len(log.events) == 1
-            event_type, level, _, _, payload, _ = log.events[0]
-            assert event_type == 'eas.projection.completed'
-            assert level == LogLevel.INFO
-            assert payload['mode'] == 'incremental'
-            assert payload['change_kind'] == 'upsert'
-            assert payload['rows_inserted'] == 1
-            assert payload['rows_skipped'] == 0
-            assert payload['triggered_by'] == 'consumer'
-            assert 'causation_event_id' not in payload
+            assert len(capturing.emitted) == 1
+            envelope = capturing.emitted[0]
+            assert envelope.event_type == 'eas.projection.completed'
+            assert envelope.payload['mode'] == 'incremental'
+            assert envelope.payload['change_kind'] == 'upsert'
+            assert envelope.payload['rows_inserted'] == 1
+            assert envelope.payload['rows_skipped'] == 0
+            assert envelope.payload['triggered_by'] == 'consumer'
+            assert 'causation_event_id' not in envelope.payload
+            assert envelope.causation_id is None
 
             await session.rollback()
 
@@ -758,8 +737,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -775,8 +754,8 @@ class TestIncrementalApply:
                 {'fid': fact_id},
             )
 
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -808,8 +787,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -818,8 +797,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary2 = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -837,9 +816,10 @@ class TestIncrementalApply:
             )
             assert row.scalar_one() == _T0
 
-            # Two events emitted across two calls (idempotency is DB-level, not emission-level)
-            assert len(log2.events) == 1
-            assert log2.events[0][0] == 'eas.projection.completed'
+            # Second call still emits one eas.projection.completed envelope
+            # (idempotency is DB-level, not emission-level; capturing2 only observes the second session's emissions)
+            assert len(capturing2.emitted) == 1
+            assert capturing2.emitted[0].event_type == 'eas.projection.completed'
 
             await session.rollback()
 
@@ -854,8 +834,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -864,8 +844,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -894,8 +874,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -904,8 +884,8 @@ class TestIncrementalApply:
             await session.commit()
 
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.INVALIDATE_FACT,
@@ -926,12 +906,12 @@ class TestIncrementalApply:
             assert grant.tombstoned_at == _T1
             assert grant.observed_at == _T1
 
-            assert len(log2.events) == 1
-            event_type, _, _, _, payload, _ = log2.events[0]
-            assert event_type == 'eas.projection.completed'
-            assert payload['mode'] == 'incremental'
-            assert payload['change_kind'] == 'invalidate_fact'
-            assert payload['rows_tombstoned'] == 1
+            assert len(capturing2.emitted) == 1
+            envelope = capturing2.emitted[0]
+            assert envelope.event_type == 'eas.projection.completed'
+            assert envelope.payload['mode'] == 'incremental'
+            assert envelope.payload['change_kind'] == 'invalidate_fact'
+            assert envelope.payload['rows_tombstoned'] == 1
 
             await session.rollback()
 
@@ -952,8 +932,8 @@ class TestIncrementalApply:
 
         # Seed both grants via UPSERT
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -964,8 +944,8 @@ class TestIncrementalApply:
         causation_id = uuid.UUID('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
 
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 change_kind=IncrementalApplyKind.INVALIDATE_INITIATIVE,
                 initiative_id=init_a,
@@ -998,19 +978,21 @@ class TestIncrementalApply:
             grant_b = row_b.one()
             assert grant_b.tombstoned_at is None
 
-            # Event assertions
-            assert len(log2.events) == 1
-            event_type, level, _, _, payload, _ = log2.events[0]
-            assert event_type == 'eas.projection.completed'
-            assert level == LogLevel.INFO
-            assert payload['mode'] == 'incremental'
-            assert payload['change_kind'] == 'invalidate_initiative'
-            assert payload['scope_kind'] == 'initiative'
-            assert payload['scope_id'] == str(init_a)
-            assert payload['rows_tombstoned'] == 1
-            assert payload['pairs_projected'] == 0
-            assert payload['rows_upserted'] == 0
-            assert payload['causation_event_id'] == str(causation_id)
+            # Envelope assertions
+            assert len(capturing2.emitted) == 1
+            envelope = capturing2.emitted[0]
+            assert envelope.event_type == 'eas.projection.completed'
+            assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+            assert envelope.payload['mode'] == 'incremental'
+            assert envelope.payload['change_kind'] == 'invalidate_initiative'
+            assert envelope.payload['scope_kind'] == 'initiative'
+            assert envelope.payload['scope_id'] == str(init_a)
+            assert envelope.payload['rows_tombstoned'] == 1
+            assert envelope.payload['pairs_projected'] == 0
+            assert envelope.payload['rows_upserted'] == 0
+            assert 'causation_event_id' not in envelope.payload
+            # causation_id is now a first-class envelope field
+            assert envelope.causation_id == causation_id
 
             await session.rollback()
 
@@ -1091,8 +1073,8 @@ class TestIncrementalApply:
         # UPSERT at T1: only init_a is in the live set for fact_id; the grant
         # for init_b must be tombstoned by set-diff.
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -1132,20 +1114,22 @@ class TestIncrementalApply:
             assert g_b.tombstoned_at == _T1
             assert g_b.observed_at == _T1
 
-            # Event payload
-            assert len(log2.events) == 1
-            event_type, level, _, _, payload, _ = log2.events[0]
-            assert event_type == 'eas.projection.completed'
-            assert level == LogLevel.INFO
-            assert payload['mode'] == 'incremental'
-            assert payload['change_kind'] == 'upsert'
-            assert payload['scope_kind'] == 'access_fact'
-            assert payload['scope_id'] == str(fact_id)
-            assert payload['rows_tombstoned'] == 1
-            assert payload['pairs_projected'] == 1
-            assert payload['rows_updated'] == 1
-            assert payload['rows_inserted'] == 0
-            assert payload['causation_event_id'] == str(causation_id)
+            # Envelope assertions
+            assert len(capturing2.emitted) == 1
+            envelope = capturing2.emitted[0]
+            assert envelope.event_type == 'eas.projection.completed'
+            assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+            assert envelope.payload['mode'] == 'incremental'
+            assert envelope.payload['change_kind'] == 'upsert'
+            assert envelope.payload['scope_kind'] == 'access_fact'
+            assert envelope.payload['scope_id'] == str(fact_id)
+            assert envelope.payload['rows_tombstoned'] == 1
+            assert envelope.payload['pairs_projected'] == 1
+            assert envelope.payload['rows_updated'] == 1
+            assert envelope.payload['rows_inserted'] == 0
+            assert 'causation_event_id' not in envelope.payload
+            # causation_id is a first-class envelope field
+            assert envelope.causation_id == causation_id
 
             await session.rollback()
 
@@ -1167,8 +1151,8 @@ class TestIncrementalApply:
 
         # First UPSERT at T0
         async with session_factory() as session:
-            log1 = CapturingLogService()
-            svc1 = EffectiveAccessProjectionService(session, log1)  # type: ignore[arg-type]
+            capturing1 = _capturing_events()
+            svc1 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing1))
             await svc1.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -1178,8 +1162,8 @@ class TestIncrementalApply:
 
         # Second UPSERT at T1 — no drops
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -1204,8 +1188,7 @@ class TestIncrementalApply:
                 assert row.tombstoned_at is None
                 assert row.observed_at == _T1
 
-            payload = log2.events[0][4]
-            assert payload['rows_tombstoned'] == 0
+            assert capturing2.emitted[0].payload['rows_tombstoned'] == 0
 
             await session.rollback()
 
@@ -1285,8 +1268,8 @@ class TestIncrementalApply:
         # Helper must tombstone both grants; service must NOT fall through to
         # INVALIDATE_FACT; event payload must read change_kind='upsert'.
         async with session_factory() as session:
-            log2 = CapturingLogService()
-            svc2 = EffectiveAccessProjectionService(session, log2)  # type: ignore[arg-type]
+            capturing2 = _capturing_events()
+            svc2 = EffectiveAccessProjectionService(session, event_service=_event_service(capturing2))
             summary = await svc2.apply_incremental_change(
                 access_fact_id=fact_id,
                 change_kind=IncrementalApplyKind.UPSERT,
@@ -1308,13 +1291,13 @@ class TestIncrementalApply:
                 assert row.tombstoned_at == _T1
                 assert row.observed_at == _T1
 
-            # Event payload — change_kind stays 'upsert' (fact is live, children gone)
-            assert len(log2.events) == 1
-            payload = log2.events[0][4]
-            assert payload['change_kind'] == 'upsert'
-            assert payload['scope_kind'] == 'access_fact'
-            assert payload['rows_tombstoned'] == 2
-            assert payload['pairs_projected'] == 0
+            # Envelope payload — change_kind stays 'upsert' (fact is live, children gone)
+            assert len(capturing2.emitted) == 1
+            envelope = capturing2.emitted[0]
+            assert envelope.payload['change_kind'] == 'upsert'
+            assert envelope.payload['scope_kind'] == 'access_fact'
+            assert envelope.payload['rows_tombstoned'] == 2
+            assert envelope.payload['pairs_projected'] == 0
 
             await session.rollback()
 
@@ -1377,14 +1360,171 @@ class TestIncrementalApply:
         ],
     )
     async def test_apply_incremental_change_rejects_invalid_id_combos(
-        self, session_factory, kwargs: dict, expected_fragment: str
+        self, session_factory, kwargs: dict[str, Any], expected_fragment: str
     ) -> None:
         """T-precondition-xor: service raises ValueError before any DB work on bad id combos."""
         async with session_factory() as session:
-            log = CapturingLogService()
-            svc = EffectiveAccessProjectionService(session, log)  # type: ignore[arg-type]
+            capturing = _capturing_events()
+            svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
             with pytest.raises(ValueError, match=expected_fragment):
                 await svc.apply_incremental_change(observed_at=_T0, **kwargs)
             # No DB side-effects, no events
-            assert log.events == []
+            assert capturing.emitted == []
             await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# New tests (Phase 10 Step 20) — causation_id threading, failed envelope, noop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_incremental_change_threads_causation_id_into_envelope(session_factory) -> None:
+    """N1: apply_incremental_change (UPSERT) threads causation_event_id into envelope.causation_id."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        causation_event_id = uuid.uuid4()
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
+        await svc.apply_incremental_change(
+            access_fact_id=fact_id,
+            change_kind=IncrementalApplyKind.UPSERT,
+            observed_at=_T0,
+            causation_event_id=causation_event_id,
+        )
+
+        assert len(capturing.emitted) == 1
+        envelope = capturing.emitted[0]
+        assert envelope.causation_id == causation_event_id
+
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_apply_incremental_change_with_none_causation_emits_envelope_with_causation_none(
+    session_factory,
+) -> None:
+    """N2: apply_incremental_change with causation_event_id=None → envelope.causation_id is None."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
+        await svc.apply_incremental_change(
+            access_fact_id=fact_id,
+            change_kind=IncrementalApplyKind.INVALIDATE_FACT,
+            observed_at=_T0,
+            causation_event_id=None,
+        )
+
+        assert len(capturing.emitted) == 1
+        envelope = capturing.emitted[0]
+        assert envelope.causation_id is None
+
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_project_access_fact_envelope_causation_id_is_none(session_factory) -> None:
+    """N3: batch API project_access_fact never leaks a non-None causation_id."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
+        await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
+
+        assert len(capturing.emitted) == 1
+        assert capturing.emitted[0].causation_id is None
+
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_project_access_fact_emits_eas_projection_failed_on_pair_mismatch(session_factory) -> None:
+    """N4: project_access_fact emits eas.projection.failed on projector ValueError and propagates."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
+
+        with patch(
+            'src.capabilities.effective_access.service.project',
+            side_effect=ValueError('pair mismatch'),
+        ):
+            with pytest.raises(ValueError, match='pair mismatch'):
+                await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
+
+        failed_envelopes = capturing.filter_by_type('eas.projection.failed')
+        assert len(failed_envelopes) == 1
+        envelope = failed_envelopes[0]
+        assert envelope.actor_id == 'capabilities.effective_access'
+        assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+        assert envelope.target_kind == EventParticipantKind.SYSTEM
+        assert envelope.causation_id is None
+
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_project_access_fact_failed_envelope_payload_keys(session_factory) -> None:
+    """N5: eas.projection.failed payload contains access_fact_id, initiative_id, correlation_id."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        capturing = _capturing_events()
+        svc = EffectiveAccessProjectionService(session, event_service=_event_service(capturing))
+
+        with patch(
+            'src.capabilities.effective_access.service.project',
+            side_effect=ValueError('pair mismatch'),
+        ):
+            with pytest.raises(ValueError):
+                await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
+
+        failed_envelopes = capturing.filter_by_type('eas.projection.failed')
+        assert len(failed_envelopes) == 1
+        payload = failed_envelopes[0].payload
+        assert set(payload.keys()) == {'access_fact_id', 'initiative_id', 'correlation_id'}
+        # Values are UUID strings
+        uuid.UUID(payload['access_fact_id'])
+        uuid.UUID(payload['initiative_id'])
+        uuid.UUID(payload['correlation_id'])
+
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_service_constructor_without_event_service_defaults_to_noop(session_factory) -> None:
+    """N6: constructing service with no event_service defaults to noop (no exception)."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await _make_initiative(session, fact_id)
+
+        # No event_service arg — should default to noop_event_service silently
+        svc = EffectiveAccessProjectionService(session)
+        summary = await svc.project_access_fact(access_fact_id=fact_id, now=_NOW)
+
+        # noop silently discards the envelope — no exception, valid summary returned
+        assert summary.rows_inserted == 1
+
+        await session.rollback()

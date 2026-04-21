@@ -48,12 +48,12 @@ class ConnectorInstanceService:
         )
 
         if deleted > 0:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             log.emit_safe(
-                'connector_instance.cleanup',
-                LogLevel.INFO,
-                'Deleted stale connector instances',
-                'connectors',
-                merge_emit_capability_trace_fields(
+                level=LogLevel.INFO,
+                message='Deleted stale connector instances',
+                component='connectors',
+                payload=merge_emit_capability_trace_fields(
                     {
                         'deleted_count': deleted,
                         'offline_for_seconds': int(offline_for.total_seconds()),
@@ -86,12 +86,12 @@ class ConnectorInstanceService:
         )
 
         if existing is None:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             log.emit_safe(
-                'connector_instance.registered',
-                LogLevel.INFO,
-                'Connector instance registered',
-                'connectors',
-                merge_emit_capability_trace_fields(
+                level=LogLevel.INFO,
+                message='Connector instance registered',
+                component='connectors',
+                payload=merge_emit_capability_trace_fields(
                     {
                         'instance_id': instance.instance_id,
                         'tags': instance.tags,
@@ -102,12 +102,12 @@ class ConnectorInstanceService:
                 ),
             )
         else:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             log.emit_safe(
-                'connector_instance.updated',
-                LogLevel.INFO,
-                'Connector instance updated from registration',
-                'connectors',
-                merge_emit_capability_trace_fields(
+                level=LogLevel.INFO,
+                message='Connector instance updated from registration',
+                component='connectors',
+                payload=merge_emit_capability_trace_fields(
                     {
                         'instance_id': instance.instance_id,
                         'tags': instance.tags,

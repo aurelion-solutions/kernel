@@ -50,6 +50,7 @@ async def create_customer(
         is_locked=body.is_locked,
         description=body.description,
     )
+    await session.commit()
     return CustomerRead.model_validate(customer)
 
 
@@ -94,6 +95,7 @@ async def update_customer(
         customer = await service.update_customer(session, customer_id, body)
     except CustomerNotFoundError:
         raise HTTPException(status_code=404, detail='Customer not found') from None
+    await session.commit()
     return CustomerRead.model_validate(customer)
 
 
@@ -137,6 +139,7 @@ async def add_customer_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this customer: {body.key}',
         ) from None
+    await session.commit()
     return CustomerAttributeRead.model_validate(attr)
 
 
@@ -154,3 +157,4 @@ async def remove_customer_attribute(
         raise HTTPException(status_code=404, detail='Customer not found') from None
     except CustomerAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Customer attribute not found') from None
+    await session.commit()

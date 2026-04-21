@@ -40,7 +40,7 @@ async def create(
 ) -> None:
     """Create a secret."""
     try:
-        service.create_secret(
+        await service.create_secret(
             key=body.key,
             provider=body.provider,
             namespace=body.namespace,
@@ -56,6 +56,7 @@ async def create(
         raise HTTPException(status_code=400, detail=str(err)) from err
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=err.errors()) from err
+    await session.commit()
 
 
 @router.get('/{provider}/{key:path}', response_class=PlainTextResponse)
@@ -86,7 +87,7 @@ async def delete(
 ) -> None:
     """Delete a secret."""
     try:
-        service.delete_secret(key=key, provider=provider, namespace=namespace)
+        await service.delete_secret(key=key, provider=provider, namespace=namespace)
         await delete_secret_metadata(
             session,
             key=key,
@@ -99,3 +100,4 @@ async def delete(
         raise HTTPException(status_code=404, detail='Secret not found') from err
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=err.errors()) from err
+    await session.commit()

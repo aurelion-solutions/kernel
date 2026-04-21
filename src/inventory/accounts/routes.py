@@ -65,4 +65,5 @@ async def update_account(
         raise HTTPException(status_code=404, detail='Account not found') from None
     except AccountSubjectNotFoundError:
         raise HTTPException(status_code=422, detail='Referenced subject does not exist') from None
+    await session.commit()
     return AccountRead.model_validate(account)

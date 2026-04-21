@@ -61,12 +61,13 @@ class PolicyService:
             payload['risk_level'] = str(decision.risk_level)
 
         try:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
+            # Emission stays on aurelion.logs; event_type string silently dropped from wire.
             self._log.emit_safe(
-                'policy.decision.made',
-                LogLevel.INFO,
-                'Policy decision evaluated',
-                'policy-engine',
-                merge_emit_log_participant_fields(
+                level=LogLevel.INFO,
+                message='Policy decision evaluated',
+                component='policy-engine',
+                payload=merge_emit_log_participant_fields(
                     payload,
                     actor_component='policy-engine',
                     target_id='policy',

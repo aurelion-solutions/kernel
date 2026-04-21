@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -42,8 +43,8 @@ from src.inventory.resources.repository import (
     update_resource as repo_update_resource,
 )
 from src.inventory.resources.schemas import ResourcePatch
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.resources'
 
@@ -108,10 +109,10 @@ async def _application_exists(session: AsyncSession, application_id: uuid.UUID) 
 
 
 class ResourceService:
-    """Orchestrates resource CRUD and log emission."""
+    """Orchestrates resource CRUD and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_resource(
         self,
@@ -126,8 +127,9 @@ class ResourceService:
         privilege_level: ResourcePrivilegeLevel | None = None,
         environment: ResourceEnvironment | None = None,
         data_sensitivity: ResourceDataSensitivity | None = None,
+        correlation_id: str | None = None,
     ) -> Resource:
-        """Create a resource. Pre-validates application_id and parent_id. Emits resource.created."""
+        """Create a resource. Pre-validates application_id and parent_id. Emits inventory.resource.created."""
         if not await _application_exists(session, application_id):
             raise ResourceApplicationNotFoundError(application_id)
 
@@ -156,20 +158,23 @@ class ResourceService:
                 raise DuplicateResourceError(application_id, external_id) from None
             raise
 
-        self._log.emit_safe(
-            'resource.created',
-            LogLevel.INFO,
-            'Resource created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.resource.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'resource_id': str(resource.id),
                     'application_id': str(application_id),
                     'kind': kind,
                 },
-                actor_component=_COMPONENT,
-                target_id='resource',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(resource.id),
+            )
         )
         return resource
 
@@ -188,21 +193,8 @@ class ResourceService:
         session: AsyncSession,
         resource_id: uuid.UUID,
     ) -> Resource | None:
-        """Get resource by id. Emits resource.retrieved when found."""
-        resource = await repo_get_resource_by_id(session, resource_id)
-        if resource is not None:
-            self._log.emit_safe(
-                'resource.retrieved',
-                LogLevel.INFO,
-                'Resource retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'resource_id': str(resource_id)},
-                    actor_component=_COMPONENT,
-                    target_id='resource',
-                ),
-            )
-        return resource
+        """Get resource by id. No event emitted (Q1 — resource.retrieved dropped, audit deferred)."""
+        return await repo_get_resource_by_id(session, resource_id)
 
     async def list_resources(
         self,
@@ -229,8 +221,9 @@ class ResourceService:
         session: AsyncSession,
         resource_id: uuid.UUID,
         patch: ResourcePatch,
+        correlation_id: str | None = None,
     ) -> Resource:
-        """Apply partial update to resource. Uses model_fields_set. Emits resource.updated."""
+        """Apply partial update to resource. Uses model_fields_set. Emits inventory.resource.updated if fields changed."""  # noqa: E501
         resource = await repo_get_resource_by_id(session, resource_id)
         if resource is None:
             raise ResourceNotFoundError(resource_id)
@@ -249,19 +242,22 @@ class ResourceService:
         )
 
         if changed_fields:
-            self._log.emit_safe(
-                'resource.updated',
-                LogLevel.INFO,
-                'Resource updated',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='inventory.resource.updated',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
                         'resource_id': str(resource_id),
                         'changed_fields': sorted(changed_fields),
                     },
-                    actor_component=_COMPONENT,
-                    target_id='resource',
-                ),
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=str(resource.id),
+                )
             )
         return resource
 
@@ -282,8 +278,9 @@ class ResourceService:
         resource_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> ResourceAttribute:
-        """Add attribute to resource. Emits resource.attribute.added. Raises on duplicate."""
+        """Add attribute to resource. Emits inventory.resource.attribute_added. Raises on duplicate."""
         resource = await repo_get_resource_by_id(session, resource_id)
         if resource is None:
             raise ResourceNotFoundError(resource_id)
@@ -296,16 +293,22 @@ class ResourceService:
             )
         except IntegrityError:
             raise DuplicateResourceAttributeError(resource_id, key) from None
-        self._log.emit_safe(
-            'resource.attribute.added',
-            LogLevel.INFO,
-            'Resource attribute added',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'resource_id': str(resource_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='resource',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.resource.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'resource_id': str(resource_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(resource_id),
+            )
         )
         return attr
 
@@ -314,22 +317,29 @@ class ResourceService:
         session: AsyncSession,
         resource_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from resource. Emits resource.attribute.removed. Raises if missing."""
+        """Remove attribute from resource. Emits inventory.resource.attribute_removed. Raises if missing."""
         resource = await repo_get_resource_by_id(session, resource_id)
         if resource is None:
             raise ResourceNotFoundError(resource_id)
         deleted = await repo_delete_resource_attribute(session, resource_id, key)
         if not deleted:
             raise ResourceAttributeNotFoundError(resource_id, key)
-        self._log.emit_safe(
-            'resource.attribute.removed',
-            LogLevel.INFO,
-            'Resource attribute removed',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'resource_id': str(resource_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='resource',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.resource.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'resource_id': str(resource_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(resource_id),
+            )
         )

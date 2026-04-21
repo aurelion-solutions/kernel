@@ -88,4 +88,5 @@ async def create_access_usage_fact(
         raise HTTPException(status_code=409, detail=exc.detail) from exc
     except AccessUsageFactNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Access usage fact not found') from exc
+    await session.commit()
     return AccessUsageFactRead.model_validate(fact)

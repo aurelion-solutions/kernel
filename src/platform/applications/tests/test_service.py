@@ -55,7 +55,8 @@ async def test_create_application_emits_application_created_with_code(session_fa
 
     assert len(sink.events) == 1
     ev = sink.events[0]
-    assert ev.event_type == 'application.created'
+    # Step 23: event_type no longer forwarded via emit_safe; check operational fields.
+    assert ev.message == 'Application created'
     assert ev.payload.get('code') == 'ad'
 
 
@@ -105,7 +106,8 @@ async def test_update_application_changes_code(session_factory) -> None:
     assert updated.code == 'ad-prod'
     assert len(sink.events) == 1
     ev = sink.events[0]
-    assert ev.event_type == 'application.updated'
+    # Step 23: event_type no longer forwarded via emit_safe; check operational fields.
+    assert ev.message == 'Application updated'
     assert ev.payload.get('code') == 'ad-prod'
 
 

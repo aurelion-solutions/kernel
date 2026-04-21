@@ -76,6 +76,7 @@ async def create(
         app = await create_application(session, request, log_service=log_service)
     except ApplicationCodeAlreadyExistsError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    await session.commit()
     return ApplicationResponse(
         id=str(app.id),
         name=app.name,
@@ -101,6 +102,7 @@ async def patch_(
         raise HTTPException(status_code=404, detail='Application not found') from err
     except ApplicationCodeAlreadyExistsError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    await session.commit()
     return ApplicationResponse(
         id=str(app.id),
         name=app.name,
@@ -123,3 +125,4 @@ async def delete(
         await delete_application(session, application_id, log_service=log_service)
     except ApplicationNotFoundError as err:
         raise HTTPException(status_code=404, detail='Application not found') from err
+    await session.commit()

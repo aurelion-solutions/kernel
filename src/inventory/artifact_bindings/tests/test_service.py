@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -16,26 +14,28 @@ from src.inventory.artifact_bindings.service import (
     ArtifactBindingService,
     ArtifactBindingTargetRequiredError,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> ArtifactBindingService:
-    return ArtifactBindingService(log_service=log_service)
+def service(event_service: EventService) -> ArtifactBindingService:
+    return ArtifactBindingService(event_service=event_service)
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +130,10 @@ async def _make_prerequisites(session) -> dict:
 @pytest.mark.asyncio
 async def test_create_binding_happy_path(
     service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """create_binding creates binding with all targets and emits artifact_binding.created."""
+    """create_binding creates binding with all targets and emits inventory.artifact_binding.created."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         binding = await service.create_binding(
@@ -151,18 +151,24 @@ async def test_create_binding_happy_path(
     assert binding.resource_id == ids['resource_id']
     assert binding.account_id == ids['account_id']
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'artifact_binding.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'inventory.artifact_bindings'
-    assert 'binding_id' in created[-1]['payload']
-    assert created[-1]['payload']['artifact_id'] == str(ids['artifact_id'])
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.artifact_bindings'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(binding.id)
+    assert envelope.payload['binding_id'] == str(binding.id)
+    assert envelope.payload['artifact_id'] == str(ids['artifact_id'])
+    assert envelope.payload['access_fact_id'] == str(ids['access_fact_id'])
+    assert envelope.payload['resource_id'] == str(ids['resource_id'])
+    assert envelope.payload['account_id'] == str(ids['account_id'])
 
 
 @pytest.mark.asyncio
 async def test_create_binding_no_target_raises(
     service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
     """create_binding raises ArtifactBindingTargetRequiredError when all targets are None."""
@@ -177,10 +183,13 @@ async def test_create_binding_no_target_raises(
                 account_id=None,
             )
 
+    assert capturing_events.emitted == []
+
 
 @pytest.mark.asyncio
 async def test_create_binding_bad_artifact_id(
     service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
     """create_binding raises ArtifactBindingForeignKeyError for unknown artifact_id."""
@@ -193,14 +202,16 @@ async def test_create_binding_bad_artifact_id(
                 access_fact_id=ids['access_fact_id'],
             )
 
+    assert capturing_events.emitted == []
+
 
 @pytest.mark.asyncio
-async def test_get_binding_found(
+async def test_get_binding_does_not_emit_event(
     service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_binding returns binding and emits artifact_binding.retrieved."""
+    """get_binding returns binding without emitting any event (Q1 — read-side audit dropped)."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         binding = await service.create_binding(
@@ -211,14 +222,58 @@ async def test_get_binding_found(
         await session.commit()
         binding_id = binding.id
 
+    # Reset captured events so only get_binding's effect is observed
+    capturing_events.clear()
+
     async with session_factory() as session:
         found = await service.get_binding(session, binding_id)
 
     assert found is not None
     assert found.id == binding_id
+    assert capturing_events.emitted == []
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'artifact_binding.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'inventory.artifact_bindings'
+
+@pytest.mark.asyncio
+async def test_create_binding_propagates_correlation_id(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_binding propagates an explicit correlation_id into the envelope."""
+    async with session_factory() as session:
+        ids = await _make_prerequisites(session)
+        await service.create_binding(
+            session,
+            artifact_id=ids['artifact_id'],
+            access_fact_id=ids['access_fact_id'],
+            correlation_id='trace-binding-xyz',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-binding-xyz'
+
+
+@pytest.mark.asyncio
+async def test_create_binding_generates_correlation_id_when_omitted(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_binding generates a uuid4 hex correlation_id when caller omits it."""
+    async with session_factory() as session:
+        ids = await _make_prerequisites(session)
+        await service.create_binding(
+            session,
+            artifact_id=ids['artifact_id'],
+            access_fact_id=ids['access_fact_id'],
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    cid = emitted[0].correlation_id
+    assert isinstance(cid, str)
+    assert len(cid) == 32  # uuid4().hex = 32 hex chars
+    assert cid.isalnum()

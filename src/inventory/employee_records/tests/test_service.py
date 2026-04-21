@@ -4,8 +4,6 @@
 
 """Tests for EmployeeRecordService."""
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -20,26 +18,28 @@ from src.inventory.employee_records.service import (
     InvalidApplicationIdError,
 )
 from src.platform.applications.models import Application
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> EmployeeRecordService:
-    return EmployeeRecordService(log_service=log_service)
+def service(event_service: EventService) -> EmployeeRecordService:
+    return EmployeeRecordService(event_service=event_service)
 
 
 @pytest.fixture
@@ -50,6 +50,11 @@ async def application_id(session_factory):
         session.add(app)
         await session.commit()
         return app.id
+
+
+# ---------------------------------------------------------------------------
+# Behavioural tests (state transitions)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -242,97 +247,217 @@ async def test_remove_attribute_raises_when_missing(
             await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# Event-emission tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_log_emission_on_create(
+async def test_create_employee_record_emits_inventory_employee_record_created(
     service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
     session_factory,
     application_id: uuid.UUID,
-    log_path: Path,
 ) -> None:
-    """create_employee_record emits employee_record.created log event."""
+    """create_employee_record emits inventory.employee_record.created with correct envelope fields."""
     async with session_factory() as session:
-        await service.create_employee_record(
+        record = await service.create_employee_record(
             session,
-            external_id='rec-log',
+            external_id='emit-c',
             application_id=application_id,
         )
         await session.commit()
 
-    assert log_path.exists()
-    lines = log_path.read_text().strip().split('\n')
-    assert len(lines) >= 1
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'employee_record.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'identity-core'
-    assert created[-1]['payload']['external_id'] == 'rec-log'
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.created')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.employee_records'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(record.id)
+    assert envelope.causation_id is None
+    assert isinstance(envelope.correlation_id, str)
+    assert len(envelope.correlation_id) > 0
+    assert envelope.payload == {'employee_record_id': str(record.id), 'external_id': record.external_id}
 
 
 @pytest.mark.asyncio
-async def test_log_emission_on_retrieve(
+async def test_add_attribute_emits_inventory_employee_record_attribute_added(
     service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
     session_factory,
     application_id: uuid.UUID,
-    log_path: Path,
 ) -> None:
-    """get_employee_record emits employee_record.retrieved when found."""
+    """add_attribute emits inventory.employee_record.attribute_added with owning-parent target_id."""
     async with session_factory() as session:
-        record = await service.create_employee_record(session, external_id='rec-ret', application_id=application_id)
-        await session.commit()
-        record_id = record.id
-
-    async with session_factory() as session:
-        await service.get_employee_record(session, record_id)
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'employee_record.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'identity-core'
-
-
-@pytest.mark.asyncio
-async def test_log_emission_on_add_attribute(
-    service: EmployeeRecordService,
-    session_factory,
-    application_id: uuid.UUID,
-    log_path: Path,
-) -> None:
-    """add_attribute emits employee_record.attribute.added."""
-    async with session_factory() as session:
-        record = await service.create_employee_record(session, external_id='rec-addlog', application_id=application_id)
+        record = await service.create_employee_record(
+            session,
+            external_id='emit-a',
+            application_id=application_id,
+        )
         await session.flush()
+        capturing_events.emitted.clear()
         await service.add_attribute(session, record.id, 'k1', 'v1')
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    added = [r for r in records if r.get('event_type') == 'employee_record.attribute.added']
-    assert len(added) >= 1
-    assert added[-1]['payload']['key'] == 'k1'
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.attribute_added')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(record.id)
+    assert envelope.payload == {'employee_record_id': str(record.id), 'key': 'k1'}
 
 
 @pytest.mark.asyncio
-async def test_log_emission_on_remove_attribute(
+async def test_remove_attribute_emits_inventory_employee_record_attribute_removed(
     service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
     session_factory,
     application_id: uuid.UUID,
-    log_path: Path,
 ) -> None:
-    """remove_attribute emits employee_record.attribute.removed."""
+    """remove_attribute emits inventory.employee_record.attribute_removed with owning-parent target_id."""
     async with session_factory() as session:
-        record = await service.create_employee_record(session, external_id='rec-rmlog', application_id=application_id)
+        record = await service.create_employee_record(
+            session,
+            external_id='emit-r',
+            application_id=application_id,
+        )
         await session.flush()
-        await service.add_attribute(session, record.id, 'key_to_remove', 'x')
+        await service.add_attribute(session, record.id, 'rk', 'rv')
         await session.commit()
         record_id = record.id
 
     async with session_factory() as session:
-        await service.remove_attribute(session, record_id, 'key_to_remove')
+        capturing_events.emitted.clear()
+        await service.remove_attribute(session, record_id, 'rk')
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    removed = [r for r in records if r.get('event_type') == 'employee_record.attribute.removed']
-    assert len(removed) >= 1
-    assert removed[-1]['payload']['key'] == 'key_to_remove'
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.attribute_removed')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(record_id)
+    assert envelope.payload == {'employee_record_id': str(record_id), 'key': 'rk'}
+
+
+# ---------------------------------------------------------------------------
+# Drop-retrieved test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_employee_record_does_not_emit_event(
+    service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
+    session_factory,
+    application_id: uuid.UUID,
+) -> None:
+    """get_employee_record emits no event (Q1 — employee_record.retrieved dropped)."""
+    async with session_factory() as session:
+        record = await service.create_employee_record(
+            session,
+            external_id='no-emit',
+            application_id=application_id,
+        )
+        await session.commit()
+        record_id = record.id
+
+    async with session_factory() as session:
+        capturing_events.emitted.clear()
+        result = await service.get_employee_record(session, record_id)
+        assert result is not None
+        assert capturing_events.emitted == []
+
+    async with session_factory() as session:
+        result = await service.get_employee_record(session, uuid.uuid4())
+        assert result is None
+        assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Correlation-id tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_employee_record_correlation_id_explicit(
+    service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
+    session_factory,
+    application_id: uuid.UUID,
+) -> None:
+    """create_employee_record passes explicit correlation_id through to the envelope."""
+    async with session_factory() as session:
+        await service.create_employee_record(
+            session,
+            external_id='corr-e',
+            application_id=application_id,
+            correlation_id='trace-xyz-456',
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.created')
+    assert len(envelopes) == 1
+    assert envelopes[0].correlation_id == 'trace-xyz-456'
+
+
+@pytest.mark.asyncio
+async def test_create_employee_record_correlation_id_autogenerated(
+    service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
+    session_factory,
+    application_id: uuid.UUID,
+) -> None:
+    """create_employee_record autogenerates a 32-hex correlation_id when none is supplied."""
+    async with session_factory() as session:
+        await service.create_employee_record(
+            session,
+            external_id='corr-a',
+            application_id=application_id,
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.created')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_correlation_id_autogenerated_independent_of_create(
+    service: EmployeeRecordService,
+    capturing_events: CapturingEventService,
+    session_factory,
+    application_id: uuid.UUID,
+) -> None:
+    """add_attribute autogenerates its own correlation_id independently of the create correlation_id."""
+    async with session_factory() as session:
+        record = await service.create_employee_record(
+            session,
+            external_id='corr-ind',
+            application_id=application_id,
+            correlation_id='A',
+        )
+        await session.flush()
+        capturing_events.emitted.clear()
+        await service.add_attribute(session, record.id, 'ck', 'cv')
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.employee_record.attribute_added')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert corr_id != 'A'
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+# ---------------------------------------------------------------------------
+# Anti-dual-emit guard
+# ---------------------------------------------------------------------------
+
+
+def test_employee_record_service_has_no_log_attribute() -> None:
+    """EmployeeRecordService must not carry a _log attribute (anti-dual-emit guard)."""
+    service = EmployeeRecordService()
+    assert getattr(service, '_log', None) is None

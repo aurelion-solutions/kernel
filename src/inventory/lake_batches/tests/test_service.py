@@ -10,6 +10,9 @@ import uuid
 
 import pytest
 from src.inventory.lake_batches.service import BatchNotFoundError, LakeBatchService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 from src.platform.logs.factory import LogSinkFactory
 from src.platform.logs.providers.file import FileLogSink
 from src.platform.logs.service import LogService
@@ -30,8 +33,25 @@ def storage_factory(lake_path: Path) -> DataLakeStorageFactory:
 
 
 @pytest.fixture
-def service(storage_factory: DataLakeStorageFactory) -> LakeBatchService:
-    return LakeBatchService(storage_factory=storage_factory)
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
+
+
+@pytest.fixture
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
+
+
+@pytest.fixture
+def service(
+    storage_factory: DataLakeStorageFactory,
+    event_service: EventService,
+) -> LakeBatchService:
+    return LakeBatchService(
+        storage_factory=storage_factory,
+        event_service=event_service,
+        # log_service omitted → falls back to noop_log_service
+    )
 
 
 @pytest.mark.asyncio
@@ -217,50 +237,78 @@ async def test_delete_batch_raises_for_missing(
 
 
 @pytest.mark.asyncio
-async def test_lake_batch_create_flow_emits_lake_batch_created_log(
-    tmp_path: Path,
+async def test_create_batch_emits_inventory_lake_batch_created_event(
+    service: LakeBatchService,
+    capturing_events: CapturingEventService,
     session_factory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Lake batch create flow emits a log event with lake.batch.created."""
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'file')
-    lake_path = tmp_path / 'lake'
-    log_path = tmp_path / 'logs.jsonl'
-    storage_factory = DataLakeStorageFactory()
-    storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
-    log_factory = LogSinkFactory()
-    log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory)
-    service = LakeBatchService(
-        storage_factory=storage_factory,
-        log_service=log_service,
-    )
-
+    """create_batch emits inventory.lake_batch.created via EventService."""
     async with session_factory() as session:
-        await service.create_batch(
+        batch = await service.create_batch(
             session,
             storage_provider='file',
             dataset_type='accounts',
-            records=[{'id': '1', 'name': 'a'}],
+            records=[{'id': '1'}],
         )
         await session.commit()
 
-    assert log_path.exists()
-    lines = log_path.read_text().strip().split('\n')
-    assert len(lines) >= 1
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'lake.batch.created']
-    assert len(created) == 1
-    assert created[0]['component'] == 'data-lake'
+    emitted = capturing_events.filter_by_type('inventory.lake_batch.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.lake_batches'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(batch.id)
+    assert envelope.payload['batch_id'] == str(batch.id)
+    assert envelope.payload['storage_provider'] == 'file'
+    assert envelope.payload['dataset_type'] == 'accounts'
+    assert envelope.payload['storage_key'] == batch.storage_key
+    assert envelope.payload['row_count'] == 1
 
 
 @pytest.mark.asyncio
-async def test_storage_resolution_failure_logs_and_re_raises(
+async def test_delete_batch_emits_inventory_lake_batch_deleted_event(
+    service: LakeBatchService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """delete_batch emits inventory.lake_batch.deleted via EventService."""
+    async with session_factory() as session:
+        batch = await service.create_batch(
+            session,
+            storage_provider='file',
+            dataset_type='accounts',
+            records=[{'id': '1'}],
+        )
+        await session.commit()
+        batch_id = batch.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        await service.delete_batch(session, batch_id, delete_payload=False)
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.lake_batch.deleted')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.lake_batches'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(batch_id)
+    assert envelope.payload['batch_id'] == str(batch_id)
+    assert envelope.payload['storage_provider'] == 'file'
+    assert envelope.payload['storage_key'] == batch.storage_key
+    assert 'row_count' not in envelope.payload
+
+
+@pytest.mark.asyncio
+async def test_storage_resolution_failure_logs_without_event_type_and_re_raises(
     tmp_path: Path,
     session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Storage resolution failure emits lake.provider.unsupported and re-raises."""
+    """Storage resolution failure emits ERROR log without event_type and re-raises."""
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'file')
     lake_path = tmp_path / 'lake'
     log_path = tmp_path / 'provider_fail.jsonl'
@@ -268,8 +316,8 @@ async def test_storage_resolution_failure_logs_and_re_raises(
     storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory)
-    service = LakeBatchService(
+    log_service = LogService(factory=log_factory, provider_name='file')
+    svc = LakeBatchService(
         storage_factory=storage_factory,
         log_service=log_service,
     )
@@ -279,7 +327,7 @@ async def test_storage_resolution_failure_logs_and_re_raises(
         match=r"Unsupported storage provider: 'unknown'",
     ):
         async with session_factory() as session:
-            await service.create_batch(
+            await svc.create_batch(
                 session,
                 storage_provider='unknown',
                 dataset_type='test',
@@ -288,6 +336,116 @@ async def test_storage_resolution_failure_logs_and_re_raises(
 
     assert log_path.exists()
     records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    failed = [r for r in records if r.get('event_type') == 'lake.provider.unsupported']
-    assert len(failed) == 1
-    assert failed[0]['payload']['storage_provider'] == 'unknown'
+    error_records = [r for r in records if r.get('level') == 'error']
+    assert len(error_records) >= 1
+    failed = error_records[0]
+    assert failed['component'] == 'data-lake'
+    assert failed['payload']['storage_provider'] == 'unknown'
+    # KEEP-variant anti-dual-emit: operational log must NOT carry event_type
+    assert 'event_type' not in failed
+
+
+@pytest.mark.asyncio
+async def test_create_batch_does_not_emit_legacy_log_event_types(
+    tmp_path: Path,
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KEEP-variant anti-dual-emit guard: create_batch log records have no event_type key."""
+    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'file')
+    lake_path = tmp_path / 'lake'
+    log_path = tmp_path / 'logs.jsonl'
+    storage_factory = DataLakeStorageFactory()
+    storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
+    log_factory = LogSinkFactory()
+    log_factory.register('file', lambda: FileLogSink(path=log_path))
+    log_service = LogService(factory=log_factory, provider_name='file')
+
+    capturing = CapturingEventService()
+    event_svc = EventService(sink=capturing)
+    svc = LakeBatchService(
+        storage_factory=storage_factory,
+        log_service=log_service,
+        event_service=event_svc,
+    )
+
+    async with session_factory() as session:
+        await svc.create_batch(
+            session,
+            storage_provider='file',
+            dataset_type='accounts',
+            records=[{'id': '1'}],
+        )
+        await session.commit()
+
+    # New event emitted on event bus
+    assert len(capturing.filter_by_type('inventory.lake_batch.created')) == 1
+
+    # Log records must not carry any event_type (KEEP-variant guard)
+    assert log_path.exists()
+    log_records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
+    for record in log_records:
+        assert 'event_type' not in record, f'Unexpected event_type in log record: {record}'
+    # Confirm neither legacy nor new event_type leaked into log bus
+    assert [r for r in log_records if r.get('event_type') == 'lake.batch.created'] == []
+    assert [r for r in log_records if r.get('event_type') == 'inventory.lake_batch.created'] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'method,explicit_corr_id',
+    [
+        ('create_batch', 'trace-lake-xyz'),
+        ('create_batch', None),
+        ('delete_batch', 'trace-lake-xyz'),
+        ('delete_batch', None),
+    ],
+)
+async def test_correlation_id_propagates_to_created_and_deleted_events(
+    method: str,
+    explicit_corr_id: str | None,
+    storage_factory: DataLakeStorageFactory,
+    capturing_events: CapturingEventService,
+    event_service: EventService,
+    session_factory,
+) -> None:
+    """correlation_id kwarg is forwarded to emitted event envelope."""
+    svc = LakeBatchService(storage_factory=storage_factory, event_service=event_service)
+
+    async with session_factory() as session:
+        batch = await svc.create_batch(
+            session,
+            storage_provider='file',
+            dataset_type='accounts',
+            records=[{'id': '1'}],
+            correlation_id=explicit_corr_id if method == 'create_batch' else None,
+        )
+        await session.commit()
+        batch_id = batch.id
+
+    if method == 'delete_batch':
+        capturing_events.emitted.clear()
+        async with session_factory() as session:
+            await svc.delete_batch(
+                session,
+                batch_id,
+                delete_payload=False,
+                correlation_id=explicit_corr_id,
+            )
+            await session.commit()
+        event_type = 'inventory.lake_batch.deleted'
+    else:
+        event_type = 'inventory.lake_batch.created'
+
+    emitted = capturing_events.filter_by_type(event_type)
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert isinstance(envelope.correlation_id, str)
+
+    if explicit_corr_id is not None:
+        assert envelope.correlation_id == explicit_corr_id
+    else:
+        # auto-generated: uuid4().hex shape — 32 lowercase hex chars
+        assert len(envelope.correlation_id) == 32
+        assert envelope.correlation_id == envelope.correlation_id.lower()
+        assert all(c in '0123456789abcdef' for c in envelope.correlation_id)

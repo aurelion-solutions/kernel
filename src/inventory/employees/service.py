@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Employee service for coordinating repository and log emission."""
+"""Employee service — business logic and event emission."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -28,8 +31,10 @@ from src.inventory.employees.repository import (
     list_employees as repo_list_employees,
 )
 from src.inventory.persons.repository import get_person_by_id as repo_get_person_by_id
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
+
+_COMPONENT = 'inventory.employees'
 
 
 class EmployeeNotFoundError(Exception):
@@ -67,10 +72,10 @@ class DuplicateEmployeeAttributeError(Exception):
 
 
 class EmployeeService:
-    """Orchestrates employee CRUD and log emission."""
+    """Orchestrates employee creation, retrieval, attribute write, and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_employee(
         self,
@@ -78,8 +83,9 @@ class EmployeeService:
         person_id: uuid.UUID,
         is_locked: bool = False,
         description: str | None = None,
+        correlation_id: str | None = None,
     ) -> Employee:
-        """Create an employee and emit employee.created. Validates person_id exists."""
+        """Create an employee and emit inventory.employee.created. Validates person_id exists."""
         person = await repo_get_person_by_id(session, person_id)
         if person is None:
             raise InvalidPersonIdError(person_id)
@@ -89,16 +95,24 @@ class EmployeeService:
             is_locked=is_locked,
             description=description,
         )
-        self._log.emit_safe(
-            'employee.created',
-            LogLevel.INFO,
-            'Employee created',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {'employee_id': str(employee.id)},
-                actor_component='identity-core',
-                target_id='employee',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'employee_id': str(employee.id),
+                    'person_id': str(employee.person_id),
+                    'is_locked': employee.is_locked,
+                    'description': employee.description,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(employee.id),
+            )
         )
         return employee
 
@@ -107,21 +121,8 @@ class EmployeeService:
         session: AsyncSession,
         employee_id: uuid.UUID,
     ) -> Employee | None:
-        """Get employee by id. Emits employee.retrieved when found."""
-        employee = await repo_get_employee_by_id(session, employee_id)
-        if employee is not None:
-            self._log.emit_safe(
-                'employee.retrieved',
-                LogLevel.INFO,
-                'Employee retrieved',
-                'identity-core',
-                merge_emit_log_participant_fields(
-                    {'employee_id': str(employee_id)},
-                    actor_component='identity-core',
-                    target_id='employee',
-                ),
-            )
-        return employee
+        """Get employee by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_employee_by_id(session, employee_id)
 
     async def list_employees(self, session: AsyncSession) -> list[Employee]:
         """List all employees."""
@@ -144,8 +145,9 @@ class EmployeeService:
         employee_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> EmployeeAttribute:
-        """Add attribute to employee. Emits employee.attribute.added. Raises on duplicate key."""
+        """Add attribute to employee. Emits inventory.employee.attribute_added. Raises on duplicate key."""
         employee = await repo_get_employee_by_id(session, employee_id)
         if employee is None:
             raise EmployeeNotFoundError(employee_id)
@@ -158,19 +160,24 @@ class EmployeeService:
             )
         except IntegrityError:
             raise DuplicateEmployeeAttributeError(employee_id, key) from None
-        self._log.emit_safe(
-            'employee.attribute.added',
-            LogLevel.INFO,
-            'Employee attribute added',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'employee_id': str(employee_id),
+                    'attribute_id': str(attr.id),
                     'key': key,
+                    'value': value,
                 },
-                actor_component='identity-core',
-                target_id='employee',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(employee.id),
+            )
         )
         return attr
 
@@ -179,22 +186,29 @@ class EmployeeService:
         session: AsyncSession,
         employee_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from employee. Emits employee.attribute.removed. Raises if not found."""
+        """Remove attribute from employee. Emits inventory.employee.attribute_removed. Raises if not found."""
         employee = await repo_get_employee_by_id(session, employee_id)
         if employee is None:
             raise EmployeeNotFoundError(employee_id)
         deleted = await repo_delete_employee_attribute(session, employee_id, key)
         if not deleted:
             raise EmployeeAttributeNotFoundError(employee_id, key)
-        self._log.emit_safe(
-            'employee.attribute.removed',
-            LogLevel.INFO,
-            'Employee attribute removed',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {'employee_id': str(employee_id), 'key': key},
-                actor_component='identity-core',
-                target_id='employee',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'employee_id': str(employee_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(employee.id),
+            )
         )

@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Person service for coordinating repository and log emission."""
+"""Person service — business logic and event emission."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -27,8 +30,10 @@ from src.inventory.persons.repository import (
 from src.inventory.persons.repository import (
     list_persons as repo_list_persons,
 )
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
+
+_COMPONENT = 'inventory.persons'
 
 
 class PersonNotFoundError(Exception):
@@ -58,36 +63,40 @@ class DuplicatePersonAttributeError(Exception):
 
 
 class PersonService:
-    """Orchestrates person CRUD and log emission."""
+    """Orchestrates person creation, retrieval, attribute write, and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_person(
         self,
         session: AsyncSession,
         external_id: str,
         description: str,
+        correlation_id: str | None = None,
     ) -> Person:
-        """Create a person and emit person.created."""
+        """Create a person and emit inventory.person.created."""
         person = await repo_create_person(
             session,
             external_id=external_id,
             description=description,
         )
-        self._log.emit_safe(
-            'person.created',
-            LogLevel.INFO,
-            'Person created',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.person.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'person_id': str(person.id),
                     'external_id': person.external_id,
                 },
-                actor_component='identity-core',
-                target_id='person',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(person.id),
+            )
         )
         return person
 
@@ -96,21 +105,8 @@ class PersonService:
         session: AsyncSession,
         person_id: uuid.UUID,
     ) -> Person | None:
-        """Get person by id. Emits person.retrieved when found."""
-        person = await repo_get_person_by_id(session, person_id)
-        if person is not None:
-            self._log.emit_safe(
-                'person.retrieved',
-                LogLevel.INFO,
-                'Person retrieved',
-                'identity-core',
-                merge_emit_log_participant_fields(
-                    {'person_id': str(person_id)},
-                    actor_component='identity-core',
-                    target_id='person',
-                ),
-            )
-        return person
+        """Get person by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_person_by_id(session, person_id)
 
     async def list_persons(self, session: AsyncSession) -> list[Person]:
         """List all persons."""
@@ -133,8 +129,9 @@ class PersonService:
         person_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> PersonAttribute:
-        """Add attribute to person. Emits person.attribute.added. Raises on duplicate key."""
+        """Add attribute to person. Emits inventory.person.attribute_added. Raises on duplicate key."""
         person = await repo_get_person_by_id(session, person_id)
         if person is None:
             raise PersonNotFoundError(person_id)
@@ -147,19 +144,24 @@ class PersonService:
             )
         except IntegrityError:
             raise DuplicatePersonAttributeError(person_id, key) from None
-        self._log.emit_safe(
-            'person.attribute.added',
-            LogLevel.INFO,
-            'Person attribute added',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.person.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'person_id': str(person_id),
+                    'attribute_id': str(attr.id),
                     'key': key,
+                    'value': value,
                 },
-                actor_component='identity-core',
-                target_id='person',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(person.id),
+            )
         )
         return attr
 
@@ -168,22 +170,29 @@ class PersonService:
         session: AsyncSession,
         person_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from person. Emits person.attribute.removed. Raises if not found."""
+        """Remove attribute from person. Emits inventory.person.attribute_removed. Raises if not found."""
         person = await repo_get_person_by_id(session, person_id)
         if person is None:
             raise PersonNotFoundError(person_id)
         deleted = await repo_delete_person_attribute(session, person_id, key)
         if not deleted:
             raise PersonAttributeNotFoundError(person_id, key)
-        self._log.emit_safe(
-            'person.attribute.removed',
-            LogLevel.INFO,
-            'Person attribute removed',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {'person_id': str(person_id), 'key': key},
-                actor_component='identity-core',
-                target_id='person',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.person.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'person_id': str(person_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(person.id),
+            )
         )

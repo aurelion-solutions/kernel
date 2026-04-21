@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessUsageFact service — business logic and operational log emission."""
+"""AccessUsageFact service — business logic and event emission."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -21,8 +21,8 @@ from src.inventory.access_usage_facts.repository import (
 from src.inventory.access_usage_facts.repository import (
     list_access_usage_facts as repo_list,
 )
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.access_usage_facts'
 
@@ -60,10 +60,13 @@ class AccessUsageFactDuplicateError(Exception):
 
 
 class AccessUsageFactService:
-    """Orchestrates access usage fact operations and operational log emission."""
+    """Orchestrates access usage fact operations and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+    ) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_usage_fact(
         self,
@@ -74,8 +77,13 @@ class AccessUsageFactService:
         usage_count: int = 0,
         window_from: datetime,
         window_to: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> AccessUsageFact:
-        """Create an access usage fact. Validates window ordering and FK reference."""
+        """Create an access usage fact.
+
+        Validates window ordering and FK reference.
+        Emits inventory.access_usage_fact.created.
+        """
         if window_to is not None and window_to <= window_from:
             raise AccessUsageFactWindowOrderError('window_to must be strictly greater than window_from')
 
@@ -109,13 +117,14 @@ class AccessUsageFactService:
                 ) from exc
             raise
 
-        self._log.emit_safe(
-            'access_usage_fact.created',
-            LogLevel.INFO,
-            'Access usage fact created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.access_usage_fact.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'usage_fact_id': str(usage_fact.id),
                     'access_fact_id': str(access_fact_id),
                     'last_seen': last_seen.isoformat(),
@@ -123,9 +132,11 @@ class AccessUsageFactService:
                     'window_from': window_from.isoformat(),
                     'window_to': window_to.isoformat() if window_to is not None else None,
                 },
-                actor_component=_COMPONENT,
-                target_id='access_usage_fact',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(usage_fact.id),
+            )
         )
         return usage_fact
 
@@ -134,21 +145,8 @@ class AccessUsageFactService:
         session: AsyncSession,
         usage_fact_id: uuid.UUID,
     ) -> AccessUsageFact | None:
-        """Get access usage fact by id. Logs retrieval when found."""
-        usage_fact = await repo_get_by_id(session, usage_fact_id)
-        if usage_fact is not None:
-            self._log.emit_safe(
-                'access_usage_fact.retrieved',
-                LogLevel.INFO,
-                'Access usage fact retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'usage_fact_id': str(usage_fact_id)},
-                    actor_component=_COMPONENT,
-                    target_id='access_usage_fact',
-                ),
-            )
-        return usage_fact
+        """Get access usage fact by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_by_id(session, usage_fact_id)
 
     async def list_usage_facts(
         self,
@@ -161,7 +159,7 @@ class AccessUsageFactService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[AccessUsageFact]:
-        """List access usage facts with optional filters. No logging."""
+        """List access usage facts with optional filters. No event emitted."""
         return await repo_list(
             session,
             subject_id=subject_id,

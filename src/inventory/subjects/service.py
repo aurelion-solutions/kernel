@@ -44,8 +44,8 @@ from src.inventory.subjects.repository import (
 )
 from src.inventory.subjects.schemas import SubjectPatch, _check_status_for_kind
 from src.inventory.subjects.status_derivation import derive_subject_status
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.subjects'
 
@@ -116,10 +116,10 @@ class SubjectStatusRecomputePrincipalMissingError(Exception):
 
 
 class SubjectService:
-    """Orchestrates subject CRUD and log emission."""
+    """Orchestrates subject CRUD and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_subject(
         self,
@@ -132,8 +132,9 @@ class SubjectService:
         principal_nhi_id: uuid.UUID | None = None,
         principal_customer_id: uuid.UUID | None = None,
         status: str,
+        correlation_id: str | None = None,
     ) -> Subject:
-        """Create a subject. Emits subject.created. Distinguishes FK vs unique violations."""
+        """Create a subject. Emits inventory.subject.created. Distinguishes FK vs unique violations."""
         try:
             subject = await repo_create_subject(
                 session,
@@ -156,25 +157,31 @@ class SubjectService:
                 raise SubjectPrincipalAlreadyBoundError() from None
             raise
 
-        payload: dict[str, object] = {
-            'subject_id': str(subject.id),
-            'kind': subject.kind.value,
-            'nhi_kind': subject.nhi_kind.value if subject.nhi_kind else None,
-            'principal_employee_id': str(subject.principal_employee_id) if subject.principal_employee_id else None,
-            'principal_nhi_id': str(subject.principal_nhi_id) if subject.principal_nhi_id else None,
-            'principal_customer_id': str(subject.principal_customer_id) if subject.principal_customer_id else None,
-            'status': subject.status,
-        }
-        self._log.emit_safe(
-            'subject.created',
-            LogLevel.INFO,
-            'Subject created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                payload,
-                actor_component=_COMPONENT,
-                target_id='subject',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.subject.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'subject_id': str(subject.id),
+                    'kind': subject.kind.value,
+                    'nhi_kind': subject.nhi_kind.value if subject.nhi_kind else None,
+                    'principal_employee_id': (
+                        str(subject.principal_employee_id) if subject.principal_employee_id else None
+                    ),
+                    'principal_nhi_id': (str(subject.principal_nhi_id) if subject.principal_nhi_id else None),
+                    'principal_customer_id': (
+                        str(subject.principal_customer_id) if subject.principal_customer_id else None
+                    ),
+                    'status': subject.status,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(subject.id),
+            )
         )
         return subject
 
@@ -183,21 +190,8 @@ class SubjectService:
         session: AsyncSession,
         subject_id: uuid.UUID,
     ) -> Subject | None:
-        """Get subject by id. Emits subject.retrieved when found."""
-        subject = await repo_get_subject_by_id(session, subject_id)
-        if subject is not None:
-            self._log.emit_safe(
-                'subject.retrieved',
-                LogLevel.INFO,
-                'Subject retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'subject_id': str(subject_id)},
-                    actor_component=_COMPONENT,
-                    target_id='subject',
-                ),
-            )
-        return subject
+        """Get subject by id. No event emitted (Q1 — subject.retrieved dropped)."""
+        return await repo_get_subject_by_id(session, subject_id)
 
     async def list_subjects(
         self,
@@ -214,8 +208,9 @@ class SubjectService:
         session: AsyncSession,
         subject_id: uuid.UUID,
         patch: SubjectPatch,
+        correlation_id: str | None = None,
     ) -> Subject:
-        """Apply partial update to subject. Per-kind status validation. Emits subject.updated."""
+        """Apply partial update to subject. Per-kind status validation. Emits inventory.subject.updated."""
         subject = await repo_get_subject_by_id(session, subject_id)
         if subject is None:
             raise SubjectNotFoundError(subject_id)
@@ -232,19 +227,22 @@ class SubjectService:
             status=patch.status,
         )
         if changed_fields:
-            self._log.emit_safe(
-                'subject.updated',
-                LogLevel.INFO,
-                'Subject updated',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='inventory.subject.updated',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
                         'subject_id': str(subject_id),
                         'changed_fields': sorted(changed_fields),
                     },
-                    actor_component=_COMPONENT,
-                    target_id='subject',
-                ),
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=str(subject_id),
+                )
             )
         return subject
 
@@ -265,8 +263,9 @@ class SubjectService:
         subject_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> SubjectAttribute:
-        """Add attribute to subject. Emits subject.attribute.added. Raises on duplicate."""
+        """Add attribute to subject. Emits inventory.subject.attribute_added. Raises on duplicate."""
         subject = await repo_get_subject_by_id(session, subject_id)
         if subject is None:
             raise SubjectNotFoundError(subject_id)
@@ -279,16 +278,22 @@ class SubjectService:
             )
         except IntegrityError:
             raise DuplicateSubjectAttributeError(subject_id, key) from None
-        self._log.emit_safe(
-            'subject.attribute.added',
-            LogLevel.INFO,
-            'Subject attribute added',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'subject_id': str(subject_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='subject',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.subject.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'subject_id': str(subject_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(subject_id),
+            )
         )
         return attr
 
@@ -297,24 +302,31 @@ class SubjectService:
         session: AsyncSession,
         subject_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from subject. Emits subject.attribute.removed. Raises if missing."""
+        """Remove attribute from subject. Emits inventory.subject.attribute_removed. Raises if missing."""
         subject = await repo_get_subject_by_id(session, subject_id)
         if subject is None:
             raise SubjectNotFoundError(subject_id)
         deleted = await repo_delete_subject_attribute(session, subject_id, key)
         if not deleted:
             raise SubjectAttributeNotFoundError(subject_id, key)
-        self._log.emit_safe(
-            'subject.attribute.removed',
-            LogLevel.INFO,
-            'Subject attribute removed',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'subject_id': str(subject_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='subject',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.subject.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'subject_id': str(subject_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(subject_id),
+            )
         )
 
     async def recompute_status_for_principal(
@@ -323,13 +335,14 @@ class SubjectService:
         *,
         kind: SubjectKind,
         principal_id: uuid.UUID,
+        correlation_id: str | None = None,
     ) -> Subject | None:
         """Recompute Subject.status for the Subject bound to the given principal.
 
         Returns the Subject (updated or unchanged) or None if no Subject is bound
         (orphan principal — legitimate, not an error).
 
-        Emits subject.status_changed iff the derived status differs from the stored one.
+        Emits inventory.subject.status_changed iff the derived status differs from the stored one.
         Does NOT commit — caller owns the transaction.
         """
         subject = await repo_get_subject_by_principal(session, kind, principal_id)
@@ -350,21 +363,24 @@ class SubjectService:
         subject.status = new_status
         await session.flush()
 
-        self._log.emit_safe(
-            'subject.status_changed',
-            LogLevel.INFO,
-            'Subject status changed',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.subject.status_changed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'subject_id': str(subject.id),
                     'previous_status': previous_status,
                     'new_status': new_status,
                     'at': datetime.now(UTC).isoformat(),
                 },
-                actor_component=_COMPONENT,
-                target_id='subject',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(subject.id),
+            )
         )
         return subject
 

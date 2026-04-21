@@ -5,16 +5,21 @@
 """Lake batch service for coordinating data lake storage and PostgreSQL metadata."""
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.lake_batches.models import LakeBatch
 from src.inventory.lake_batches.repository import create_lake_batch, delete_by_id, get_by_id
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
 from src.platform.storage.factory import DataLakeStorageFactory, UnsupportedProviderError
 from src.platform.storage.interface import DataLakeStorage
+
+_COMPONENT = 'inventory.lake_batches'
 
 
 class BatchNotFoundError(Exception):
@@ -32,9 +37,11 @@ class LakeBatchService:
         self,
         storage_factory: DataLakeStorageFactory,
         log_service: LogService | None = None,
+        event_service: EventService | None = None,
     ) -> None:
         self._factory = storage_factory
         self._log = log_service if log_service is not None else noop_log_service
+        self._events = event_service if event_service is not None else noop_event_service
 
     def _get_storage(
         self,
@@ -50,11 +57,10 @@ class LakeBatchService:
             if batch_id:
                 payload['batch_id'] = batch_id
             self._log.emit_safe(
-                'lake.provider.unsupported',
-                LogLevel.ERROR,
-                f'Unsupported storage provider: {storage_provider!r}',
-                'data-lake',
-                merge_emit_log_participant_fields(
+                level=LogLevel.ERROR,
+                message=f'Unsupported storage provider: {storage_provider!r}',
+                component='data-lake',
+                payload=merge_emit_log_participant_fields(
                     payload,
                     actor_component='data-lake',
                     target_id='storage',
@@ -72,14 +78,14 @@ class LakeBatchService:
         application_id: uuid.UUID | None = None,
         content_type: str | None = None,
         metadata_json: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
     ) -> LakeBatch:
         """Write records to lake, create metadata row, return LakeBatch."""
         self._log.emit_safe(
-            'lake.batch.write.started',
-            LogLevel.INFO,
-            'Lake batch write started',
-            'data-lake',
-            merge_emit_log_participant_fields(
+            level=LogLevel.INFO,
+            message='Lake batch write started',
+            component='data-lake',
+            payload=merge_emit_log_participant_fields(
                 {'storage_provider': storage_provider, 'dataset_type': dataset_type},
                 actor_component='data-lake',
                 target_id='batch',
@@ -102,22 +108,25 @@ class LakeBatchService:
             content_type=content_type,
             metadata_json=metadata_json,
         )
-        self._log.emit_safe(
-            'lake.batch.created',
-            LogLevel.INFO,
-            'Lake batch created',
-            'data-lake',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.lake_batch.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'batch_id': str(batch.id),
                     'storage_provider': storage_provider,
                     'dataset_type': dataset_type,
                     'storage_key': storage_key,
                     'row_count': row_count,
                 },
-                actor_component='data-lake',
-                target_id='batch',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(batch.id),
+            )
         )
         return batch
 
@@ -140,11 +149,10 @@ class LakeBatchService:
             raise BatchNotFoundError(batch_id)
 
         self._log.emit_safe(
-            'lake.batch.read.requested',
-            LogLevel.INFO,
-            'Lake batch read requested',
-            'data-lake',
-            merge_emit_log_participant_fields(
+            level=LogLevel.INFO,
+            message='Lake batch read requested',
+            component='data-lake',
+            payload=merge_emit_log_participant_fields(
                 {'batch_id': str(batch_id), 'storage_provider': batch.storage_provider},
                 actor_component='data-lake',
                 target_id='batch',
@@ -161,6 +169,7 @@ class LakeBatchService:
         session: AsyncSession,
         batch_id: uuid.UUID,
         delete_payload: bool = True,
+        correlation_id: str | None = None,
     ) -> None:
         """Delete batch metadata and optionally lake payload."""
         batch = await get_by_id(session, batch_id)
@@ -175,18 +184,21 @@ class LakeBatchService:
             storage.delete_batch(batch.storage_key)
 
         await delete_by_id(session, batch_id)
-        self._log.emit_safe(
-            'lake.batch.deleted',
-            LogLevel.INFO,
-            'Lake batch deleted',
-            'data-lake',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.lake_batch.deleted',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'batch_id': str(batch_id),
                     'storage_provider': batch.storage_provider,
                     'storage_key': batch.storage_key,
                 },
-                actor_component='data-lake',
-                target_id='batch',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(batch.id),
+            )
         )

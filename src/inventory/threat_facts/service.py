@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""ThreatFact service — business logic and operational log emission."""
+"""ThreatFact service — business logic and event emission."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from src.inventory.threat_facts.repository import (
     upsert_threat_fact as repo_upsert,
 )
 from src.inventory.threat_facts.schemas import ThreatFactUpsert
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.threat_facts'
 
@@ -61,10 +61,10 @@ class ThreatFactConflictError(Exception):
 
 
 class ThreatFactService:
-    """Orchestrates threat fact operations and operational log emission."""
+    """Orchestrates threat fact operations and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def upsert_threat_fact(
         self,
@@ -72,6 +72,7 @@ class ThreatFactService:
         *,
         subject_id: uuid.UUID,
         payload: ThreatFactUpsert,
+        correlation_id: str | None = None,
     ) -> tuple[ThreatFact, bool]:
         """Upsert a threat fact. Validates FK existence and maps DB errors."""
         from src.inventory.subjects.models import Subject
@@ -113,14 +114,16 @@ class ThreatFactService:
                 ) from exc
             raise
 
-        event_type = 'threat_fact.created' if created else 'threat_fact.updated'
-        self._log.emit_safe(
-            event_type,
-            LogLevel.INFO,
-            f'Threat fact {"created" if created else "updated"}',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        event_type = 'inventory.threat_fact.created' if created else 'inventory.threat_fact.updated'
+        cid = correlation_id if correlation_id is not None else uuid.uuid4().hex
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type=event_type,
+                occurred_at=datetime.now(UTC),
+                correlation_id=cid,
+                causation_id=None,
+                payload={
                     'fact_id': str(fact.id),
                     'subject_id': str(subject_id),
                     'account_id': str(payload.account_id) if payload.account_id is not None else None,
@@ -129,9 +132,11 @@ class ThreatFactService:
                     'failed_auth_count': payload.failed_auth_count,
                     'observed_at': observed_at.isoformat(),
                 },
-                actor_component=_COMPONENT,
-                target_id='threat_fact',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(fact.id),
+            )
         )
         return fact, created
 
@@ -140,24 +145,8 @@ class ThreatFactService:
         session: AsyncSession,
         fact_id: uuid.UUID,
     ) -> ThreatFact | None:
-        """Get threat fact by id. Logs retrieval when found."""
-        fact = await repo_get_by_id(session, fact_id)
-        if fact is not None:
-            self._log.emit_safe(
-                'threat_fact.retrieved',
-                LogLevel.INFO,
-                'Threat fact retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {
-                        'fact_id': str(fact_id),
-                        'subject_id': str(fact.subject_id),
-                    },
-                    actor_component=_COMPONENT,
-                    target_id='threat_fact',
-                ),
-            )
-        return fact
+        """Get threat fact by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_by_id(session, fact_id)
 
     async def list_threat_facts(
         self,
@@ -169,7 +158,7 @@ class ThreatFactService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ThreatFact]:
-        """List threat facts with optional filters. No logging."""
+        """List threat facts with optional filters. No event emitted."""
         return await repo_list(
             session,
             subject_id=subject_id,

@@ -28,8 +28,8 @@ from src.inventory.access_facts.repository import (
     list_access_facts as repo_list_access_facts,
 )
 from src.inventory.enums import Action
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.access_facts'
 
@@ -59,10 +59,13 @@ class AccessFactForeignKeyError(Exception):
 
 
 class AccessFactService:
-    """Orchestrates access fact creation, retrieval, invalidation, and log emission."""
+    """Orchestrates access fact creation, retrieval, invalidation, and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+    ) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_fact(
         self,
@@ -75,8 +78,9 @@ class AccessFactService:
         effect: AccessFactEffect,
         valid_from: datetime | None = None,
         valid_until: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> AccessFact:
-        """Create an access fact. Validates FK targets exist. Emits access_fact.created."""
+        """Create an access fact. Validates FK targets exist. Emits inventory.access_fact.created."""
         from src.inventory.subjects.models import Subject
 
         if await session.get(Subject, subject_id) is None:
@@ -114,13 +118,13 @@ class AccessFactService:
                 ) from exc
             raise AccessFactForeignKeyError(str(exc)) from exc
 
-        self._log.emit_safe(
-            'access_fact.created',
-            LogLevel.INFO,
-            'Access fact created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.access_fact.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                payload={
                     'access_fact_id': str(fact.id),
                     'subject_id': str(subject_id),
                     'account_id': str(account_id) if account_id else None,
@@ -130,9 +134,11 @@ class AccessFactService:
                     'valid_from': str(fact.valid_from),
                     'valid_until': str(fact.valid_until) if fact.valid_until else None,
                 },
-                actor_component=_COMPONENT,
-                target_id='access_fact',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(fact.id),
+            )
         )
         return fact
 
@@ -165,21 +171,8 @@ class AccessFactService:
         session: AsyncSession,
         fact_id: uuid.UUID,
     ) -> AccessFact | None:
-        """Get access fact by id. Emits access_fact.retrieved when found."""
-        fact = await repo_get_access_fact_by_id(session, fact_id)
-        if fact is not None:
-            self._log.emit_safe(
-                'access_fact.retrieved',
-                LogLevel.INFO,
-                'Access fact retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'access_fact_id': str(fact_id)},
-                    actor_component=_COMPONENT,
-                    target_id='access_fact',
-                ),
-            )
-        return fact
+        """Get access fact by id. No event emitted (Q1 — read-side audit belongs in a future audit.* slice)."""
+        return await repo_get_access_fact_by_id(session, fact_id)
 
     async def list_facts(
         self,
@@ -213,8 +206,9 @@ class AccessFactService:
         fact_id: uuid.UUID,
         *,
         at: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> AccessFact:
-        """Invalidate an access fact by setting valid_until. Emits access_fact.invalidated at WARNING."""
+        """Invalidate an access fact by setting valid_until. Emits inventory.access_fact.invalidated."""
         fact = await repo_get_access_fact_by_id(session, fact_id)
         if fact is None:
             raise AccessFactNotFoundError(fact_id)
@@ -222,18 +216,20 @@ class AccessFactService:
         ts = at or datetime.now(UTC)
         await repo_invalidate_access_fact(session, fact, at=ts)
 
-        self._log.emit_safe(
-            'access_fact.invalidated',
-            LogLevel.WARNING,
-            'Access fact invalidated',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.access_fact.invalidated',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                payload={
                     'access_fact_id': str(fact_id),
                     'at': str(ts),
                 },
-                actor_component=_COMPONENT,
-                target_id='access_fact',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(fact_id),
+            )
         )
         return fact

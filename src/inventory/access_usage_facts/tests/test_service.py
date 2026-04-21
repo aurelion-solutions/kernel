@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -18,26 +16,28 @@ from src.inventory.access_usage_facts.service import (
     AccessUsageFactService,
     AccessUsageFactWindowOrderError,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> AccessUsageFactService:
-    return AccessUsageFactService(log_service=log_service)
+def service(event_service: EventService) -> AccessUsageFactService:
+    return AccessUsageFactService(event_service=event_service)
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +113,10 @@ async def _make_access_fact(session) -> uuid.UUID:
 @pytest.mark.asyncio
 async def test_create_usage_fact_happy_path_closed_window(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """create_usage_fact with window_to set emits access_usage_fact.created INFO event."""
+    """create_usage_fact with window_to set emits inventory.access_usage_fact.created event."""
     async with session_factory() as session:
         access_fact_id = await _make_access_fact(session)
         w_from = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
@@ -136,24 +136,25 @@ async def test_create_usage_fact_happy_path_closed_window(
     assert usage_fact.id is not None
     assert usage_fact.usage_count == 7
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'access_usage_fact.created']
-    assert len(created) == 1
-    assert created[0]['component'] == 'inventory.access_usage_facts'
-    payload = created[0]['payload']
-    assert 'usage_fact_id' in payload
-    assert 'access_fact_id' in payload
-    assert 'last_seen' in payload
-    assert 'window_from' in payload
-    assert payload['window_to'] is not None
+    emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.access_usage_facts'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(usage_fact.id)
+    assert 'usage_fact_id' in envelope.payload
+    assert 'access_fact_id' in envelope.payload
+    assert 'last_seen' in envelope.payload
+    assert 'window_from' in envelope.payload
+    assert envelope.payload['window_to'] is not None
 
 
 @pytest.mark.asyncio
 async def test_create_usage_fact_happy_path_open_window(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """create_usage_fact with window_to=None (open window) emits event with null window_to."""
     async with session_factory() as session:
@@ -173,18 +174,16 @@ async def test_create_usage_fact_happy_path_open_window(
 
     assert usage_fact.window_to is None
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'access_usage_fact.created']
-    assert len(created) == 1
-    assert created[0]['payload']['window_to'] is None
+    emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
+    assert len(emitted) == 1
+    assert emitted[0].payload['window_to'] is None
 
 
 @pytest.mark.asyncio
 async def test_create_usage_fact_unknown_access_fact_raises_422(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """Non-existent access_fact_id raises AccessUsageFactForeignKeyError; no event emitted."""
     async with session_factory() as session:
@@ -198,14 +197,14 @@ async def test_create_usage_fact_unknown_access_fact_raises_422(
                 window_to=None,
             )
 
-    assert not log_path.exists() or log_path.read_text().strip() == ''
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_create_usage_fact_rejects_inverted_window(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """window_to <= window_from raises AccessUsageFactWindowOrderError before any DB round-trip."""
     async with session_factory() as session:
@@ -223,14 +222,14 @@ async def test_create_usage_fact_rejects_inverted_window(
                 window_to=w_to,
             )
 
-    assert not log_path.exists() or log_path.read_text().strip() == ''
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_create_usage_fact_duplicate_window_raises_409(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """Duplicate (access_fact_id, window_from, window_to) raises AccessUsageFactDuplicateError.
 
@@ -253,6 +252,9 @@ async def test_create_usage_fact_duplicate_window_raises_409(
         )
         await session.commit()
 
+    # Baseline: one envelope captured for the successful insert
+    capturing_events.clear()
+
     async with session_factory() as session:
         # Second insert with same closed window — must fail
         with pytest.raises(AccessUsageFactDuplicateError):
@@ -264,6 +266,10 @@ async def test_create_usage_fact_duplicate_window_raises_409(
                 window_from=w_from,
                 window_to=w_to,
             )
+
+    # No additional envelope after duplicate failure
+    assert capturing_events.filter_by_type('inventory.access_usage_fact.created') == []
+    capturing_events.clear()
 
     # NULLS NOT DISTINCT: open-ended window — first insert must succeed
     async with session_factory() as session:
@@ -279,6 +285,8 @@ async def test_create_usage_fact_duplicate_window_raises_409(
         )
         await session.commit()
 
+    capturing_events.clear()
+
     async with session_factory() as session:
         # Second insert with same open window (NULL) — must also fail due to NULLS NOT DISTINCT
         with pytest.raises(AccessUsageFactDuplicateError):
@@ -291,14 +299,17 @@ async def test_create_usage_fact_duplicate_window_raises_409(
                 window_to=None,
             )
 
+    # No additional envelope after second duplicate failure
+    assert capturing_events.filter_by_type('inventory.access_usage_fact.created') == []
+
 
 @pytest.mark.asyncio
-async def test_get_usage_fact_emits_retrieved_event(
+async def test_get_usage_fact_does_not_emit_event(
     service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_usage_fact emits access_usage_fact.retrieved INFO event when found."""
+    """get_usage_fact returns fact without emitting any event (Q1 — read-side audit dropped)."""
     async with session_factory() as session:
         access_fact_id = await _make_access_fact(session)
         usage_fact = await service.create_usage_fact(
@@ -312,13 +323,64 @@ async def test_get_usage_fact_emits_retrieved_event(
         await session.commit()
         usage_fact_id = usage_fact.id
 
+    # Reset captured events so only get_usage_fact's effect is observed
+    capturing_events.clear()
+
     async with session_factory() as session:
         found = await service.get_usage_fact(session, usage_fact_id)
 
     assert found is not None
+    assert found.id == usage_fact_id
+    assert capturing_events.emitted == []
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'access_usage_fact.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['payload']['usage_fact_id'] == str(usage_fact_id)
+
+@pytest.mark.asyncio
+async def test_create_usage_fact_propagates_correlation_id(
+    service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_usage_fact propagates an explicit correlation_id into the envelope."""
+    async with session_factory() as session:
+        access_fact_id = await _make_access_fact(session)
+        await service.create_usage_fact(
+            session,
+            access_fact_id=access_fact_id,
+            last_seen=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
+            usage_count=1,
+            window_from=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
+            window_to=None,
+            correlation_id='trace-usage-abc',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-usage-abc'
+
+
+@pytest.mark.asyncio
+async def test_create_usage_fact_generates_correlation_id_when_omitted(
+    service: AccessUsageFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_usage_fact generates a uuid4 hex correlation_id when caller omits it."""
+    async with session_factory() as session:
+        access_fact_id = await _make_access_fact(session)
+        await service.create_usage_fact(
+            session,
+            access_fact_id=access_fact_id,
+            last_seen=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
+            usage_count=1,
+            window_from=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
+            window_to=datetime(2026, 1, 1, 10, 0, 0, tzinfo=UTC),
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
+    assert len(emitted) == 1
+    cid = emitted[0].correlation_id
+    assert isinstance(cid, str)
+    assert len(cid) == 32  # uuid4().hex = 32 hex chars
+    assert cid.isalnum()

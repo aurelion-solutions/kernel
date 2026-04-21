@@ -4,8 +4,8 @@
 
 """Tests for CustomerService."""
 
-import json
-from pathlib import Path
+from __future__ import annotations
+
 import uuid
 
 import pytest
@@ -16,26 +16,29 @@ from src.inventory.customers.service import (
     CustomerService,
     DuplicateCustomerAttributeError,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> CustomerService:
-    return CustomerService(log_service=log_service)
+def service(event_service: EventService) -> CustomerService:
+    return CustomerService(event_service=event_service)
+
+
+# ---------------------------------------------------------------------------
+# Behavioural tests (pure — no event assertions)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -52,54 +55,6 @@ async def test_create_customer(service: CustomerService, session_factory) -> Non
 
 
 @pytest.mark.asyncio
-async def test_create_customer_emits_event(
-    service: CustomerService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """create_customer emits customer.created log event."""
-    async with session_factory() as session:
-        await service.create_customer(
-            session,
-            external_id='svc-log-001',
-            plan_tier=CustomerPlanTier.pro,
-        )
-        await session.commit()
-
-    assert log_path.exists()
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'customer.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'inventory.customers'
-    assert 'customer_id' in created[-1]['payload']
-    assert created[-1]['payload']['external_id'] == 'svc-log-001'
-    assert created[-1]['payload']['plan_tier'] == 'pro'
-
-
-@pytest.mark.asyncio
-async def test_get_customer_emits_retrieved(
-    service: CustomerService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """get_customer emits customer.retrieved when found."""
-    async with session_factory() as session:
-        customer = await service.create_customer(session, external_id='svc-get-001')
-        await session.commit()
-        customer_id = customer.id
-
-    async with session_factory() as session:
-        await service.get_customer(session, customer_id)
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'customer.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'inventory.customers'
-
-
-@pytest.mark.asyncio
 async def test_get_customer_returns_none_when_missing(
     service: CustomerService,
     session_factory,
@@ -108,74 +63,6 @@ async def test_get_customer_returns_none_when_missing(
     async with session_factory() as session:
         result = await service.get_customer(session, uuid.uuid4())
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_update_customer_emits_event(
-    service: CustomerService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """update_customer emits customer.updated with changed_fields."""
-    async with session_factory() as session:
-        customer = await service.create_customer(session, external_id='svc-upd-001')
-        await session.commit()
-        customer_id = customer.id
-
-    async with session_factory() as session:
-        patch = CustomerPatch(is_locked=True)
-        await service.update_customer(session, customer_id, patch)
-        await session.commit()
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    updated = [r for r in records if r.get('event_type') == 'customer.updated']
-    assert len(updated) >= 1
-    assert 'is_locked' in updated[-1]['payload']['changed_fields']
-
-
-@pytest.mark.asyncio
-async def test_update_customer_noop_no_event(
-    service: CustomerService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """update_customer with no changes does not emit customer.updated."""
-    async with session_factory() as session:
-        customer = await service.create_customer(session, external_id='svc-upd-noop', is_locked=False)
-        await session.commit()
-        customer_id = customer.id
-
-    async with session_factory() as session:
-        patch = CustomerPatch(is_locked=False)
-        await service.update_customer(session, customer_id, patch)
-        await session.commit()
-
-    if log_path.exists():
-        lines = log_path.read_text().strip().split('\n')
-        records = [json.loads(line) for line in lines if line.strip()]
-        updated = [r for r in records if r.get('event_type') == 'customer.updated']
-        assert len(updated) == 0
-
-
-@pytest.mark.asyncio
-async def test_add_attribute_emits_event(
-    service: CustomerService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """add_attribute emits customer.attribute.added."""
-    async with session_factory() as session:
-        customer = await service.create_customer(session, external_id='svc-attr-001')
-        await session.flush()
-        await service.add_attribute(session, customer.id, 'tier', 'gold')
-        await session.commit()
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    added = [r for r in records if r.get('event_type') == 'customer.attribute.added']
-    assert len(added) >= 1
-    assert added[-1]['payload']['key'] == 'tier'
 
 
 @pytest.mark.asyncio
@@ -218,36 +105,125 @@ async def test_add_attribute_duplicate_raises(
             await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# Event-emission tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_list_customers_no_event(
+async def test_create_customer_emits_inventory_customer_created(
     service: CustomerService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """list_customers does not emit any events."""
+    """create_customer emits inventory.customer.created with correct envelope fields."""
     async with session_factory() as session:
-        await service.create_customer(session, external_id='svc-list-001')
+        customer = await service.create_customer(
+            session,
+            external_id='svc-log-001',
+            plan_tier=CustomerPlanTier.pro,
+        )
         await session.commit()
 
-    # Clear log by tracking line count after create
-    lines_after_create = log_path.read_text().strip().split('\n') if log_path.exists() else []
-    count_before = len(lines_after_create)
-
-    async with session_factory() as session:
-        await service.list_customers(session)
-
-    lines_total = log_path.read_text().strip().split('\n') if log_path.exists() else []
-    # No new lines were added by list_customers
-    assert len(lines_total) == count_before
+    emitted = capturing_events.filter_by_type('inventory.customer.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.customers'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(customer.id)
+    assert envelope.causation_id is None
+    assert len(envelope.correlation_id) == 32
+    assert envelope.correlation_id == envelope.correlation_id.lower()
+    assert envelope.payload == {
+        'customer_id': str(customer.id),
+        'external_id': 'svc-log-001',
+        'tenant_id': None,
+        'plan_tier': 'pro',
+    }
 
 
 @pytest.mark.asyncio
-async def test_remove_attribute_emits_event(
+async def test_update_customer_emits_inventory_customer_updated(
     service: CustomerService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """remove_attribute emits customer.attribute.removed."""
+    """update_customer emits inventory.customer.updated with changed_fields."""
+    async with session_factory() as session:
+        customer = await service.create_customer(session, external_id='svc-upd-001')
+        await session.commit()
+        customer_id = customer.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        patch = CustomerPatch(is_locked=True)
+        await service.update_customer(session, customer_id, patch)
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.customer.updated')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.target_id == str(customer_id)
+    assert envelope.payload['changed_fields'] == ['is_locked']
+    assert envelope.payload['customer_id'] == str(customer_id)
+
+
+@pytest.mark.asyncio
+async def test_update_customer_no_op_emits_nothing(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_customer with no actual change emits zero envelopes (conditional guard).
+
+    Replaces log-era test_update_customer_noop_no_event. Equivalent contract for no-op PATCH.
+    """
+    async with session_factory() as session:
+        customer = await service.create_customer(session, external_id='svc-upd-noop', is_locked=False)
+        await session.commit()
+        customer_id = customer.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        patch = CustomerPatch(is_locked=False)
+        await service.update_customer(session, customer_id, patch)
+        await session.commit()
+
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_emits_inventory_customer_attribute_added(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """add_attribute emits inventory.customer.attribute_added with owning-parent target_id."""
+    async with session_factory() as session:
+        customer = await service.create_customer(session, external_id='svc-attr-001')
+        await session.flush()
+        customer_id = customer.id
+        capturing_events.emitted.clear()
+        await service.add_attribute(session, customer_id, 'tier', 'gold')
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.customer.attribute_added')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.target_id == str(customer_id)
+    assert envelope.payload == {'customer_id': str(customer_id), 'key': 'tier'}
+
+
+@pytest.mark.asyncio
+async def test_remove_attribute_emits_inventory_customer_attribute_removed(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """remove_attribute emits inventory.customer.attribute_removed with owning-parent target_id."""
     async with session_factory() as session:
         customer = await service.create_customer(session, external_id='svc-rmlog-001')
         await session.flush()
@@ -255,12 +231,178 @@ async def test_remove_attribute_emits_event(
         await session.commit()
         customer_id = customer.id
 
+    capturing_events.emitted.clear()
+
     async with session_factory() as session:
         await service.remove_attribute(session, customer_id, 'to_remove')
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    removed = [r for r in records if r.get('event_type') == 'customer.attribute.removed']
-    assert len(removed) >= 1
-    assert removed[-1]['payload']['key'] == 'to_remove'
+    emitted = capturing_events.filter_by_type('inventory.customer.attribute_removed')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.target_id == str(customer_id)
+    assert envelope.payload == {'customer_id': str(customer_id), 'key': 'to_remove'}
+
+
+@pytest.mark.asyncio
+async def test_list_customers_no_event(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """list_customers does not emit any events."""
+    async with session_factory() as session:
+        await service.create_customer(session, external_id='svc-list-001')
+        await session.commit()
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        await service.list_customers(session)
+
+    assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Drop-retrieved test (Q1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_customer_does_not_emit_event(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """get_customer emits nothing on found-path and missing-path (Q1 — customer.retrieved dropped,
+    audit deferred to future audit.* slice)."""
+    async with session_factory() as session:
+        customer = await service.create_customer(session, external_id='svc-get-drop-001')
+        await session.commit()
+        customer_id = customer.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        await service.get_customer(session, customer_id)
+
+    assert capturing_events.emitted == []
+
+    async with session_factory() as session:
+        await service.get_customer(session, uuid.uuid4())
+
+    assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Correlation-id plumbing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_customer_correlation_id_explicit(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_customer propagates an explicit correlation_id onto the envelope."""
+    async with session_factory() as session:
+        await service.create_customer(
+            session,
+            external_id='svc-corr-explicit-001',
+            correlation_id='trace-xyz-789',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.customer.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-xyz-789'
+
+
+@pytest.mark.asyncio
+async def test_create_customer_correlation_id_autogenerated(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_customer without correlation_id generates a 32-char hex string."""
+    async with session_factory() as session:
+        await service.create_customer(session, external_id='svc-corr-auto-001')
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.customer.created')
+    assert len(emitted) == 1
+    corr = emitted[0].correlation_id
+    assert len(corr) == 32
+    assert corr == corr.lower()
+    assert all(c in '0123456789abcdef' for c in corr)
+
+
+@pytest.mark.asyncio
+async def test_update_customer_correlation_id_autogenerated_independent_of_create(
+    service: CustomerService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_customer generates its own correlation_id, independent of the create call."""
+    async with session_factory() as session:
+        customer = await service.create_customer(
+            session,
+            external_id='svc-corr-ind-001',
+            correlation_id='A' * 32,
+        )
+        await session.commit()
+        customer_id = customer.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        patch = CustomerPatch(is_locked=True)
+        await service.update_customer(session, customer_id, patch)
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.customer.updated')
+    assert len(emitted) == 1
+    update_corr = emitted[0].correlation_id
+    assert update_corr != 'A' * 32
+    assert len(update_corr) == 32
+    assert all(c in '0123456789abcdef' for c in update_corr)
+
+
+# ---------------------------------------------------------------------------
+# Anti-dual-emit guard
+# ---------------------------------------------------------------------------
+
+
+def test_customer_service_has_no_log_attribute() -> None:
+    """CustomerService has no _log attribute after migration (anti-dual-emit guard)."""
+    svc = CustomerService()
+    assert getattr(svc, '_log', None) is None
+
+
+# ---------------------------------------------------------------------------
+# Coupling invariant tests
+# ---------------------------------------------------------------------------
+
+
+def test_customer_service_bare_construction_wires_subject_service_on_shared_noop_bus() -> None:
+    """CustomerService() bare wires SubjectService on the same noop_event_service instance.
+
+    Documents the default-branch sharing invariant: when no event_service is injected,
+    both CustomerService and its inner SubjectService share noop_event_service.
+    """
+    svc = CustomerService()
+    assert svc._subject_service is not None
+    assert svc._subject_service._events is svc._events
+
+
+def test_customer_service_explicit_event_service_propagates_to_default_subject_service(
+    event_service: EventService,
+) -> None:
+    """CustomerService(event_service=...) propagates it to the auto-constructed SubjectService.
+
+    Asserts the Step-17 coupling loop closure: when caller injects event_service but not
+    subject_service, the inner SubjectService shares the same bus.
+    """
+    svc = CustomerService(event_service=event_service)
+    assert svc._subject_service._events is event_service

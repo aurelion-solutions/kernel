@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -15,26 +13,28 @@ from src.inventory.subjects.models import SubjectKind, SubjectNHIKind
 from src.inventory.subjects.service import (
     SubjectService,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventEnvelope
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> SubjectService:
-    return SubjectService(log_service=log_service)
+def service(event_service: EventService) -> SubjectService:
+    return SubjectService(event_service=event_service)
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +111,8 @@ async def _make_subject_for_nhi(service, session, nhi, *, status: str = 'active'
     )
 
 
-def _status_changed_events(log_path: Path) -> list[dict]:
-    if not log_path.exists():
-        return []
-    lines = log_path.read_text().strip().split('\n')
-    return [
-        json.loads(line)
-        for line in lines
-        if line.strip() and json.loads(line).get('event_type') == 'subject.status_changed'
-    ]
+def _status_changed_events(capturing_events: CapturingEventService) -> list[EventEnvelope]:
+    return capturing_events.filter_by_type('inventory.subject.status_changed')
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +123,8 @@ def _status_changed_events(log_path: Path) -> list[dict]:
 @pytest.mark.asyncio
 async def test_recompute_status_unchanged_emits_no_event(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """No event when derived status equals stored status."""
     async with session_factory() as session:
@@ -139,6 +132,8 @@ async def test_recompute_status_unchanged_emits_no_event(
         subject = await _make_subject_for_customer(service, session, customer, status='registered')
         await session.commit()
         customer_id = customer.id
+
+    capturing_events.clear()
 
     async with session_factory() as session:
         result = await service.recompute_status_for_principal(
@@ -150,22 +145,24 @@ async def test_recompute_status_unchanged_emits_no_event(
 
     assert result is not None
     assert result.id == subject.id
-    events = _status_changed_events(log_path)
+    events = _status_changed_events(capturing_events)
     assert len(events) == 0
 
 
 @pytest.mark.asyncio
 async def test_recompute_status_changed_emits_event(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """Flipping is_locked=True on Customer triggers subject.status_changed."""
+    """Flipping is_locked=True on Customer triggers inventory.subject.status_changed."""
     async with session_factory() as session:
         customer = await _make_customer(session, is_locked=False, email_verified=True)
         await _make_subject_for_customer(service, session, customer, status='verified')
         await session.commit()
         customer_id = customer.id
+
+    capturing_events.clear()
 
     # Flip is_locked directly in DB to simulate CustomerService writing the field
     async with session_factory() as session:
@@ -186,9 +183,9 @@ async def test_recompute_status_changed_emits_event(
     assert result is not None
     assert result.status == 'suspended'
 
-    events = _status_changed_events(log_path)
+    events = _status_changed_events(capturing_events)
     assert len(events) == 1
-    payload = events[0]['payload']
+    payload = events[0].payload
     assert payload['new_status'] == 'suspended'
     assert payload['previous_status'] == 'verified'
     assert 'subject_id' in payload
@@ -198,8 +195,8 @@ async def test_recompute_status_changed_emits_event(
 @pytest.mark.asyncio
 async def test_recompute_status_changed_writes_previous_status_to_payload(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """previous_status in event payload matches the old stored status."""
     async with session_factory() as session:
@@ -207,6 +204,8 @@ async def test_recompute_status_changed_writes_previous_status_to_payload(
         await _make_subject_for_customer(service, session, customer, status='registered')
         await session.commit()
         customer_id = customer.id
+
+    capturing_events.clear()
 
     async with session_factory() as session:
         from src.inventory.customers.models import Customer
@@ -223,17 +222,17 @@ async def test_recompute_status_changed_writes_previous_status_to_payload(
         )
         await session.commit()
 
-    events = _status_changed_events(log_path)
+    events = _status_changed_events(capturing_events)
     assert len(events) == 1
-    assert events[0]['payload']['previous_status'] == 'registered'
-    assert events[0]['payload']['new_status'] == 'verified'
+    assert events[0].payload['previous_status'] == 'registered'
+    assert events[0].payload['new_status'] == 'verified'
 
 
 @pytest.mark.asyncio
 async def test_recompute_status_loads_principal_state_correctly(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """Employee kind: is_locked=True maps to on_leave."""
     async with session_factory() as session:
@@ -241,6 +240,8 @@ async def test_recompute_status_loads_principal_state_correctly(
         await _make_subject_for_employee(service, session, employee, status='active')
         await session.commit()
         employee_id = employee.id
+
+    capturing_events.clear()
 
     async with session_factory() as session:
         result = await service.recompute_status_for_principal(
@@ -253,22 +254,24 @@ async def test_recompute_status_loads_principal_state_correctly(
     assert result is not None
     assert result.status == 'on_leave'
 
-    events = _status_changed_events(log_path)
+    events = _status_changed_events(capturing_events)
     assert len(events) == 1
-    assert events[0]['payload']['new_status'] == 'on_leave'
+    assert events[0].payload['new_status'] == 'on_leave'
 
 
 @pytest.mark.asyncio
 async def test_recompute_subject_not_found_raises(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """Returns None (no error) when principal has no bound Subject (orphan)."""
     async with session_factory() as session:
         customer = await _make_customer(session)
         await session.commit()
         customer_id = customer.id
+
+    capturing_events.clear()
 
     async with session_factory() as session:
         result = await service.recompute_status_for_principal(
@@ -278,14 +281,14 @@ async def test_recompute_subject_not_found_raises(
         )
 
     assert result is None
-    assert len(_status_changed_events(log_path)) == 0
+    assert len(_status_changed_events(capturing_events)) == 0
 
 
 @pytest.mark.asyncio
 async def test_recompute_is_idempotent_on_second_call(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """Second call with same state emits no additional event."""
     async with session_factory() as session:
@@ -293,6 +296,8 @@ async def test_recompute_is_idempotent_on_second_call(
         await _make_subject_for_customer(service, session, customer, status='verified')
         await session.commit()
         customer_id = customer.id
+
+    capturing_events.clear()
 
     # First call: should flip verified -> suspended and emit one event
     async with session_factory() as session:
@@ -303,7 +308,7 @@ async def test_recompute_is_idempotent_on_second_call(
         )
         await session.commit()
 
-    count_after_first = len(_status_changed_events(log_path))
+    count_after_first = len(_status_changed_events(capturing_events))
     assert count_after_first == 1
 
     # Second call: status already suspended, no event
@@ -315,5 +320,34 @@ async def test_recompute_is_idempotent_on_second_call(
         )
         await session.commit()
 
-    count_after_second = len(_status_changed_events(log_path))
+    count_after_second = len(_status_changed_events(capturing_events))
     assert count_after_second == 1  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_recompute_propagates_explicit_correlation_id(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """recompute_status_for_principal passes caller-supplied correlation_id to envelope."""
+    async with session_factory() as session:
+        customer = await _make_customer(session, is_locked=True)
+        await _make_subject_for_customer(service, session, customer, status='verified')
+        await session.commit()
+        customer_id = customer.id
+
+    capturing_events.clear()
+
+    async with session_factory() as session:
+        await service.recompute_status_for_principal(
+            session,
+            kind=SubjectKind.customer,
+            principal_id=customer_id,
+            correlation_id='corr-recompute-999',
+        )
+        await session.commit()
+
+    events = _status_changed_events(capturing_events)
+    assert len(events) == 1
+    assert events[0].correlation_id == 'corr-recompute-999'

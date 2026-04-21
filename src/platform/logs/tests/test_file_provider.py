@@ -53,14 +53,14 @@ def _minimal(
     )
 
 
-def test_emit_writes_one_json_line_to_file(sink: FileLogSink, log_path: Path) -> None:
+async def test_emit_writes_one_json_line_to_file(sink: FileLogSink, log_path: Path) -> None:
     """emit writes one JSON line to file."""
     event = _minimal(
         event_type='test.emit',
         message='Hello',
         payload={'key': 'value'},
     )
-    sink.emit(event)
+    await sink.emit(event)
     content = log_path.read_text(encoding='utf-8')
     lines = content.strip().split('\n')
     assert len(lines) == 1
@@ -69,7 +69,7 @@ def test_emit_writes_one_json_line_to_file(sink: FileLogSink, log_path: Path) ->
     assert record['message'] == 'Hello'
 
 
-def test_repeated_emit_appends_multiple_lines(sink: FileLogSink, log_path: Path) -> None:
+async def test_repeated_emit_appends_multiple_lines(sink: FileLogSink, log_path: Path) -> None:
     """repeated emit appends multiple lines."""
     base_ts = datetime.now(UTC)
     for i in range(3):
@@ -79,7 +79,7 @@ def test_repeated_emit_appends_multiple_lines(sink: FileLogSink, log_path: Path)
             payload={'index': i},
             ts=base_ts,
         )
-        sink.emit(event)
+        await sink.emit(event)
     lines = log_path.read_text(encoding='utf-8').strip().split('\n')
     assert len(lines) == 3
     for i, line in enumerate(lines):
@@ -95,7 +95,7 @@ def test_file_path_configurable_via_env(monkeypatch: pytest.MonkeyPatch) -> None
     assert sink._path == Path('/custom/path/logs.jsonl')
 
 
-def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path: Path) -> None:
+async def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path: Path) -> None:
     """emitted JSON contains expected fields."""
     event = new_root_log_event(
         event_type='connector.command.published',
@@ -111,7 +111,7 @@ def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path: Path
         payload={'command': 'sync'},
         timestamp=datetime(2025, 3, 22, 12, 0, 0, tzinfo=UTC),
     )
-    sink.emit(event)
+    await sink.emit(event)
     record = json.loads(log_path.read_text(encoding='utf-8').strip())
     assert record['event_type'] == 'connector.command.published'
     assert record['level'] == 'info'
@@ -119,21 +119,22 @@ def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path: Path
     assert 'timestamp' in record
     assert record['component'] == 'connector-instance'
     assert record['payload'] == {'command': 'sync'}
-    assert record['causation_id'] is None
+    # causation_id is None for root events; exclude_none=True means the key is absent
+    assert record.get('causation_id') is None
     assert 'event_id' in record
     assert 'correlation_id' in record
 
 
-def test_parent_directory_created_if_missing(tmp_path: Path) -> None:
+async def test_parent_directory_created_if_missing(tmp_path: Path) -> None:
     """parent directory created if missing."""
     nested = tmp_path / 'a' / 'b' / 'c' / 'logs.jsonl'
     sink = FileLogSink(path=nested)
-    sink.emit(_minimal())
+    await sink.emit(_minimal())
     assert nested.exists()
     assert nested.parent.exists()
 
 
-def test_payload_extras_serialized(sink: FileLogSink, log_path: Path) -> None:
+async def test_payload_extras_serialized(sink: FileLogSink, log_path: Path) -> None:
     """Arbitrary payload keys serialize with the event."""
     task_id = uuid4()
     app_id = uuid4()
@@ -160,7 +161,7 @@ def test_payload_extras_serialized(sink: FileLogSink, log_path: Path) -> None:
             'stacktrace': 'Traceback...',
         },
     )
-    sink.emit(event)
+    await sink.emit(event)
     record = json.loads(log_path.read_text(encoding='utf-8').strip())
     p = record['payload']
     assert p['task_id'] == str(task_id)

@@ -58,6 +58,7 @@ async def create_subject(
         raise HTTPException(status_code=422, detail='Referenced principal entity does not exist') from None
     except SubjectPrincipalAlreadyBoundError:
         raise HTTPException(status_code=409, detail='Principal is already bound to a Subject') from None
+    await session.commit()
     return SubjectRead.model_validate(subject)
 
 
@@ -100,6 +101,7 @@ async def update_subject(
         raise HTTPException(status_code=404, detail='Subject not found') from None
     except InvalidSubjectStatusForKindError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
     return SubjectRead.model_validate(subject)
 
 
@@ -143,6 +145,7 @@ async def add_subject_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this subject: {body.key}',
         ) from None
+    await session.commit()
     return SubjectAttributeRead.model_validate(attr)
 
 
@@ -160,3 +163,4 @@ async def remove_subject_attribute(
         raise HTTPException(status_code=404, detail='Subject not found') from None
     except SubjectAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Subject attribute not found') from None
+    await session.commit()

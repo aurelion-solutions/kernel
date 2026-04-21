@@ -13,7 +13,7 @@ from src.platform.logs.schemas import LogEvent
 class LogSink(Protocol):
     """Minimal contract for log sinks. All providers must implement this."""
 
-    def emit(self, event: LogEvent) -> None:
+    async def emit(self, event: LogEvent) -> None:
         """Emit a log event to the backend."""
         ...
 

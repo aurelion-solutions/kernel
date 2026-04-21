@@ -10,12 +10,7 @@ from src.core.db.session import SessionLocal
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
     async with SessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+        yield session
 
 
 def get_session_factory() -> async_sessionmaker:

@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Account service for coordinating repository and log emission."""
+"""Account service for coordinating repository and event emission."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -21,8 +22,8 @@ from src.inventory.accounts.repository import (
     update_account as repo_update_account,
 )
 from src.inventory.accounts.schemas import AccountPatch
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.accounts'
 
@@ -44,31 +45,18 @@ class AccountSubjectNotFoundError(Exception):
 
 
 class AccountService:
-    """Orchestrates account read/list/update and log emission."""
+    """Orchestrates account read/list/update and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def get_account(
         self,
         session: AsyncSession,
         account_id: uuid.UUID,
     ) -> Account | None:
-        """Get account by id. Emits account.retrieved when found."""
-        account = await repo_get_account_by_id(session, account_id)
-        if account is not None:
-            self._log.emit_safe(
-                'account.retrieved',
-                LogLevel.INFO,
-                'Account retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'account_id': str(account_id)},
-                    actor_component=_COMPONENT,
-                    target_id='account',
-                ),
-            )
-        return account
+        """Get account by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_account_by_id(session, account_id)
 
     async def list_accounts(
         self,
@@ -91,8 +79,9 @@ class AccountService:
         session: AsyncSession,
         account_id: uuid.UUID,
         patch: AccountPatch,
+        correlation_id: str | None = None,
     ) -> Account:
-        """Apply partial update and emit account.updated if fields changed."""
+        """Apply partial update and emit inventory.account.updated if fields changed."""
         account = await repo_get_account_by_id(session, account_id)
         if account is None:
             raise AccountNotFoundError(account_id)
@@ -111,18 +100,21 @@ class AccountService:
             raise
 
         if changed:
-            self._log.emit_safe(
-                'account.updated',
-                LogLevel.INFO,
-                'Account updated',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='inventory.account.updated',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
                         'account_id': str(account_id),
                         'changed_fields': sorted(changed),
                     },
-                    actor_component=_COMPONENT,
-                    target_id='account',
-                ),
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=str(account.id),
+                )
             )
         return account

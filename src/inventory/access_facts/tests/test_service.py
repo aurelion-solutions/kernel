@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -18,26 +16,28 @@ from src.inventory.access_facts.service import (
     DuplicateAccessFactError,
 )
 from src.inventory.enums import Action
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> AccessFactService:
-    return AccessFactService(log_service=log_service)
+def service(event_service: EventService) -> AccessFactService:
+    return AccessFactService(event_service=event_service)
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +100,10 @@ async def _make_prerequisites(session) -> dict:
 @pytest.mark.asyncio
 async def test_create_fact_happy_path(
     service: AccessFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """create_fact creates fact and emits access_fact.created event."""
+    """create_fact creates fact and emits inventory.access_fact.created event."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         fact = await service.create_fact(
@@ -122,16 +122,18 @@ async def test_create_fact_happy_path(
     assert fact.action == Action.read
     assert fact.effect == AccessFactEffect.allow
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'access_fact.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'inventory.access_facts'
-    assert 'access_fact_id' in created[-1]['payload']
-    assert created[-1]['payload']['subject_id'] == str(ids['subject_id'])
-    assert created[-1]['payload']['resource_id'] == str(ids['resource_id'])
-    assert created[-1]['payload']['action'] == 'read'
-    assert created[-1]['payload']['effect'] == 'allow'
+    emitted = capturing_events.filter_by_type('inventory.access_fact.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.payload['access_fact_id'] == str(fact.id)
+    assert envelope.payload['subject_id'] == str(ids['subject_id'])
+    assert envelope.payload['resource_id'] == str(ids['resource_id'])
+    assert envelope.payload['action'] == 'read'
+    assert envelope.payload['effect'] == 'allow'
+    assert envelope.actor_id == 'inventory.access_facts'
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(fact.id)
 
 
 @pytest.mark.asyncio
@@ -168,9 +170,10 @@ async def test_create_fact_duplicate(
 @pytest.mark.asyncio
 async def test_create_fact_bad_subject_id(
     service: AccessFactService,
+    capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """create_fact raises AccessFactForeignKeyError for unknown subject_id."""
+    """create_fact raises AccessFactForeignKeyError for unknown subject_id; no event emitted."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         with pytest.raises(AccessFactForeignKeyError):
@@ -183,14 +186,16 @@ async def test_create_fact_bad_subject_id(
                 effect=AccessFactEffect.allow,
             )
 
+    assert capturing_events.emitted == []
+
 
 @pytest.mark.asyncio
-async def test_get_fact_found(
+async def test_get_fact_does_not_emit_event(
     service: AccessFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_fact returns fact and emits access_fact.retrieved."""
+    """get_fact returns fact without emitting any event (Q1 — read-side audit dropped)."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         fact = await service.create_fact(
@@ -204,26 +209,24 @@ async def test_get_fact_found(
         await session.commit()
         fact_id = fact.id
 
+    # Reset captured events so only get_fact's effect is observed
+    capturing_events.clear()
+
     async with session_factory() as session:
         found = await service.get_fact(session, fact_id)
 
     assert found is not None
     assert found.id == fact_id
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'access_fact.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'inventory.access_facts'
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_invalidate_fact(
     service: AccessFactService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """invalidate_fact sets valid_until and emits access_fact.invalidated at WARNING."""
+    """invalidate_fact sets valid_until and emits inventory.access_fact.invalidated."""
     async with session_factory() as session:
         ids = await _make_prerequisites(session)
         fact = await service.create_fact(
@@ -237,21 +240,23 @@ async def test_invalidate_fact(
         await session.commit()
         fact_id = fact.id
 
+    capturing_events.clear()
+
     async with session_factory() as session:
         updated = await service.invalidate_fact(session, fact_id)
         await session.commit()
 
     assert updated.valid_until is not None
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    invalidated = [r for r in records if r.get('event_type') == 'access_fact.invalidated']
-    assert len(invalidated) >= 1
-    last = invalidated[-1]
-    assert last['component'] == 'inventory.access_facts'
-    assert last['level'] == 'warning'
-    assert 'access_fact_id' in last['payload']
-    assert 'at' in last['payload']
+    emitted = capturing_events.filter_by_type('inventory.access_fact.invalidated')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.payload['access_fact_id'] == str(fact_id)
+    assert 'at' in envelope.payload
+    assert envelope.actor_id == 'inventory.access_facts'
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(fact_id)
 
 
 @pytest.mark.asyncio
@@ -358,3 +363,55 @@ async def test_create_fact_on_duplicate_does_not_rollback_outer_transaction(
         still_alive = await session.get(Resource, ids['resource_id'])
         assert still_alive is not None
         assert still_alive.id == ids['resource_id']
+
+
+@pytest.mark.asyncio
+async def test_create_fact_propagates_correlation_id(
+    service: AccessFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_fact propagates an explicit correlation_id into the envelope."""
+    async with session_factory() as session:
+        ids = await _make_prerequisites(session)
+        await service.create_fact(
+            session,
+            subject_id=ids['subject_id'],
+            account_id=None,
+            resource_id=ids['resource_id'],
+            action=Action.read,
+            effect=AccessFactEffect.allow,
+            correlation_id='trace-abc',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.access_fact.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-abc'
+
+
+@pytest.mark.asyncio
+async def test_create_fact_generates_correlation_id_when_omitted(
+    service: AccessFactService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_fact generates a uuid4 hex correlation_id when caller omits it."""
+    async with session_factory() as session:
+        ids = await _make_prerequisites(session)
+        await service.create_fact(
+            session,
+            subject_id=ids['subject_id'],
+            account_id=None,
+            resource_id=ids['resource_id'],
+            action=Action.write,
+            effect=AccessFactEffect.allow,
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.access_fact.created')
+    assert len(emitted) == 1
+    cid = emitted[0].correlation_id
+    assert isinstance(cid, str)
+    assert len(cid) == 32  # uuid4().hex = 32 hex chars
+    assert cid.isalnum()

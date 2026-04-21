@@ -88,6 +88,7 @@ async def create_ownership_assignment(
         raise HTTPException(status_code=422, detail=exc.detail) from exc
     except OwnershipAssignmentDuplicateError as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
+    await session.commit()
     return OwnershipAssignmentRead.model_validate(assignment)
 
 
@@ -102,4 +103,5 @@ async def delete_ownership_assignment(
         await service.delete_assignment(session, assignment_id)
     except OwnershipAssignmentNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Ownership assignment not found') from exc
+    await session.commit()
     return Response(status_code=204)

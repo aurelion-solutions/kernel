@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Initiative service — business logic and operational log emission."""
+"""Initiative service — business logic and event emission."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ from src.inventory.initiatives.repository import (
     update_initiative as repo_update_initiative,
 )
 from src.inventory.initiatives.schemas import InitiativePatch
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.initiatives'
 
@@ -53,10 +53,10 @@ class InitiativeEmptyPatchError(Exception):
 
 
 class InitiativeService:
-    """Orchestrates initiative creation, retrieval, and operational log emission."""
+    """Orchestrates initiative CRUD and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_initiative(
         self,
@@ -67,8 +67,9 @@ class InitiativeService:
         origin: str,
         valid_from: datetime | None = None,
         valid_until: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> Initiative:
-        """Create an initiative. Validates FK existence before insert."""
+        """Create an initiative. Validates FK existence before insert. Emits inventory.initiative.created."""
         from src.inventory.access_facts.models import AccessFact
 
         fact = await session.get(AccessFact, access_fact_id)
@@ -91,13 +92,14 @@ class InitiativeService:
                 raise InitiativeForeignKeyError(f'Access fact not found: {access_fact_id}') from exc
             raise
 
-        self._log.emit_safe(
-            'initiative.created',
-            LogLevel.INFO,
-            'Initiative created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.initiative.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'initiative_id': str(initiative.id),
                     'access_fact_id': str(access_fact_id),
                     'type': type_.value,
@@ -105,9 +107,11 @@ class InitiativeService:
                     'valid_from': str(initiative.valid_from),
                     'valid_until': str(initiative.valid_until) if initiative.valid_until is not None else None,
                 },
-                actor_component=_COMPONENT,
-                target_id='initiative',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(initiative.id),
+            )
         )
         return initiative
 
@@ -116,21 +120,10 @@ class InitiativeService:
         session: AsyncSession,
         initiative_id: uuid.UUID,
     ) -> Initiative | None:
-        """Get initiative by id. Logs retrieval when found."""
-        initiative = await repo_get_initiative_by_id(session, initiative_id)
-        if initiative is not None:
-            self._log.emit_safe(
-                'initiative.retrieved',
-                LogLevel.INFO,
-                'Initiative retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'initiative_id': str(initiative_id)},
-                    actor_component=_COMPONENT,
-                    target_id='initiative',
-                ),
-            )
-        return initiative
+        """Get initiative by id. No event emitted (Q1 — retrieved signal dropped,
+        audit deferred to future audit.* slice).
+        """
+        return await repo_get_initiative_by_id(session, initiative_id)
 
     async def list_initiatives(
         self,
@@ -155,8 +148,13 @@ class InitiativeService:
         session: AsyncSession,
         initiative_id: uuid.UUID,
         payload: InitiativePatch,
+        correlation_id: str | None = None,
     ) -> Initiative:
-        """Partially update an initiative. Emits updated and optionally expired events."""
+        """Apply partial update to initiative.
+
+        Emits inventory.initiative.updated when values actually change.
+        Emits inventory.initiative.expired when valid_until transitions an active initiative into the past.
+        """
         fields_set = payload.model_fields_set
         if not fields_set:
             raise InitiativeEmptyPatchError
@@ -165,47 +163,59 @@ class InitiativeService:
         if initiative is None:
             raise InitiativeNotFoundError(initiative_id)
 
-        now_utc = datetime.now(UTC)
+        patch_fields = payload.model_dump(exclude_unset=True)
+        # Snapshot BEFORE repo_update flushes setattr mutations — all Initiative mutable fields are
+        # immutable Python values (str/datetime/Enum), so identity-equal comparison via != is safe.
+        previous_values = {field: getattr(initiative, field) for field in patch_fields}
         previous_valid_until = cast(datetime | None, initiative.valid_until)
+        now_utc = datetime.now(UTC)
 
-        changes = payload.model_dump(exclude_unset=True)
-        initiative = await repo_update_initiative(session, initiative, fields=changes)
+        initiative = await repo_update_initiative(session, initiative, fields=patch_fields)
 
-        self._log.emit_safe(
-            'initiative.updated',
-            LogLevel.INFO,
-            'Initiative updated',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
-                    'initiative_id': str(initiative_id),
-                    'access_fact_id': str(initiative.access_fact_id),
-                    'changed_fields': sorted(list(changes.keys())),
-                },
-                actor_component=_COMPONENT,
-                target_id='initiative',
-            ),
-        )
+        changed_fields = {field for field, prev in previous_values.items() if getattr(initiative, field) != prev}
 
-        if 'valid_until' in changes:
+        if changed_fields:
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='inventory.initiative.updated',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
+                        'initiative_id': str(initiative_id),
+                        'access_fact_id': str(initiative.access_fact_id),
+                        'changed_fields': sorted(changed_fields),
+                    },
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=str(initiative.id),
+                )
+            )
+
+        if 'valid_until' in patch_fields:
             new_valid_until = cast(datetime | None, initiative.valid_until)
             was_active = previous_valid_until is None or previous_valid_until > now_utc
             is_expired = new_valid_until is not None and new_valid_until <= now_utc
             if was_active and is_expired:
-                self._log.emit_safe(
-                    'initiative.expired',
-                    LogLevel.WARNING,
-                    'Initiative expired',
-                    _COMPONENT,
-                    merge_emit_log_participant_fields(
-                        {
+                await self._events.emit(
+                    EventEnvelope(
+                        event_id=uuid.uuid4(),
+                        event_type='inventory.initiative.expired',
+                        occurred_at=datetime.now(UTC),
+                        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                        causation_id=None,
+                        payload={
                             'initiative_id': str(initiative_id),
                             'access_fact_id': str(initiative.access_fact_id),
                             'at': str(new_valid_until),
                         },
-                        actor_component=_COMPONENT,
-                        target_id='initiative',
-                    ),
+                        actor_kind=EventParticipantKind.CAPABILITY,
+                        actor_id=_COMPONENT,
+                        target_kind=EventParticipantKind.SYSTEM,
+                        target_id=str(initiative.id),
+                    )
                 )
 
         return initiative

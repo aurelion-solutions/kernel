@@ -4,12 +4,18 @@
 
 """Initiative route dependencies."""
 
+import os
+
 from src.inventory.initiatives.service import InitiativeService
-from src.platform.logs.factory import log_sink_factory
-from src.platform.logs.service import LogService
+from src.platform.events.factory import event_sink_factory
+from src.platform.events.service import EventService
+
+
+def _get_events_provider() -> str:
+    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
 
 
 def get_initiative_service() -> InitiativeService:
-    """Return InitiativeService with injected log service."""
-    log_service = LogService(factory=log_sink_factory)
-    return InitiativeService(log_service=log_service)
+    """Return InitiativeService with injected EventService."""
+    event_service = EventService(sink=event_sink_factory.get(_get_events_provider()))
+    return InitiativeService(event_service=event_service)

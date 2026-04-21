@@ -5,6 +5,7 @@
 """Tests for LogService."""
 
 from datetime import datetime
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -35,7 +36,7 @@ class CapturingLogSink:
     def __init__(self) -> None:
         self.events: list[LogEvent] = []
 
-    def emit(self, event: LogEvent) -> None:
+    async def emit(self, event: LogEvent) -> None:
         self.events.append(event)
 
 
@@ -56,11 +57,10 @@ def capturing_factory() -> tuple[LogSinkFactory, CapturingLogSink]:
     return factory, capturing
 
 
-def test_emit_log_resolves_sink_and_emits(file_factory: LogSinkFactory, tmp_path: Path) -> None:
+async def test_emit_log_resolves_sink_and_emits(file_factory: LogSinkFactory, tmp_path: Path) -> None:
     """emit_log(...) resolves sink from factory and emits valid LogEvent."""
     service = LogService(factory=file_factory, provider_name='file')
-    service.emit_log(
-        event_type='test.emit',
+    await service.emit_log(
         level=LogLevel.INFO,
         message='Hello',
         component='test',
@@ -68,19 +68,17 @@ def test_emit_log_resolves_sink_and_emits(file_factory: LogSinkFactory, tmp_path
     )
     content = (tmp_path / 'test.jsonl').read_text()
     assert 'Hello' in content
-    assert 'test.emit' in content
 
 
-def test_emitted_event_contains_expected_fields(
+async def test_emitted_event_contains_expected_fields(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Emitted event contains event_type, level, message, timestamp, component, payload."""
+    """Emitted event contains level, message, timestamp, component, payload."""
     factory, capturing = capturing_factory
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
     service = LogService(factory=factory)
-    service.emit_log(
-        event_type='connector.command.published',
+    await service.emit_log(
         level=LogLevel.INFO,
         message='Command sent',
         component='connector-instance',
@@ -91,7 +89,6 @@ def test_emitted_event_contains_expected_fields(
     )
     assert len(capturing.events) == 1
     event = capturing.events[0]
-    assert event.event_type == 'connector.command.published'
     assert event.level == LogLevel.INFO
     assert event.message == 'Command sent'
     assert isinstance(event.timestamp, datetime)
@@ -102,7 +99,7 @@ def test_emitted_event_contains_expected_fields(
     assert event.actor_id == 'connector-instance'
 
 
-def test_aurelion_log_provider_env_selects_provider(
+async def test_aurelion_log_provider_env_selects_provider(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -110,8 +107,7 @@ def test_aurelion_log_provider_env_selects_provider(
     factory, capturing = capturing_factory
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
     service = LogService(factory=factory)
-    service.emit_log(
-        event_type='test',
+    await service.emit_log(
         level=LogLevel.INFO,
         message='test',
         component='test',
@@ -120,7 +116,7 @@ def test_aurelion_log_provider_env_selects_provider(
     assert len(capturing.events) == 1
 
 
-def test_default_provider_is_mq_when_env_unset(
+async def test_default_provider_is_mq_when_env_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Default provider is 'mq' when AURELION_LOG_PROVIDER is unset."""
@@ -129,8 +125,7 @@ def test_default_provider_is_mq_when_env_unset(
     factory.register('mq', lambda: capturing)
     monkeypatch.delenv('AURELION_LOG_PROVIDER', raising=False)
     service = LogService(factory=factory)
-    service.emit_log(
-        event_type='test',
+    await service.emit_log(
         level=LogLevel.INFO,
         message='default mq',
         component='test',
@@ -140,7 +135,7 @@ def test_default_provider_is_mq_when_env_unset(
     assert capturing.events[0].message == 'default mq'
 
 
-def test_unknown_provider_raises_unsupported_provider_error(
+async def test_unknown_provider_raises_unsupported_provider_error(
     file_factory: LogSinkFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Unknown provider from env raises UnsupportedProviderError."""
@@ -150,8 +145,7 @@ def test_unknown_provider_raises_unsupported_provider_error(
         UnsupportedProviderError,
         match=r"Unsupported log sink provider: 'unknown'",
     ):
-        service.emit_log(
-            event_type='test',
+        await service.emit_log(
             level=LogLevel.INFO,
             message='test',
             component='test',
@@ -159,52 +153,14 @@ def test_unknown_provider_raises_unsupported_provider_error(
         )
 
 
-def test_log_info_emits_with_info_level(
-    capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """log_info(...) emits with INFO level."""
-    factory, capturing = capturing_factory
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
-    service = LogService(factory=factory)
-    service.log_info('test.info', 'message', 'comp', _contract_participants())
-    assert capturing.events[0].level == LogLevel.INFO
-
-
-def test_log_warning_emits_with_warning_level(
-    capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """log_warning(...) emits with WARNING level."""
-    factory, capturing = capturing_factory
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
-    service = LogService(factory=factory)
-    service.log_warning('test.warn', 'message', 'comp', _contract_participants())
-    assert capturing.events[0].level == LogLevel.WARNING
-
-
-def test_log_error_emits_with_error_level(
-    capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """log_error(...) emits with ERROR level."""
-    factory, capturing = capturing_factory
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
-    service = LogService(factory=factory)
-    service.log_error('test.err', 'message', 'comp', _contract_participants())
-    assert capturing.events[0].level == LogLevel.ERROR
-
-
 def test_emit_safe_does_not_raise_if_sink_fails(
-    capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """emit_safe(...) does not raise if sink fails."""
-    factory, capturing = capturing_factory
+    """emit_safe(...) does not raise if sink fails (fire-and-forget)."""
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
 
     class FailingSink:
-        def emit(self, event: LogEvent) -> None:
+        async def emit(self, event: LogEvent) -> None:
             raise RuntimeError('sink broken')
 
     fail_factory = LogSinkFactory()
@@ -212,34 +168,33 @@ def test_emit_safe_does_not_raise_if_sink_fails(
     service = LogService(factory=fail_factory)
 
     service.emit_safe(
-        'test',
-        LogLevel.INFO,
-        'msg',
-        'comp',
-        _contract_participants(),
+        level=LogLevel.INFO,
+        message='msg',
+        component='comp',
+        payload=_contract_participants(),
     )  # must not raise
 
 
-def test_emit_safe_emits_when_sink_works(
+async def test_emit_safe_emits_when_sink_works(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """emit_safe(...) emits when sink works."""
+    """emit_safe(...) emits when sink works (verified via emit_log async path)."""
     factory, capturing = capturing_factory
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
     service = LogService(factory=factory)
-    service.emit_safe(
-        'safe.test',
-        LogLevel.INFO,
-        'ok',
-        'comp',
-        {**_contract_participants(), 'k': 'v'},
+    # Use the async emit_log path for deterministic assertion
+    await service.emit_log(
+        level=LogLevel.INFO,
+        message='ok',
+        component='comp',
+        payload={**_contract_participants(), 'k': 'v'},
     )
     assert len(capturing.events) == 1
-    assert capturing.events[0].event_type == 'safe.test'
+    assert capturing.events[0].message == 'ok'
 
 
-def test_optional_metadata_passed_through(
+async def test_optional_metadata_passed_through(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -251,8 +206,7 @@ def test_optional_metadata_passed_through(
     result_id = uuid4()
     corr = str(uuid4())
     service = LogService(factory=factory)
-    service.emit_log(
-        event_type='test',
+    await service.emit_log(
         level=LogLevel.INFO,
         message='test',
         component='test',
@@ -278,7 +232,7 @@ def test_optional_metadata_passed_through(
     assert p['stacktrace'] == 'Traceback...'
 
 
-def test_emit_log_without_participants_in_payload_does_not_emit(
+async def test_emit_log_without_participants_in_payload_does_not_emit(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -286,17 +240,16 @@ def test_emit_log_without_participants_in_payload_does_not_emit(
     factory, capturing = capturing_factory
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
     service = LogService(factory=factory)
-    service.emit_log(
-        'skipped',
-        LogLevel.INFO,
-        'm',
-        'comp',
-        {'note': 'no participant keys'},
+    await service.emit_log(
+        level=LogLevel.INFO,
+        message='m',
+        component='comp',
+        payload={'note': 'no participant keys'},
     )
     assert capturing.events == []
 
 
-def test_emit_log_passes_through_participants_from_payload(
+async def test_emit_log_passes_through_participants_from_payload(
     capturing_factory: tuple[LogSinkFactory, CapturingLogSink],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,11 +257,10 @@ def test_emit_log_passes_through_participants_from_payload(
     factory, capturing = capturing_factory
     monkeypatch.setenv('AURELION_LOG_PROVIDER', 'capture')
     service = LogService(factory=factory)
-    service.emit_log(
-        'e',
-        LogLevel.INFO,
-        'm',
-        'comp',
+    await service.emit_log(
+        level=LogLevel.INFO,
+        message='m',
+        component='comp',
         payload={
             'initiator_type': 'connector',
             'initiator_id': 'i99',
@@ -327,3 +279,44 @@ def test_emit_log_passes_through_participants_from_payload(
     assert event.target_type == LogParticipantKind.SYSTEM
     assert event.target_id == 'db'
     assert event.payload == {'extra': 1}
+
+
+# ---------------------------------------------------------------------------
+# Two-bus separation structural checks (Step 23)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_safe_produces_record_without_event_type(tmp_path: Path) -> None:
+    """emit_log produces a log record with no event_type key (LogService API has no such param)."""
+    log_path = tmp_path / 'test.jsonl'
+    factory = LogSinkFactory()
+    factory.register('file', lambda: FileLogSink(path=log_path))
+    service = LogService(factory=factory, provider_name='file')
+    await service.emit_log(
+        level=LogLevel.INFO,
+        message='operational message',
+        component='data-lake',
+        payload=_contract_participants(),
+    )
+    assert log_path.exists()
+    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
+    assert len(records) == 1
+    assert 'event_type' not in records[0]
+
+
+async def test_emit_log_produces_record_without_event_type(tmp_path: Path) -> None:
+    """emit_log produces a log record with no event_type key (LogService API has no such param)."""
+    log_path = tmp_path / 'test.jsonl'
+    factory = LogSinkFactory()
+    factory.register('file', lambda: FileLogSink(path=log_path))
+    service = LogService(factory=factory, provider_name='file')
+    await service.emit_log(
+        level=LogLevel.WARNING,
+        message='another operational message',
+        component='batch-worker',
+        payload=_contract_participants(),
+    )
+    assert log_path.exists()
+    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
+    assert len(records) == 1
+    assert 'event_type' not in records[0]

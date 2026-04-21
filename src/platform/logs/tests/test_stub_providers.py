@@ -70,11 +70,11 @@ def test_stub_is_runtime_checkable_with_log_sink(stub_cls: type[LogSink]) -> Non
 
 
 @pytest.mark.parametrize('stub_cls', _STUBS)
-def test_stub_emit_raises_not_implemented_error(stub_cls: type[LogSink]) -> None:
+async def test_stub_emit_raises_not_implemented_error(stub_cls: type[LogSink]) -> None:
     """Each stub emit() raises NotImplementedError."""
     sink = stub_cls()
     with pytest.raises(NotImplementedError, match='Stub provider not implemented'):
-        sink.emit(_make_event())
+        await sink.emit(_make_event())
 
 
 @pytest.mark.parametrize('name,cls', _PROVIDER_NAMES)
@@ -85,11 +85,10 @@ def test_factory_get_returns_correct_stub(name: str, cls: type[LogSink]) -> None
 
 
 def test_list_names_includes_all_default_providers() -> None:
-    """list_names() includes every default-registered provider."""
+    """list_names() includes every default-registered provider (mq wired in lifespan)."""
     names = log_sink_factory.list_names()
     expected = {
         'file',
-        'mq',
         'elk',
         'loki',
         'seq',

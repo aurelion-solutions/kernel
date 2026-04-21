@@ -18,25 +18,7 @@ class Settings(BaseSettings):
     #: Max age of rows in ``log_event_buffer`` (by event ``timestamp``) before cleanup deletes them.
     log_buffer_retention_seconds: int = Field(default=3600, ge=1)
 
-    cors_allow_origins: str = ''
-
-    @field_validator('cors_allow_origins', mode='before')
-    @classmethod
-    def _coerce_cors_allow_origins(cls, v):
-        if v is None:
-            return ''
-        if isinstance(v, str):
-            return v
-        if isinstance(v, list):
-            return ','.join(str(x) for x in v)
-        return str(v)
-
-    @property
-    def cors_allow_origins_list(self) -> list[str]:
-        s = (self.cors_allow_origins or '').strip()
-        if not s:
-            return []
-        return [p.strip() for p in s.split(',') if p.strip()]
+    cors_allow_origins: list[str] = ['*']
 
     @field_validator('cors_allow_origins', mode='before')
     @classmethod

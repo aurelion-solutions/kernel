@@ -52,12 +52,12 @@ async def create_application(
     except IntegrityError as exc:
         _discriminate_integrity_error(exc, request.code)
     await session.refresh(app)
+    # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
     log.emit_safe(
-        'application.created',
-        LogLevel.INFO,
-        'Application created',
-        'applications',
-        merge_emit_capability_trace_fields(
+        level=LogLevel.INFO,
+        message='Application created',
+        component='applications',
+        payload=merge_emit_capability_trace_fields(
             {
                 'application_id': str(app.id),
                 'name': app.name,
@@ -81,12 +81,12 @@ async def update_application(
     log = log_service if log_service is not None else noop_log_service
     app = await get_application_by_id(session, application_id)
     if app is None:
+        # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
         log.emit_safe(
-            'application.not_found',
-            LogLevel.WARNING,
-            f'Application {application_id} not found',
-            'applications',
-            merge_emit_capability_trace_fields(
+            level=LogLevel.WARNING,
+            message=f'Application {application_id} not found',
+            component='applications',
+            payload=merge_emit_capability_trace_fields(
                 {'application_id': str(application_id)},
                 capability_id='applications',
                 target_id=str(application_id),
@@ -109,12 +109,12 @@ async def update_application(
     except IntegrityError as exc:
         _discriminate_integrity_error(exc, request.code or app.code)
     await session.refresh(app)
+    # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
     log.emit_safe(
-        'application.updated',
-        LogLevel.INFO,
-        'Application updated',
-        'applications',
-        merge_emit_capability_trace_fields(
+        level=LogLevel.INFO,
+        message='Application updated',
+        component='applications',
+        payload=merge_emit_capability_trace_fields(
             {
                 'application_id': str(app.id),
                 'code': app.code,
@@ -135,12 +135,12 @@ async def delete_application(
     log = log_service if log_service is not None else noop_log_service
     app = await get_application_by_id(session, application_id)
     if app is None:
+        # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
         log.emit_safe(
-            'application.not_found',
-            LogLevel.WARNING,
-            f'Application {application_id} not found',
-            'applications',
-            merge_emit_capability_trace_fields(
+            level=LogLevel.WARNING,
+            message=f'Application {application_id} not found',
+            component='applications',
+            payload=merge_emit_capability_trace_fields(
                 {'application_id': str(application_id)},
                 capability_id='applications',
                 target_id=str(application_id),
@@ -149,12 +149,12 @@ async def delete_application(
         )
         raise ApplicationNotFoundError(f'Application {application_id} not found')
     await session.delete(app)
+    # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
     log.emit_safe(
-        'application.deleted',
-        LogLevel.INFO,
-        'Application deleted',
-        'applications',
-        merge_emit_capability_trace_fields(
+        level=LogLevel.INFO,
+        message='Application deleted',
+        component='applications',
+        payload=merge_emit_capability_trace_fields(
             {'application_id': str(application_id)},
             capability_id='applications',
             target_id=str(application_id),

@@ -77,6 +77,7 @@ async def create_initiative(
         )
     except InitiativeForeignKeyError as exc:
         raise HTTPException(status_code=422, detail=exc.detail) from exc
+    await session.commit()
     return InitiativeRead.model_validate(initiative)
 
 
@@ -94,4 +95,5 @@ async def update_initiative(
         raise HTTPException(status_code=404, detail='Initiative not found') from exc
     except InitiativeEmptyPatchError as exc:
         raise HTTPException(status_code=422, detail='At least one field must be provided') from exc
+    await session.commit()
     return InitiativeRead.model_validate(initiative)

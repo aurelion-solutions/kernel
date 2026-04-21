@@ -42,7 +42,7 @@ async def post_connector_results(
             status_code=404,
             detail=f'Application {err.application_id} not found',
         ) from err
-
+    await session.commit()
     return ConnectorResultIngestResponse(
         task_id=request.task_id,
         result_id=request.result_id,

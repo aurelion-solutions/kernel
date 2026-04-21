@@ -48,6 +48,7 @@ async def create_employee_record(
             status_code=404,
             detail='Application not found',
         ) from None
+    await session.commit()
     return EmployeeRecordRead.model_validate(record)
 
 
@@ -117,6 +118,7 @@ async def add_employee_record_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this employee record: {body.key}',
         ) from None
+    await session.commit()
     return EmployeeRecordAttributeRead.model_validate(attr)
 
 
@@ -134,3 +136,4 @@ async def remove_employee_record_attribute(
         raise HTTPException(status_code=404, detail='Employee record not found') from None
     except EmployeeRecordAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Employee record attribute not found') from None
+    await session.commit()

@@ -274,19 +274,119 @@ def test_log_sink_is_runtime_checkable():
     assert hasattr(LogSink, '__instancecheck__')
 
 
-def test_minimal_mock_implementation_satisfies_log_sink():
+async def test_minimal_mock_implementation_satisfies_log_sink():
     """Minimal mock implementation satisfies LogSink via structural subtyping."""
 
     class MockLogSink:
         def __init__(self) -> None:
             self.emitted: list[LogEvent] = []
 
-        def emit(self, event: LogEvent) -> None:
+        async def emit(self, event: LogEvent) -> None:
             self.emitted.append(event)
 
     mock = MockLogSink()
     assert isinstance(mock, LogSink)
     event = new_root_log_event(**_base_kwargs())
-    mock.emit(event)
+    await mock.emit(event)
     assert len(mock.emitted) == 1
     assert mock.emitted[0] == event
+
+
+# ---------------------------------------------------------------------------
+# Path A — event_type optional (Step 9)
+# ---------------------------------------------------------------------------
+
+
+def _base_kwargs_no_event_type() -> dict:
+    """Base kwargs without event_type for testing optional field."""
+    return {
+        'level': LogLevel.INFO,
+        'message': 'Started',
+        'component': 'api',
+        'initiator_type': LogParticipantKind.USER,
+        'initiator_id': 'user-1',
+        'actor_type': LogParticipantKind.SYSTEM,
+        'actor_id': 'kernel-api',
+        'target_type': LogParticipantKind.CONNECTOR,
+        'target_id': 'app-1',
+    }
+
+
+def test_log_event_accepts_event_type_none():
+    """LogEvent accepts event_type=None (operational log without event routing)."""
+    ts = datetime.now(UTC)
+    event = LogEvent(
+        event_id=uuid4(),
+        event_type=None,
+        timestamp=ts,
+        level=LogLevel.INFO,
+        message='op log',
+        component='data-lake',
+        correlation_id=uuid4(),
+        causation_id=None,
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='sys',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='sys',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='x',
+    )
+    assert event.event_type is None
+
+
+def test_log_event_rejects_empty_event_type():
+    """LogEvent rejects empty or whitespace-only event_type."""
+    ts = datetime.now(UTC)
+    base = dict(
+        event_id=uuid4(),
+        timestamp=ts,
+        level=LogLevel.INFO,
+        message='m',
+        component='c',
+        correlation_id=uuid4(),
+        causation_id=None,
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='sys',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='sys',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='x',
+    )
+    with pytest.raises(ValidationError):
+        LogEvent(**base, event_type='')
+    with pytest.raises(ValidationError):
+        LogEvent(**base, event_type='   ')
+
+
+def test_new_root_log_event_accepts_event_type_none():
+    """new_root_log_event returns LogEvent with event_type=None when omitted."""
+    kw = _base_kwargs_no_event_type()
+    event = new_root_log_event(**kw)
+    assert event.event_type is None
+
+
+def test_log_event_json_round_trip_omits_event_type_when_none():
+    """model_dump with exclude_none=True drops event_type key when None."""
+    ts = datetime.now(UTC)
+    event = LogEvent(
+        event_id=uuid4(),
+        event_type=None,
+        timestamp=ts,
+        level=LogLevel.INFO,
+        message='m',
+        component='c',
+        correlation_id=uuid4(),
+        causation_id=None,
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='sys',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='sys',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='x',
+    )
+    dump_exclude = event.model_dump(mode='json', exclude_none=True)
+    assert 'event_type' not in dump_exclude
+
+    dump_include = event.model_dump(mode='json', exclude_none=False)
+    assert 'event_type' in dump_include
+    assert dump_include['event_type'] is None

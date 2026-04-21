@@ -29,9 +29,9 @@ class FileLogSink(LogSink):
         self._path = path if path is not None else _resolve_path()
         self._lock = Lock()
 
-    def emit(self, event: LogEvent) -> None:
+    async def emit(self, event: LogEvent) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = event.model_dump(mode='json')
+        payload = event.model_dump(mode='json', exclude_none=True)
         line = json.dumps(payload, ensure_ascii=False) + '\n'
         with self._lock:
             with open(self._path, 'a', encoding='utf-8') as f:

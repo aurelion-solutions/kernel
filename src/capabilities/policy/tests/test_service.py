@@ -215,7 +215,7 @@ def test_evaluate_policy_risk_with_threat() -> None:
 
 
 def test_evaluate_policy_emits_log_event() -> None:
-    """evaluate_policy calls emit_safe once with event_type=policy.decision.made."""
+    """evaluate_policy calls emit_safe once (Step 23: kwarg-shape, no event_type positional arg)."""
     mock_log = MagicMock()
     svc = PolicyService(log_service=mock_log, policies_dir=POLICIES_DIR)
     facts = _employee_facts(status='active', target_app='ad')
@@ -224,12 +224,12 @@ def test_evaluate_policy_emits_log_event() -> None:
     mock_log.emit_safe.assert_called_once()
     call_kwargs = mock_log.emit_safe.call_args
 
-    # Positional args: event_type, level, message, component, payload
-    args = call_kwargs.args
-    assert args[0] == 'policy.decision.made'
-    assert args[3] == 'policy-engine'
+    # Step 23 kwarg-shape: emit_safe called with keyword args, no positional event_type.
+    kwargs = call_kwargs.kwargs
+    assert kwargs['message'] == 'Policy decision evaluated'
+    assert kwargs['component'] == 'policy-engine'
 
-    payload = args[4]
+    payload = kwargs['payload']
     assert 'subject_id' in payload
     assert 'abstract_state' in payload
 

@@ -37,7 +37,8 @@ async def test_create_application_log_uses_applications_capability_and_applicati
 
     assert len(captured) == 1
     ev = captured[0]
-    assert ev.event_type == 'application.created'
+    # Step 23: event_type no longer forwarded via emit_safe; check operational fields.
+    assert ev.message == 'Application created'
     assert ev.initiator_type == LogParticipantKind.CAPABILITY
     assert ev.initiator_id == 'applications'
     assert ev.actor_type == LogParticipantKind.CAPABILITY

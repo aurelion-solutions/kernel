@@ -48,6 +48,7 @@ async def create_employee(
             status_code=404,
             detail='Person not found',
         ) from None
+    await session.commit()
     return EmployeeRead.model_validate(employee)
 
 
@@ -114,6 +115,7 @@ async def add_employee_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this employee: {body.key}',
         ) from None
+    await session.commit()
     return EmployeeAttributeRead.model_validate(attr)
 
 
@@ -131,3 +133,4 @@ async def remove_employee_attribute(
         raise HTTPException(status_code=404, detail='Employee not found') from None
     except EmployeeAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Employee attribute not found') from None
+    await session.commit()

@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""EmployeeRecord service for coordinating repository and log emission."""
+"""EmployeeRecord service — business logic and event emission."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -31,8 +34,10 @@ from src.inventory.employee_records.repository import (
     list_employee_records as repo_list_employee_records,
 )
 from src.platform.applications.repository import get_application_by_id as repo_get_application_by_id
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
+
+_COMPONENT = 'inventory.employee_records'
 
 
 class EmployeeRecordNotFoundError(Exception):
@@ -70,10 +75,10 @@ class DuplicateEmployeeRecordAttributeError(Exception):
 
 
 class EmployeeRecordService:
-    """Orchestrates employee record CRUD and log emission."""
+    """Orchestrates employee record CRUD and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(self, event_service: EventService | None = None) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_employee_record(
         self,
@@ -81,8 +86,9 @@ class EmployeeRecordService:
         external_id: str,
         application_id: uuid.UUID,
         description: str | None = None,
+        correlation_id: str | None = None,
     ) -> EmployeeRecord:
-        """Create an employee record and emit employee_record.created. Validates application_id."""
+        """Create an employee record. Emits inventory.employee_record.created. Validates application_id."""
         app = await repo_get_application_by_id(session, application_id)
         if app is None:
             raise InvalidApplicationIdError(application_id)
@@ -92,19 +98,22 @@ class EmployeeRecordService:
             application_id=application_id,
             description=description,
         )
-        self._log.emit_safe(
-            'employee_record.created',
-            LogLevel.INFO,
-            'Employee record created',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee_record.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'employee_record_id': str(record.id),
                     'external_id': record.external_id,
                 },
-                actor_component='identity-core',
-                target_id='employee_record',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(record.id),
+            )
         )
         return record
 
@@ -113,21 +122,8 @@ class EmployeeRecordService:
         session: AsyncSession,
         employee_record_id: uuid.UUID,
     ) -> EmployeeRecord | None:
-        """Get employee record by id. Emits employee_record.retrieved when found."""
-        record = await repo_get_employee_record_by_id(session, employee_record_id)
-        if record is not None:
-            self._log.emit_safe(
-                'employee_record.retrieved',
-                LogLevel.INFO,
-                'Employee record retrieved',
-                'identity-core',
-                merge_emit_log_participant_fields(
-                    {'employee_record_id': str(employee_record_id)},
-                    actor_component='identity-core',
-                    target_id='employee_record',
-                ),
-            )
-        return record
+        """Get employee record by id. No event emitted (Q1 — employee_record.retrieved dropped)."""
+        return await repo_get_employee_record_by_id(session, employee_record_id)
 
     async def list_employee_records(self, session: AsyncSession) -> list[EmployeeRecord]:
         """List all employee records."""
@@ -150,8 +146,12 @@ class EmployeeRecordService:
         employee_record_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> EmployeeRecordAttribute:
-        """Add attribute to employee record. Emits employee_record.attribute.added. Raises on duplicate key."""
+        """Add attribute to employee record. Emits inventory.employee_record.attribute_added.
+
+        Raises on duplicate key.
+        """
         record = await repo_get_employee_record_by_id(session, employee_record_id)
         if record is None:
             raise EmployeeRecordNotFoundError(employee_record_id)
@@ -164,19 +164,22 @@ class EmployeeRecordService:
             )
         except IntegrityError:
             raise DuplicateEmployeeRecordAttributeError(employee_record_id, key) from None
-        self._log.emit_safe(
-            'employee_record.attribute.added',
-            LogLevel.INFO,
-            'Employee record attribute added',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee_record.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'employee_record_id': str(employee_record_id),
                     'key': key,
                 },
-                actor_component='identity-core',
-                target_id='employee_record',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(employee_record_id),
+            )
         )
         return attr
 
@@ -185,22 +188,32 @@ class EmployeeRecordService:
         session: AsyncSession,
         employee_record_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from employee record. Emits employee_record.attribute.removed. Raises if not found."""
+        """Remove attribute from employee record. Emits inventory.employee_record.attribute_removed.
+
+        Raises if not found.
+        """
         record = await repo_get_employee_record_by_id(session, employee_record_id)
         if record is None:
             raise EmployeeRecordNotFoundError(employee_record_id)
         deleted = await repo_delete_employee_record_attribute(session, employee_record_id, key)
         if not deleted:
             raise EmployeeRecordAttributeNotFoundError(employee_record_id, key)
-        self._log.emit_safe(
-            'employee_record.attribute.removed',
-            LogLevel.INFO,
-            'Employee record attribute removed',
-            'identity-core',
-            merge_emit_log_participant_fields(
-                {'employee_record_id': str(employee_record_id), 'key': key},
-                actor_component='identity-core',
-                target_id='employee_record',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.employee_record.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'employee_record_id': str(employee_record_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(employee_record_id),
+            )
         )

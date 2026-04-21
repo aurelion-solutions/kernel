@@ -12,7 +12,7 @@ the resulting ``EffectiveGrantDraft`` rows into the partitioned
 uq_effective_grants_source_pair``.
 
 Class contract:
-- Constructor: ``(session: AsyncSession, log_service: LogService)``
+- Constructor: ``(session: AsyncSession, event_service: EventService | None = None)``
 - ``project_access_fact(*, access_fact_id, now, correlation_id=None)``
 - ``project_application(*, application_id, now, correlation_id=None)``
 - Both methods return ``ProjectionRunSummary``.
@@ -24,8 +24,8 @@ Session discipline (per ARCH_CONTEXT invariant "Transaction ownership"):
 - The caller (HTTP handler, event consumer) owns the transaction boundary.
 
 Event emission guarantee:
-- Exactly one ``eas.projection.completed`` event is emitted per scope call,
-  post-flush, pre-commit, via ``LogService.emit_safe``.
+- Exactly one ``eas.projection.completed`` ``EventEnvelope`` is emitted per
+  scope call, post-flush, pre-commit, via ``self._events.emit(...)``.
 - On any exception before the flush/emit the event is NOT emitted — this is
   enforced structurally: ``_emit_completed`` is the last statement inside the
   ``try`` body, with no swallowing ``except`` around the upsert or flush.
@@ -35,13 +35,14 @@ Event emission guarantee:
   gives the service its own transaction boundary via an event consumer.
 
 Error behavior:
-- ``ValueError`` from ``project()`` (pair mismatch): logged as
-  ``eas.projection.failed`` at ``LogLevel.ERROR`` then re-raised.
+- ``ValueError`` from ``project()`` (pair mismatch): emits
+  ``eas.projection.failed`` ``EventEnvelope`` then re-raises.
   ``eas.projection.completed`` is NOT emitted on this path.
 - ``IntegrityError`` or other DB errors from upsert: bubble up unchanged.
 
 Forbidden in this module: ``print``, ``logging.getLogger``, ``logger.*``,
-``structlog``, ``sys.stderr.write``, module-level loggers.
+``structlog``, ``sys.stderr.write``, module-level loggers, ``LogService``,
+``emit_safe``, ``LogLevel``.
 """
 
 from __future__ import annotations
@@ -85,10 +86,10 @@ from src.capabilities.effective_access.schemas import (
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import InitiativeType
 from src.inventory.subjects.models import SubjectKind
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_capability_trace_fields
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
-_COMPONENT = 'effective_access'
+_COMPONENT = 'capabilities.effective_access'
 
 
 class AccessFactNotFoundError(Exception):
@@ -139,10 +140,13 @@ def _build_event_payload(
     change_kind: Literal['upsert', 'invalidate_fact', 'invalidate_initiative'] | None,
     triggered_by: Literal['api', 'consumer'],
     rows_skipped: int = 0,
-    causation_event_id: UUID | None = None,
 ) -> dict[str, Any]:
-    """Build the raw payload dict for the completed event."""
-    payload: dict[str, Any] = {
+    """Build the raw payload dict for the completed event.
+
+    ``causation_event_id`` is NOT included in payload — it lives as a
+    first-class ``envelope.causation_id`` field (Phase 10 Step 20, C4).
+    """
+    return {
         'mode': mode,
         'change_kind': change_kind,
         'scope_kind': summary.scope_kind.value,
@@ -157,9 +161,6 @@ def _build_event_payload(
         'finished_at': summary.finished_at.isoformat(),
         'triggered_by': triggered_by,
     }
-    if causation_event_id is not None:
-        payload['causation_event_id'] = str(causation_event_id)
-    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +171,14 @@ def _build_event_payload(
 class EffectiveAccessProjectionService:
     """Batch projection driver for the Effective Access Store.
 
-    Injects both ``AsyncSession`` and ``LogService`` at construction time so
-    tests can supply a ``CapturingLogService`` fake without any monkey-patching.
+    Injects both ``AsyncSession`` and ``EventService`` at construction time so
+    tests can supply a ``CapturingEventService`` sink without any monkey-patching.
+    ``event_service`` defaults to ``noop_event_service`` when omitted.
     """
 
-    def __init__(self, session: AsyncSession, log_service: LogService) -> None:
+    def __init__(self, session: AsyncSession, event_service: EventService | None = None) -> None:
         self._session = session
-        self._log_service = log_service
+        self._events = event_service if event_service is not None else noop_event_service
 
     # ------------------------------------------------------------------
     # Public API
@@ -202,7 +204,7 @@ class EffectiveAccessProjectionService:
             raise AccessFactNotFoundError(access_fact_id)
 
         fact_row, initiative_rows = pair
-        drafts = self._project_fact(fact_row, initiative_rows, now=now, corr_id=corr_id)
+        drafts = await self._project_fact(fact_row, initiative_rows, now=now, corr_id=corr_id)
 
         upsert_result = await upsert_effective_grants(self._session, drafts)
         await self._session.flush()
@@ -220,7 +222,7 @@ class EffectiveAccessProjectionService:
             finished_at=finished_at,
             correlation_id=corr_id,
         )
-        self._emit_completed(summary, mode='batch', change_kind=None, triggered_by='api')
+        await self._emit_completed(summary, mode='batch', change_kind=None, triggered_by='api', rows_skipped=0)
         return summary
 
     async def project_application(
@@ -248,7 +250,7 @@ class EffectiveAccessProjectionService:
         total_tombstoned = 0
 
         async for fact_row, initiative_rows in fetch_application_facts_with_initiatives(self._session, application_id):
-            drafts = self._project_fact(fact_row, initiative_rows, now=now, corr_id=corr_id)
+            drafts = await self._project_fact(fact_row, initiative_rows, now=now, corr_id=corr_id)
             if drafts:
                 upsert_result = await upsert_effective_grants(self._session, drafts)
                 total_pairs += len(drafts)
@@ -272,7 +274,7 @@ class EffectiveAccessProjectionService:
             finished_at=finished_at,
             correlation_id=corr_id,
         )
-        self._emit_completed(summary, mode='batch', change_kind=None, triggered_by='api')
+        await self._emit_completed(summary, mode='batch', change_kind=None, triggered_by='api', rows_skipped=0)
         return summary
 
     async def apply_incremental_change(
@@ -355,7 +357,7 @@ class EffectiveAccessProjectionService:
                 effective_change_kind = IncrementalApplyKind.INVALIDATE_FACT
             else:
                 fact_row, initiative_rows = pair
-                drafts = self._project_fact(fact_row, initiative_rows, now=observed_at, corr_id=corr_id)
+                drafts = await self._project_fact(fact_row, initiative_rows, now=observed_at, corr_id=corr_id)
                 live_initiative_ids = {d.source_initiative_id for d in drafts}
                 # Step 6b: tombstone grants for initiatives that disappeared from the
                 # fact's live set since the last projection (silent-shrink guard).
@@ -446,7 +448,7 @@ class EffectiveAccessProjectionService:
             finished_at=finished_at,
             correlation_id=corr_id,
         )
-        self._emit_completed(
+        await self._emit_completed(
             summary,
             mode='incremental',
             change_kind=effective_change_kind.value,
@@ -460,7 +462,7 @@ class EffectiveAccessProjectionService:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _project_fact(
+    async def _project_fact(
         self,
         fact_row: AccessFactRow,
         initiative_rows: list[InitiativeRow],
@@ -476,10 +478,10 @@ class EffectiveAccessProjectionService:
         drafts: list[EffectiveGrantDraft] = []
         for init_row in initiative_rows:
             init_view = _to_initiative_view(init_row)
-            drafts.extend(self._project_pair(fact_view, init_view, now=now, corr_id=corr_id))
+            drafts.extend(await self._project_pair(fact_view, init_view, now=now, corr_id=corr_id))
         return drafts
 
-    def _project_pair(
+    async def _project_pair(
         self,
         fact_view: AccessFactView,
         initiative_view: InitiativeView,
@@ -491,58 +493,57 @@ class EffectiveAccessProjectionService:
         try:
             return project(fact_view, initiative_view, now=now)
         except ValueError:
-            self._log_service.emit_safe(
-                'eas.projection.failed',
-                LogLevel.ERROR,
-                f'EAS projection failed: pair mismatch '
-                f'(access_fact_id={fact_view.id!r}, '
-                f'initiative_id={initiative_view.id!r})',
-                _COMPONENT,
-                merge_emit_capability_trace_fields(
-                    {
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='eas.projection.failed',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=str(corr_id),
+                    causation_id=None,
+                    payload={
                         'access_fact_id': str(fact_view.id),
                         'initiative_id': str(initiative_view.id),
                         'correlation_id': str(corr_id),
                     },
-                    capability_id=_COMPONENT,
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
                     target_id=str(fact_view.id),
-                    target_type='system',
-                ),
-                correlation_id=str(corr_id),
+                )
             )
             raise
 
-    def _emit_completed(
+    async def _emit_completed(
         self,
         summary: ProjectionRunSummary,
         *,
-        mode: Literal['batch', 'incremental'] = 'batch',
-        change_kind: Literal['upsert', 'invalidate_fact', 'invalidate_initiative'] | None = None,
-        triggered_by: Literal['api', 'consumer'] = 'api',
-        rows_skipped: int = 0,
+        mode: Literal['batch', 'incremental'],
+        change_kind: Literal['upsert', 'invalidate_fact', 'invalidate_initiative'] | None,
+        triggered_by: Literal['api', 'consumer'],
+        rows_skipped: int,
         causation_event_id: UUID | None = None,
     ) -> None:
-        """Emit eas.projection.completed via LogService.emit_safe (never raises)."""
+        """Emit eas.projection.completed via EventService.emit."""
         payload = _build_event_payload(
             summary,
             mode=mode,
             change_kind=change_kind,
             triggered_by=triggered_by,
             rows_skipped=rows_skipped,
-            causation_event_id=causation_event_id,
         )
-        self._log_service.emit_safe(
-            'eas.projection.completed',
-            LogLevel.INFO,
-            f'EAS projection completed for {summary.scope_kind.value}:{summary.scope_id}',
-            _COMPONENT,
-            merge_emit_capability_trace_fields(
-                payload,
-                capability_id=_COMPONENT,
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='eas.projection.completed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=str(summary.correlation_id),
+                causation_id=causation_event_id,
+                payload=payload,
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(summary.scope_id),
-                target_type='system',
-            ),
-            correlation_id=str(summary.correlation_id),
+            )
         )
 
 
@@ -571,11 +572,12 @@ def _aggregate_effect(rows: Sequence[EffectiveGrant]) -> Literal['allow', 'deny'
 class EffectiveAccessReadService:
     """Read-only query driver for the Effective Access Store.
 
-    No events, no flush, no LogService.  The caller (FastAPI handler) owns the
-    session lifecycle; this class only builds queries and returns ORM objects.
+    No events, no flush, no session mutation.  The caller (FastAPI handler)
+    owns the session lifecycle; this class only builds queries and returns
+    ORM objects.
 
     Forbidden in this class: ``emit_safe``, ``emit_log``, ``session.flush()``,
-    ``session.commit()``, ``session.rollback()``, any ``LogService`` import.
+    ``session.commit()``, ``session.rollback()``.
     """
 
     def __init__(self, session: AsyncSession) -> None:

@@ -61,14 +61,15 @@ async def create(
     """Create a custom provider."""
     try:
         provider = await create_provider_and_register(session, name=body.name, type=body.type, config=body.config)
-        return ProviderRead(
-            id=str(provider.id),
-            name=provider.name,
-            type=provider.type,
-            config=provider.config,
-        )
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    await session.commit()
+    return ProviderRead(
+        id=str(provider.id),
+        name=provider.name,
+        type=provider.type,
+        config=provider.config,
+    )
 
 
 @router.delete('/{name}', status_code=204)
@@ -82,3 +83,4 @@ async def delete(
         if name in BUILTIN_PROVIDERS:
             raise HTTPException(status_code=400, detail=f'Cannot delete built-in provider: {name!r}')
         raise HTTPException(status_code=404, detail='Provider not found')
+    await session.commit()

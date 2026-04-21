@@ -31,7 +31,7 @@ def test_get_file_returns_log_sink_instance(tmp_path: Path) -> None:
     assert isinstance(sink, LogSink)
 
 
-def test_returned_sink_is_usable(tmp_path: Path) -> None:
+async def test_returned_sink_is_usable(tmp_path: Path) -> None:
     """returned sink is usable (emit succeeds)."""
     factory = LogSinkFactory()
     log_path = tmp_path / 'test.jsonl'
@@ -51,7 +51,7 @@ def test_returned_sink_is_usable(tmp_path: Path) -> None:
         payload={},
         timestamp=datetime.now(),
     )
-    sink.emit(event)
+    await sink.emit(event)
     assert log_path.exists()
     assert 'Hello' in log_path.read_text()
 
@@ -73,11 +73,11 @@ def test_list_names_includes_file() -> None:
     assert 'file' in names
 
 
-def test_custom_provider_can_be_registered_and_resolved(tmp_path: Path) -> None:
+async def test_custom_provider_can_be_registered_and_resolved(tmp_path: Path) -> None:
     """custom provider can be registered and resolved."""
 
     class CustomSink(LogSink):
-        def emit(self, event: LogEvent) -> None:
+        async def emit(self, event: LogEvent) -> None:
             pass
 
     factory = LogSinkFactory()

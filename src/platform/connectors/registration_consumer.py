@@ -26,12 +26,12 @@ async def handle_connector_registration(
     try:
         payload = ConnectorRegistrationMessage.model_validate(message)
     except ValidationError as exc:
+        # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
         log.emit_safe(
-            'connector_registration.invalid',
-            LogLevel.ERROR,
-            'Invalid connector registration message',
-            'connectors',
-            merge_emit_capability_trace_fields(
+            level=LogLevel.ERROR,
+            message='Invalid connector registration message',
+            component='connectors',
+            payload=merge_emit_capability_trace_fields(
                 {'errors': exc.errors()},
                 capability_id='connectors',
                 target_id='registration',

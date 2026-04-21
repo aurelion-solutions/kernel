@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""ArtifactBinding service — business logic and operational log emission."""
+"""ArtifactBinding service — business logic and event emission."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,8 +20,8 @@ from src.inventory.artifact_bindings.repository import (
 from src.inventory.artifact_bindings.repository import (
     list_artifact_bindings as repo_list_artifact_bindings,
 )
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.artifact_bindings'
 
@@ -38,10 +39,13 @@ class ArtifactBindingForeignKeyError(Exception):
 
 
 class ArtifactBindingService:
-    """Orchestrates artifact binding creation, retrieval, and operational log emission."""
+    """Orchestrates artifact binding creation, retrieval, and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+    ) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_binding(
         self,
@@ -51,8 +55,9 @@ class ArtifactBindingService:
         access_fact_id: uuid.UUID | None = None,
         resource_id: uuid.UUID | None = None,
         account_id: uuid.UUID | None = None,
+        correlation_id: str | None = None,
     ) -> ArtifactBinding:
-        """Create an artifact binding. Validates all referenced entities exist."""
+        """Create an artifact binding. Validates all referenced entities exist. Emits inventory.artifact_binding.created."""  # noqa: E501
         if access_fact_id is None and resource_id is None and account_id is None:
             raise ArtifactBindingTargetRequiredError(
                 'At least one of access_fact_id, resource_id, account_id is required'
@@ -93,22 +98,25 @@ class ArtifactBindingService:
             account_id=account_id,
         )
 
-        self._log.emit_safe(
-            'artifact_binding.created',
-            LogLevel.INFO,
-            'Artifact binding created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.artifact_binding.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'binding_id': str(binding.id),
                     'artifact_id': str(artifact_id),
                     'access_fact_id': str(access_fact_id) if access_fact_id is not None else None,
                     'resource_id': str(resource_id) if resource_id is not None else None,
                     'account_id': str(account_id) if account_id is not None else None,
                 },
-                actor_component=_COMPONENT,
-                target_id='artifact_binding',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(binding.id),
+            )
         )
         return binding
 
@@ -117,21 +125,8 @@ class ArtifactBindingService:
         session: AsyncSession,
         binding_id: uuid.UUID,
     ) -> ArtifactBinding | None:
-        """Get artifact binding by id. Logs retrieval when found."""
-        binding = await repo_get_artifact_binding_by_id(session, binding_id)
-        if binding is not None:
-            self._log.emit_safe(
-                'artifact_binding.retrieved',
-                LogLevel.INFO,
-                'Artifact binding retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'binding_id': str(binding_id)},
-                    actor_component=_COMPONENT,
-                    target_id='artifact_binding',
-                ),
-            )
-        return binding
+        """Get artifact binding by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_artifact_binding_by_id(session, binding_id)
 
     async def list_bindings(
         self,
@@ -144,7 +139,7 @@ class ArtifactBindingService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArtifactBinding]:
-        """List artifact bindings with optional filters. No logging."""
+        """List artifact bindings with optional filters. No event emitted."""
         return await repo_list_artifact_bindings(
             session,
             artifact_id=artifact_id,

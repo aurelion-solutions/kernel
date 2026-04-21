@@ -53,12 +53,12 @@ def main() -> None:
     log_service = LogService(factory=log_sink_factory, provider_name=sink_provider)
 
     def on_parse_error(raw: dict[str, Any], message: str) -> None:
+        # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
         log_service.emit_safe(
-            'mq_log_consumer.parse_error',
-            LogLevel.ERROR,
-            message,
-            'mq-log-consumer',
-            {'raw_preview': str(raw)[:500]},
+            level=LogLevel.ERROR,
+            message=message,
+            component='mq-log-consumer',
+            payload={'raw_preview': str(raw)[:500]},
         )
 
     companion = (buffer_queue,) if buffer_queue != queue_name else ()

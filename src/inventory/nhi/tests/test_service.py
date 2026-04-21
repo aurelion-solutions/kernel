@@ -4,8 +4,6 @@
 
 """Tests for NHIService."""
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -21,26 +19,33 @@ from src.inventory.nhi.service import (
 )
 from src.inventory.persons.models import Person
 from src.platform.applications.models import Application
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> NHIService:
-    return NHIService(log_service=log_service)
+def service(event_service: EventService) -> NHIService:
+    return NHIService(event_service=event_service)
+
+
+# ---------------------------------------------------------------------------
+# Behavioural tests (state transitions)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -220,76 +225,184 @@ async def test_remove_attribute_missing(
             await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# Event-emission tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_log_create(
+async def test_create_nhi_emits_inventory_nhi_created(
     service: NHIService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     async with session_factory() as session:
-        await service.create_nhi(session, external_id='log-c', name='L', kind='bot')
+        nhi = await service.create_nhi(session, external_id='emit-c', name='E', kind='bot')
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'nhi.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'identity-core'
+    envelopes = capturing_events.filter_by_type('inventory.nhi.created')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.nhi'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(nhi.id)
+    assert envelope.causation_id is None
+    assert isinstance(envelope.correlation_id, str)
+    assert len(envelope.correlation_id) > 0
+    assert envelope.payload == {'nhi_id': str(nhi.id), 'external_id': nhi.external_id}
 
 
 @pytest.mark.asyncio
-async def test_log_retrieve(
+async def test_add_attribute_emits_inventory_nhi_attribute_added(
     service: NHIService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     async with session_factory() as session:
-        nhi = await service.create_nhi(session, external_id='log-r', name='L', kind='bot')
-        await session.commit()
-        nid = nhi.id
-
-    async with session_factory() as session:
-        await service.get_nhi(session, nid)
-
-    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    retrieved = [r for r in records if r.get('event_type') == 'nhi.retrieved']
-    assert len(retrieved) >= 1
-
-
-@pytest.mark.asyncio
-async def test_log_add_attribute(
-    service: NHIService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    async with session_factory() as session:
-        nhi = await service.create_nhi(session, external_id='log-a', name='L', kind='bot')
+        nhi = await service.create_nhi(session, external_id='emit-a', name='E', kind='bot')
         await session.flush()
-        await service.add_attribute(session, nhi.id, 'lk', 'lv')
+        capturing_events.emitted.clear()
+        await service.add_attribute(session, nhi.id, 'k1', 'v1')
         await session.commit()
 
-    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    added = [r for r in records if r.get('event_type') == 'nhi.attribute.added']
-    assert len(added) >= 1
+    envelopes = capturing_events.filter_by_type('inventory.nhi.attribute_added')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(nhi.id)
+    assert envelope.payload == {'nhi_id': str(nhi.id), 'key': 'k1'}
 
 
 @pytest.mark.asyncio
-async def test_log_remove_attribute(
+async def test_remove_attribute_emits_inventory_nhi_attribute_removed(
     service: NHIService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     async with session_factory() as session:
-        nhi = await service.create_nhi(session, external_id='log-rm', name='L', kind='bot')
+        nhi = await service.create_nhi(session, external_id='emit-r', name='E', kind='bot')
         await session.flush()
         await service.add_attribute(session, nhi.id, 'rk', 'rv')
         await session.commit()
         nid = nhi.id
 
     async with session_factory() as session:
+        capturing_events.emitted.clear()
         await service.remove_attribute(session, nid, 'rk')
         await session.commit()
 
-    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    removed = [r for r in records if r.get('event_type') == 'nhi.attribute.removed']
-    assert len(removed) >= 1
+    envelopes = capturing_events.filter_by_type('inventory.nhi.attribute_removed')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(nid)
+    assert envelope.payload == {'nhi_id': str(nid), 'key': 'rk'}
+
+
+# ---------------------------------------------------------------------------
+# Drop-retrieved test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_nhi_does_not_emit_event(
+    service: NHIService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    async with session_factory() as session:
+        nhi = await service.create_nhi(session, external_id='no-emit', name='N', kind='bot')
+        await session.commit()
+        nid = nhi.id
+
+    async with session_factory() as session:
+        capturing_events.emitted.clear()
+        result = await service.get_nhi(session, nid)
+        assert result is not None
+        assert capturing_events.emitted == []
+
+    async with session_factory() as session:
+        result = await service.get_nhi(session, uuid.uuid4())
+        assert result is None
+        assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Correlation-id tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_nhi_correlation_id_explicit(
+    service: NHIService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    async with session_factory() as session:
+        await service.create_nhi(
+            session,
+            external_id='corr-e',
+            name='C',
+            kind='bot',
+            correlation_id='trace-abc-123',
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.nhi.created')
+    assert len(envelopes) == 1
+    assert envelopes[0].correlation_id == 'trace-abc-123'
+
+
+@pytest.mark.asyncio
+async def test_create_nhi_correlation_id_autogenerated(
+    service: NHIService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    async with session_factory() as session:
+        await service.create_nhi(session, external_id='corr-a', name='C', kind='bot')
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.nhi.created')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_correlation_id_autogenerated_independent_of_create(
+    service: NHIService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    async with session_factory() as session:
+        nhi = await service.create_nhi(
+            session,
+            external_id='corr-ind',
+            name='C',
+            kind='bot',
+            correlation_id='X',
+        )
+        await session.flush()
+        capturing_events.emitted.clear()
+        await service.add_attribute(session, nhi.id, 'ck', 'cv')
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.nhi.attribute_added')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert corr_id != 'X'
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+# ---------------------------------------------------------------------------
+# Anti-dual-emit guard
+# ---------------------------------------------------------------------------
+
+
+def test_nhi_service_has_no_log_attribute() -> None:
+    service = NHIService()
+    assert getattr(service, '_log', None) is None

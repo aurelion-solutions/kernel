@@ -37,6 +37,7 @@ async def create_batch(
         )
     except UnsupportedProviderError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    await session.commit()
     return LakeBatchRead.model_validate(batch)
 
 
@@ -78,3 +79,4 @@ async def delete_batch(
         await service.delete_batch(session, batch_id, delete_payload=True)
     except BatchNotFoundError:
         raise HTTPException(status_code=404, detail='Lake batch not found') from None
+    await session.commit()

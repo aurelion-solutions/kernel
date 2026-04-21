@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-21
+
+### Added
+
+- Phase 10 Events ↔ Logs Decoupling complete (23/23 milestones)
+- `AsyncRabbitMQPublisher` with persistent `RobustConnection`, publisher confirms, and exponential back-off retry
+- `AsyncRabbitMQRPCClient` with `asyncio.Future`-based reply dispatch and exclusive per-client reply queue
+- `CapturingLogSink` test double in `src/platform/logs/testing.py`
+- Two-bus separation canary suite (`test_canary_two_bus_separation.py`, 4 structural assertions)
+- Two-bus invariant added to `ARCH_CONTEXT.md` and `EVENT_MODEL_GUIDELINES.md`
+- `platform/events/` slice: `EventEnvelope` schema, `EventSink` protocol, `EventService`, `NoOpEventService`, `RabbitMQEventSink`, `EventSinkFactory`, `CapturingEventService`
+- EAS consumer (`mq_eas_projection_consumer`) rebound from `aurelion.logs` to `aurelion.events`
+- `capabilities/effective_access` producer migration (DROP variant) — `eas.projection.completed`, `eas.projection.failed`
+- `inventory/secrets` producer migration (KEEP variant) — `inventory.secret.created`, `inventory.secret.deleted`
+- `inventory/initiatives` producer migration (DROP variant) — `inventory.initiative.created`, `inventory.initiative.updated`, `inventory.initiative.expired`
+- `inventory/customers` producer migration (DROP variant) — `inventory.customer.created`, `inventory.customer.updated`, `inventory.customer.attribute_added`, `inventory.customer.attribute_removed`
+- `inventory/resources` producer migration (DROP variant) — `inventory.resource.created`, `inventory.resource.updated`, `inventory.resource.attribute_added`, `inventory.resource.attribute_removed`
+- `inventory/employee_records` producer migration (DROP variant) — `inventory.employee_record.created`, `inventory.employee_record.attribute_added`, `inventory.employee_record.attribute_removed`
+- `inventory/nhi` producer migration (DROP variant) — `inventory.nhi.created`, `inventory.nhi.attribute_added`, `inventory.nhi.attribute_removed`
+- `inventory/subjects` producer migration (DROP variant) — `inventory.subject.created`, `inventory.subject.updated`, `inventory.subject.attribute_added`, `inventory.subject.attribute_removed`, `inventory.subject.status_changed`
+- `inventory/ownership_assignments` producer migration (DROP variant) — `inventory.ownership_assignment.created`, `inventory.ownership_assignment.deleted`
+- `inventory/persons` producer migration (DROP variant) — `inventory.person.created`, `inventory.person.attribute_added`, `inventory.person.attribute_removed`
+- `inventory/employees` producer migration (DROP variant) — `inventory.employee.created`, `inventory.employee.attribute_added`, `inventory.employee.attribute_removed`
+- `inventory/lake_batches` producer migration (KEEP variant) — `inventory.lake_batch.created`, `inventory.lake_batch.deleted`
+- `inventory/threat_facts` producer migration (DROP variant) — `inventory.threat_fact.created`, `inventory.threat_fact.updated`
+- `inventory/accounts` producer migration (DROP variant) — `inventory.account.updated`
+- `inventory/artifact_bindings` producer migration (DROP variant) — `inventory.artifact_binding.created`
+- `inventory/access_artifacts` producer migration (DROP variant) — `inventory.access_artifact.created`
+- `inventory/access_usage_facts` producer migration (DROP variant)
+- `inventory/access_facts` pilot producer migration — `inventory.access_fact.created`, `inventory.access_fact.invalidated`
+- Session-scoped autouse fixture defaulting events provider to `noop` in test suite
+
+### Changed
+
+- **BREAKING:** `EventSink.emit` and `LogSink.emit` interfaces converted to `async def`; all sink implementations and callers updated
+- **BREAKING:** `LogService.emit_log` and `LogService.emit_safe` no longer accept an `event_type` parameter; `NoOpLogService.emit_safe` likewise; domain routing must go through `EventService.emit(EventEnvelope(...))` on `aurelion.events`
+- **BREAKING:** EAS runtime drops `AURELION_LOGS_EXCHANGE`; `AURELION_EVENTS_EXCHANGE` required instead
+- EAS routing keys migrated to 3-segment canonical forms; `access_fact.updated` dead entry dropped
+- EAS message dispatch switched to routing-key-based filtering with routing-key/envelope mismatch guard
+- EAS deserialization switched from `LogEvent` to `EventEnvelope`; `normalize_mq_log_event_payload` removed
+- `EventService.emit`, `CapturingEventService.emit` converted to `async def`
+- `LogService.emit_log` converted to `async def`; `emit_safe` / `emit_event_safe` remain synchronous fire-and-forget
+- `RabbitMQEventSink` and `RabbitMQLogSink` accept a shared `AsyncRabbitMQPublisher` injected in lifespan
+- FastAPI lifespan manages shared `AsyncRabbitMQPublisher` and `AsyncRabbitMQRPCClient` lifecycle
+- `ConnectorClient` accepts shared `AsyncRabbitMQRPCClient`
+- `SecretService.create_secret` and `delete_secret` converted to `async def`
+- `EffectiveAccessWriteService._project_fact`, `_project_pair`, `_emit_completed` converted to `async def`
+- `capabilities/effective_access` `_COMPONENT` renamed `'effective_access'` → `'capabilities.effective_access'`
+- `inventory/employees` `_COMPONENT` renamed `'identity-core'` → `'inventory.employees'`
+- `inventory/persons` `_COMPONENT` renamed `'identity-core'` → `'inventory.persons'`
+- `inventory/nhi` `_COMPONENT` renamed `'identity-core'` → `'inventory.nhi'`
+- `inventory/secrets` `_COMPONENT` added as `'inventory.secrets'` (replaces inline `'secret-manager'` literals)
+- Kwarg-sweep of 16 legacy call sites across capabilities and platform slices — mechanical argument-shape refactor, no bus change; slices remain on `aurelion.logs`
+- DoD amendment: `LogEvent.event_type` field retained as deprecated legacy atavism; `LogService` public API has no `event_type` parameter; full field removal deferred to a dedicated later phase
+
+### Removed
+
+- `LogService.log_info`, `log_warning`, `log_error` convenience methods (zero production callers)
+
 ## [0.1.1] - 2026-04-19
 
 ### Added

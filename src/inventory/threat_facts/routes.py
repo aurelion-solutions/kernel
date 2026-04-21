@@ -81,6 +81,7 @@ async def upsert_threat_fact(
         raise HTTPException(status_code=422, detail=f'Account not found: {exc.account_id}') from exc
     except ThreatFactConflictError as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
+    await session.commit()
     if created:
         response.status_code = 201
     return ThreatFactRead.model_validate(fact)

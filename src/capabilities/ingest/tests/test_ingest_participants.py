@@ -49,8 +49,9 @@ async def test_ingest_success_log_uses_ingest_capability_and_application_target(
 
     assert len(captured) == 1
     ev = captured[0]
-    assert ev.event_type == 'ingest.result.received'
+    # Step 23: event_type no longer forwarded via emit_safe; check operational fields instead.
     assert ev.initiator_id == 'ingest'
     assert ev.actor_id == 'ingest'
     assert ev.target_type == LogParticipantKind.APPLICATION
     assert ev.target_id == str(app_id)
+    assert ev.message == 'Connector result ingested'

@@ -4,6 +4,7 @@
 
 """Platform log service for emitting structured log events."""
 
+import asyncio
 from datetime import UTC, datetime
 import os
 from typing import Any
@@ -75,6 +76,23 @@ def merge_emit_log_participant_fields(
     }
 
 
+def _schedule_or_run(coro: Any) -> None:
+    """Schedule ``coro`` on the running loop, or run it synchronously if none exists.
+
+    Used by the safe/fire-and-forget log methods so they remain callable from both
+    async HTTP handlers and blocking pika consumer threads.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        # No running loop — blocking consumer thread context.
+        try:
+            asyncio.run(coro)
+        except Exception:
+            pass
+
+
 class NoOpLogService:
     """Log service that does nothing. Use when logging is disabled."""
 
@@ -83,11 +101,14 @@ class NoOpLogService:
 
     def emit_safe(
         self,
-        event_type: str,
-        level: LogLevel,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
+        # NOTE: This is a mechanical kwarg-shape refactor (Step 23 Phase 10).
+        # The call sites still emit on aurelion.logs — NOT migrated to aurelion.events bus.
+        # `event_type` was removed from this signature; use new_root_log_event(event_type=...)
+        # + emit_event_safe(...) for legacy slices that need the field in the LogEvent body.
+        level: LogLevel = LogLevel.INFO,
+        message: str = '',
+        component: str = '',
+        payload: dict[str, Any] | None = None,
         *,
         timestamp: datetime | None = None,
         correlation_id: str | None = None,
@@ -111,7 +132,17 @@ def _get_provider() -> str:
 
 
 class LogService:
-    """Resolves sink via factory and emits :class:`LogEvent`."""
+    """Resolves sink via factory and emits :class:`LogEvent`.
+
+    All public methods are **synchronous** at the call-site — they schedule the
+    async work on the running event loop (fire-and-forget) or run it in a fresh
+    loop if called from a blocking pika consumer thread.  This keeps the
+    interface unchanged for consumer runtimes while using the async MQ publisher
+    under the hood.
+
+    Use :meth:`emit_event` (async) when the caller is already awaiting and wants
+    delivery confirmation before continuing.
+    """
 
     def __init__(
         self,
@@ -121,26 +152,83 @@ class LogService:
         self._factory = factory
         self._provider_name = provider_name
 
-    def emit_event(self, event: LogEvent) -> None:
-        """Emit a fully built event to the configured sink."""
+    async def emit_event(self, event: LogEvent) -> None:
+        """Emit a fully built event to the configured sink.  Re-raises on failure."""
         provider = self._provider_name or _get_provider()
         sink = self._factory.get(provider)
-        sink.emit(event)
+        await sink.emit(event)
 
     def emit_event_safe(self, event: LogEvent) -> None:
-        """Like :meth:`emit_event` but swallows failures. Never raises."""
-        try:
-            self.emit_event(event)
-        except Exception:
-            pass
+        """Emit fire-and-forget from any context (sync or async).
 
-    def emit_log(
+        Swallows all exceptions.
+        """
+
+        async def _safe() -> None:
+            try:
+                await self.emit_event(event)
+            except Exception:
+                pass
+
+        _schedule_or_run(_safe())
+
+    def emit_safe(
         self,
-        event_type: str,
-        level: LogLevel,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
+        # NOTE: `event_type` parameter removed (Step 23 Phase 10 — kwarg-shape refactor).
+        # This is NOT a migration to aurelion.events bus; aurelion.logs semantics unchanged.
+        level: LogLevel = LogLevel.INFO,
+        message: str = '',
+        component: str = '',
+        payload: dict[str, Any] | None = None,
+        *,
+        timestamp: datetime | None = None,
+        correlation_id: str | None = None,
+        task_id: UUID | None = None,
+        application_id: UUID | None = None,
+        connector_type: str | None = None,
+        result_id: UUID | None = None,
+        request_id: str | None = None,
+        exception_type: str | None = None,
+        stacktrace: str | None = None,
+    ) -> None:
+        """Emit via configured sink, fire-and-forget.
+
+        Callable from any context (sync consumer thread or async HTTP handler).
+        Swallows all exceptions.
+        """
+
+        async def _safe() -> None:
+            try:
+                await self.emit_log(
+                    level=level,
+                    message=message,
+                    component=component,
+                    payload=payload,
+                    timestamp=timestamp,
+                    correlation_id=correlation_id,
+                    task_id=task_id,
+                    application_id=application_id,
+                    connector_type=connector_type,
+                    result_id=result_id,
+                    request_id=request_id,
+                    exception_type=exception_type,
+                    stacktrace=stacktrace,
+                )
+            except Exception:
+                pass
+
+        _schedule_or_run(_safe())
+
+    async def emit_log(
+        self,
+        # NOTE: `event_type` parameter removed (Step 23 Phase 10 — kwarg-shape refactor).
+        # This is NOT a migration to aurelion.events bus; aurelion.logs semantics unchanged.
+        # Legacy slices that need event_type in the LogEvent body call new_root_log_event(event_type=...)
+        # + emit_event_safe(...) directly.
+        level: LogLevel = LogLevel.INFO,
+        message: str = '',
+        component: str = '',
+        payload: dict[str, Any] | None = None,
         *,
         timestamp: datetime | None = None,
         correlation_id: str | None = None,
@@ -160,7 +248,7 @@ class LogService:
         removed from the stored payload and passed to :func:`new_root_log_event`.
         Otherwise this method returns without emitting (no defaults are applied).
         """
-        merged: dict[str, Any] = dict(payload)
+        merged: dict[str, Any] = dict(payload or {})
         participants = _pop_participants_if_complete(merged)
         if participants is None:
             return
@@ -182,7 +270,6 @@ class LogService:
 
         ts = timestamp if timestamp is not None else datetime.now(UTC)
         event = new_root_log_event(
-            event_type=event_type,
             level=level,
             message=message,
             component=component,
@@ -191,85 +278,4 @@ class LogService:
             correlation_id=correlation_id,
             **participants,
         )
-        self.emit_event(event)
-
-    def emit_safe(
-        self,
-        event_type: str,
-        level: LogLevel,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        *,
-        timestamp: datetime | None = None,
-        correlation_id: str | None = None,
-        task_id: UUID | None = None,
-        application_id: UUID | None = None,
-        connector_type: str | None = None,
-        result_id: UUID | None = None,
-        request_id: str | None = None,
-        exception_type: str | None = None,
-        stacktrace: str | None = None,
-    ) -> None:
-        """Like :meth:`emit_log` but swallows failures. Never raises."""
-        try:
-            self.emit_log(
-                event_type=event_type,
-                level=level,
-                message=message,
-                component=component,
-                payload=payload,
-                timestamp=timestamp,
-                correlation_id=correlation_id,
-                task_id=task_id,
-                application_id=application_id,
-                connector_type=connector_type,
-                result_id=result_id,
-                request_id=request_id,
-                exception_type=exception_type,
-                stacktrace=stacktrace,
-            )
-        except Exception:
-            pass
-
-    def log_info(
-        self,
-        event_type: str,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> None:
-        """Convenience: emit at INFO level.
-
-        ``**kwargs`` are forwarded to :meth:`emit_log` (optional metadata only).
-        """
-        self.emit_log(event_type, LogLevel.INFO, message, component, payload, **kwargs)
-
-    def log_warning(
-        self,
-        event_type: str,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> None:
-        """Convenience: emit at WARNING level.
-
-        ``**kwargs`` are forwarded to :meth:`emit_log` (optional metadata only).
-        """
-        self.emit_log(event_type, LogLevel.WARNING, message, component, payload, **kwargs)
-
-    def log_error(
-        self,
-        event_type: str,
-        message: str,
-        component: str,
-        payload: dict[str, Any],
-        **kwargs: Any,
-    ) -> None:
-        """Convenience: emit at ERROR level.
-
-        ``**kwargs`` are forwarded to :meth:`emit_log` (optional metadata only).
-        """
-        self.emit_log(event_type, LogLevel.ERROR, message, component, payload, **kwargs)
+        await self.emit_event(event)

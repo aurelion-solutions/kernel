@@ -4,12 +4,19 @@
 
 """AccessFact route dependencies."""
 
+import os
+
 from src.inventory.access_facts.service import AccessFactService
-from src.platform.logs.factory import log_sink_factory
-from src.platform.logs.service import LogService
+from src.platform.events.factory import event_sink_factory
+from src.platform.events.service import EventService
+
+
+def _get_events_provider() -> str:
+    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
 
 
 def get_access_fact_service() -> AccessFactService:
-    """Return AccessFactService with injected log service."""
-    log_service = LogService(factory=log_sink_factory)
-    return AccessFactService(log_service=log_service)
+    """Return AccessFactService with injected EventService."""
+    event_sink = event_sink_factory.get(_get_events_provider())
+    event_service = EventService(sink=event_sink)
+    return AccessFactService(event_service=event_service)

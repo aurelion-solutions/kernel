@@ -66,6 +66,7 @@ async def create_resource(
             status_code=409,
             detail='Resource with this (application_id, external_id) already exists',
         ) from None
+    await session.commit()
     return ResourceRead.model_validate(resource)
 
 
@@ -118,6 +119,7 @@ async def update_resource(
         raise HTTPException(status_code=404, detail='Resource not found') from None
     except ResourceParentNotFoundError:
         raise HTTPException(status_code=422, detail='Parent resource does not exist') from None
+    await session.commit()
     return ResourceRead.model_validate(resource)
 
 
@@ -161,6 +163,7 @@ async def add_resource_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this resource: {body.key}',
         ) from None
+    await session.commit()
     return ResourceAttributeRead.model_validate(attr)
 
 
@@ -178,3 +181,4 @@ async def remove_resource_attribute(
         raise HTTPException(status_code=404, detail='Resource not found') from None
     except ResourceAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Resource attribute not found') from None
+    await session.commit()

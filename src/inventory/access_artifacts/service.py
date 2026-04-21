@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 import uuid
 
@@ -20,8 +21,8 @@ from src.inventory.access_artifacts.repository import (
 from src.inventory.access_artifacts.repository import (
     list_access_artifacts as repo_list_access_artifacts,
 )
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.access_artifacts'
 
@@ -51,10 +52,13 @@ async def _application_exists(session: AsyncSession, application_id: uuid.UUID) 
 
 
 class AccessArtifactService:
-    """Orchestrates access artifact creation, retrieval, and log emission."""
+    """Orchestrates access artifact creation, retrieval, and event emission."""
 
-    def __init__(self, log_service: LogService | None = None) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+    ) -> None:
+        self._events = event_service if event_service is not None else noop_event_service
 
     async def create_artifact(
         self,
@@ -65,8 +69,9 @@ class AccessArtifactService:
         external_id: str,
         payload: dict[str, Any],
         ingest_batch_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> AccessArtifact:
-        """Create an access artifact. Validates application existence. Emits access_artifact.created."""
+        """Create an access artifact. Validates application existence. Emits inventory.access_artifact.created."""
         if not await _application_exists(session, application_id):
             raise AccessArtifactApplicationNotFoundError(application_id)
 
@@ -79,22 +84,25 @@ class AccessArtifactService:
             ingest_batch_id=ingest_batch_id,
         )
 
-        self._log.emit_safe(
-            'access_artifact.created',
-            LogLevel.INFO,
-            'Access artifact created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.access_artifact.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
                     'artifact_id': str(artifact.id),
                     'application_id': str(application_id),
                     'source_kind': source_kind,
                     'external_id': external_id,
                     'ingest_batch_id': ingest_batch_id,
                 },
-                actor_component=_COMPONENT,
-                target_id='access_artifact',
-            ),
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(artifact.id),
+            )
         )
         return artifact
 
@@ -103,21 +111,8 @@ class AccessArtifactService:
         session: AsyncSession,
         artifact_id: uuid.UUID,
     ) -> AccessArtifact | None:
-        """Get access artifact by id. Emits access_artifact.retrieved when found."""
-        artifact = await repo_get_access_artifact_by_id(session, artifact_id)
-        if artifact is not None:
-            self._log.emit_safe(
-                'access_artifact.retrieved',
-                LogLevel.INFO,
-                'Access artifact retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'artifact_id': str(artifact_id)},
-                    actor_component=_COMPONENT,
-                    target_id='access_artifact',
-                ),
-            )
-        return artifact
+        """Get access artifact by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        return await repo_get_access_artifact_by_id(session, artifact_id)
 
     async def list_artifacts(
         self,

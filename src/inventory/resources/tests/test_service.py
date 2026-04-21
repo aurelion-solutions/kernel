@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -21,26 +19,24 @@ from src.inventory.resources.service import (
     ResourceParentNotFoundError,
     ResourceService,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> ResourceService:
-    return ResourceService(log_service=log_service)
+def service(event_service: EventService) -> ResourceService:
+    return ResourceService(event_service=event_service)
 
 
 async def _make_application_id(session) -> uuid.UUID:
@@ -58,13 +54,17 @@ async def _make_application_id(session) -> uuid.UUID:
     return app.id
 
 
+# ---------------------------------------------------------------------------
+# Behavioural tests (rewritten — log assertions removed)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_create_resource_happy_path(
     service: ResourceService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """create_resource creates resource and emits resource.created."""
+    """create_resource creates resource and returns it with correct fields."""
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -78,14 +78,6 @@ async def test_create_resource_happy_path(
     assert resource.id is not None
     assert resource.external_id == 'svc-res-001'
     assert resource.kind == 'database'
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'resource.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'inventory.resources'
-    assert 'resource_id' in created[-1]['payload']
-    assert created[-1]['payload']['kind'] == 'database'
 
 
 @pytest.mark.asyncio
@@ -156,9 +148,8 @@ async def test_create_resource_duplicate(
 async def test_get_resource_found(
     service: ResourceService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_resource returns resource and emits resource.retrieved."""
+    """get_resource returns resource when found."""
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -175,11 +166,6 @@ async def test_get_resource_found(
 
     assert found is not None
     assert found.id == resource_id
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'resource.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'inventory.resources'
 
 
 @pytest.mark.asyncio
@@ -197,9 +183,8 @@ async def test_get_resource_missing(
 async def test_update_resource_privilege_level(
     service: ResourceService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """update_resource changes privilege_level and emits resource.updated."""
+    """update_resource changes privilege_level."""
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -217,20 +202,20 @@ async def test_update_resource_privilege_level(
         await session.commit()
 
     assert updated.privilege_level.value == 'admin'
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    updated_events = [r for r in records if r.get('event_type') == 'resource.updated']
-    assert len(updated_events) >= 1
-    assert 'privilege_level' in updated_events[-1]['payload']['changed_fields']
 
 
 @pytest.mark.asyncio
-async def test_update_resource_no_op(
+async def test_update_resource_no_op_emits_nothing(
     service: ResourceService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """update_resource with same value does not emit resource.updated."""
+    """update_resource with same value does not emit inventory.resource.updated.
+
+    Replaces the log-era test_update_resource_no_op which counted log file lines.
+    The two contracts are equivalent for this specific invariant: a no-op PATCH
+    must produce zero side-effects regardless of which bus is used.
+    """
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -242,28 +227,22 @@ async def test_update_resource_no_op(
         await session.commit()
         resource_id = resource.id
 
-    count_before = len(log_path.read_text().strip().split('\n')) if log_path.exists() else 0
+    capturing_events.emitted.clear()
 
     async with session_factory() as session:
         patch = ResourcePatch(kind='table')
         await service.update_resource(session, resource_id, patch)
         await session.commit()
 
-    count_after = len(log_path.read_text().strip().split('\n')) if log_path.exists() else 0
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    updated_events = [r for r in records if r.get('event_type') == 'resource.updated']
-    assert len(updated_events) == 0
-    assert count_after == count_before
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_add_attribute_happy_path(
     service: ResourceService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """add_attribute adds attribute and emits resource.attribute.added."""
+    """add_attribute adds attribute with correct key and value."""
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -278,11 +257,6 @@ async def test_add_attribute_happy_path(
 
     assert attr.key == 'owner'
     assert attr.value == 'alice'
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    added = [r for r in records if r.get('event_type') == 'resource.attribute.added']
-    assert len(added) >= 1
-    assert added[-1]['payload']['key'] == 'owner'
 
 
 @pytest.mark.asyncio
@@ -318,9 +292,8 @@ async def test_add_attribute_duplicate(
 async def test_remove_attribute_happy_path(
     service: ResourceService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """remove_attribute removes attribute and emits resource.attribute.removed."""
+    """remove_attribute removes attribute; list_attributes returns empty afterwards."""
     async with session_factory() as session:
         app_id = await _make_application_id(session)
         resource = await service.create_resource(
@@ -338,11 +311,9 @@ async def test_remove_attribute_happy_path(
         await service.remove_attribute(session, resource_id, 'env')
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    removed = [r for r in records if r.get('event_type') == 'resource.attribute.removed']
-    assert len(removed) >= 1
-    assert removed[-1]['payload']['key'] == 'env'
+    async with session_factory() as session:
+        attrs = await service.list_attributes(session, resource_id)
+    assert attrs == []
 
 
 @pytest.mark.asyncio
@@ -425,3 +396,272 @@ async def test_get_resource_by_external_id_returns_none_when_absent(
         )
 
     assert found is None
+
+
+# ---------------------------------------------------------------------------
+# Event-emission tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_resource_emits_inventory_resource_created(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_resource emits inventory.resource.created with correct envelope fields.
+
+    The payload preserves 'kind' field so that Step 22 cross-slice consumers
+    can route on payload['kind'] when rewriting the xfailed ACL pipeline assertions.
+    """
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='emit-c-001',
+            application_id=app_id,
+            kind='database',
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.created')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.resources'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(resource.id)
+    assert envelope.causation_id is None
+    assert isinstance(envelope.correlation_id, str)
+    assert len(envelope.correlation_id) > 0
+    assert envelope.payload == {
+        'resource_id': str(resource.id),
+        'application_id': str(app_id),
+        'kind': 'database',
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_resource_emits_inventory_resource_updated(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_resource emits inventory.resource.updated with changed_fields and correct target_id."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='emit-u-001',
+            application_id=app_id,
+            kind='api',
+        )
+        await session.commit()
+        resource_id = resource.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        patch = ResourcePatch(privilege_level='admin')
+        await service.update_resource(session, resource_id, patch)
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.updated')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(resource_id)
+    assert envelope.payload['changed_fields'] == ['privilege_level']
+    assert envelope.payload['resource_id'] == str(resource_id)
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_emits_inventory_resource_attribute_added(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """add_attribute emits inventory.resource.attribute_added with owning-parent target_id."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='emit-aa-001',
+            application_id=app_id,
+            kind='storage',
+        )
+        await session.flush()
+        capturing_events.emitted.clear()
+        await service.add_attribute(session, resource.id, 'owner', 'alice')
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.attribute_added')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(resource.id)
+    assert envelope.payload == {'resource_id': str(resource.id), 'key': 'owner'}
+
+
+@pytest.mark.asyncio
+async def test_remove_attribute_emits_inventory_resource_attribute_removed(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """remove_attribute emits inventory.resource.attribute_removed with owning-parent target_id."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='emit-ar-001',
+            application_id=app_id,
+            kind='queue',
+        )
+        await session.flush()
+        await service.add_attribute(session, resource.id, 'owner', 'bob')
+        await session.commit()
+        resource_id = resource.id
+
+    async with session_factory() as session:
+        capturing_events.emitted.clear()
+        await service.remove_attribute(session, resource_id, 'owner')
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.attribute_removed')
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope.target_id == str(resource_id)
+    assert envelope.payload == {'resource_id': str(resource_id), 'key': 'owner'}
+
+
+# ---------------------------------------------------------------------------
+# Drop-retrieved test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_resource_does_not_emit_event(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """get_resource emits no event (Q1 — resource.retrieved dropped, audit deferred)."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='no-emit-001',
+            application_id=app_id,
+            kind='folder',
+        )
+        await session.commit()
+        resource_id = resource.id
+
+    async with session_factory() as session:
+        capturing_events.emitted.clear()
+        result = await service.get_resource(session, resource_id)
+        assert result is not None
+        assert capturing_events.emitted == []
+
+    async with session_factory() as session:
+        result = await service.get_resource(session, uuid.uuid4())
+        assert result is None
+        assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Correlation-id tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_resource_correlation_id_explicit(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_resource passes explicit correlation_id through to the envelope."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        await service.create_resource(
+            session,
+            external_id='corr-e-001',
+            application_id=app_id,
+            kind='table',
+            correlation_id='trace-xyz-789',
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.created')
+    assert len(envelopes) == 1
+    assert envelopes[0].correlation_id == 'trace-xyz-789'
+
+
+@pytest.mark.asyncio
+async def test_create_resource_correlation_id_autogenerated(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_resource autogenerates a 32-hex correlation_id when none is supplied."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        await service.create_resource(
+            session,
+            external_id='corr-a-001',
+            application_id=app_id,
+            kind='view',
+        )
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.created')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+@pytest.mark.asyncio
+async def test_update_resource_correlation_id_autogenerated_independent_of_create(
+    service: ResourceService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_resource autogenerates its own correlation_id independently of the create correlation_id."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='corr-ind-001',
+            application_id=app_id,
+            kind='bucket',
+            correlation_id='A',
+        )
+        await session.commit()
+        resource_id = resource.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        patch = ResourcePatch(privilege_level='read')
+        await service.update_resource(session, resource_id, patch)
+        await session.commit()
+
+    envelopes = capturing_events.filter_by_type('inventory.resource.updated')
+    assert len(envelopes) == 1
+    corr_id = envelopes[0].correlation_id
+    assert corr_id != 'A'
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+# ---------------------------------------------------------------------------
+# Anti-dual-emit guard
+# ---------------------------------------------------------------------------
+
+
+def test_resource_service_has_no_log_attribute() -> None:
+    """ResourceService must not carry a _log attribute (anti-dual-emit guard)."""
+    service = ResourceService()
+    assert getattr(service, '_log', None) is None

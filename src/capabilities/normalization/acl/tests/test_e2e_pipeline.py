@@ -10,9 +10,6 @@ then asserts row counts, shapes, and event footprint.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 from sqlalchemy import func, select
 from src.capabilities.normalization.acl.schemas import ACLEntryPayload
@@ -26,6 +23,8 @@ from src.inventory.artifact_bindings.service import ArtifactBindingService
 from src.inventory.enums import Action
 from src.inventory.resources.models import Resource, ResourcePrivilegeLevel
 from src.inventory.resources.service import ResourceService
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 from src.platform.logs.factory import LogSinkFactory
 from src.platform.logs.providers.file import FileLogSink
 from src.platform.logs.service import LogService
@@ -97,19 +96,24 @@ async def _make_e2e_prerequisites(session):
 @pytest.mark.asyncio
 async def test_acl_pipeline_end_to_end(
     session_factory,
-    tmp_path: Path,
+    tmp_path,
 ) -> None:
     """Phase 08 capstone: ingest 3 ACL rows × 2 passes, assert counts, shapes, and events."""
-    log_file = tmp_path / 'logs.jsonl'
+    from pathlib import Path
+
+    log_file: Path = tmp_path / 'logs.jsonl'
     factory = LogSinkFactory()
     factory.register('file', lambda: FileLogSink(path=log_file))
     log_service = LogService(factory=factory, provider_name='file')
 
+    capturing_events = CapturingEventService()
+    event_service = EventService(sink=capturing_events)
+
     acl_svc = ACLNormalizerService(
-        artifact_service=AccessArtifactService(log_service=log_service),
-        resource_service=ResourceService(log_service=log_service),
-        access_fact_service=AccessFactService(log_service=log_service),
-        binding_service=ArtifactBindingService(log_service=log_service),
+        artifact_service=AccessArtifactService(event_service=event_service),
+        resource_service=ResourceService(event_service=event_service),
+        access_fact_service=AccessFactService(event_service=event_service),
+        binding_service=ArtifactBindingService(event_service=event_service),
         log_service=log_service,
     )
 
@@ -210,22 +214,15 @@ async def test_acl_pipeline_end_to_end(
     assert write_fact is not None
 
     # --- Event assertions ---
-    records = [json.loads(line) for line in log_file.read_text().strip().split('\n') if line.strip()]
-    event_types = [r.get('event_type', '') for r in records]
-    components = [r.get('component', '') for r in records]
+    event_types = [e.event_type for e in capturing_events.emitted]
 
-    assert event_types.count('access_artifact.created') == 6
-    assert event_types.count('resource.created') == 2
-    assert event_types.count('access_fact.created') == 3
-    assert event_types.count('artifact_binding.created') == 6
-    assert event_types.count('access_fact.invalidated') == 0
+    assert event_types.count('inventory.access_artifact.created') == 6
+    assert event_types.count('inventory.resource.created') == 2
+    assert event_types.count('inventory.access_fact.created') == 3
+    assert event_types.count('inventory.artifact_binding.created') == 6
+    assert event_types.count('inventory.access_fact.invalidated') == 0
 
     # No events from the normalization orchestrator itself.
-    normalization_component_events = sum(1 for c in components if c.startswith('capabilities.normalization'))
-    assert normalization_component_events == 0, (
-        f'Orchestrator emitted {normalization_component_events} events — should be 0'
-    )
-
     normalization_event_type_events = sum(1 for et in event_types if et.startswith('normalization.'))
     assert normalization_event_type_events == 0, (
         f'Found {normalization_event_type_events} normalization.* events — should be 0'

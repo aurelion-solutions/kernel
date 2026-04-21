@@ -134,7 +134,8 @@ async def test_register_from_message_emits_capability_actor_and_connector_target
         )
         await session.commit()
 
-    reg_events = [e for e in captured if e.event_type == 'connector_instance.registered']
+    # Step 23: event_type no longer forwarded via emit_safe; filter by message instead.
+    reg_events = [e for e in captured if e.message == 'Connector instance registered']
     assert len(reg_events) == 1
     ev = reg_events[0]
     assert ev.initiator_id == 'connectors'

@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Customer service for coordinating repository and log emission."""
+"""Customer service for coordinating repository and event emission."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -35,8 +36,8 @@ from src.inventory.customers.repository import (
 from src.inventory.customers.schemas import CustomerPatch
 from src.inventory.subjects.models import SubjectKind
 from src.inventory.subjects.service import SubjectService
-from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_log_participant_fields, noop_log_service
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.customers'
 
@@ -68,16 +69,16 @@ class DuplicateCustomerAttributeError(Exception):
 
 
 class CustomerService:
-    """Orchestrates customer CRUD and log emission."""
+    """Orchestrates customer CRUD and event emission."""
 
     def __init__(
         self,
-        log_service: LogService | None = None,
+        event_service: EventService | None = None,
         subject_service: SubjectService | None = None,
     ) -> None:
-        self._log = log_service if log_service is not None else noop_log_service
+        self._events = event_service if event_service is not None else noop_event_service
         self._subject_service = (
-            subject_service if subject_service is not None else SubjectService(log_service=log_service)
+            subject_service if subject_service is not None else SubjectService(event_service=event_service)
         )
 
     async def create_customer(
@@ -92,8 +93,9 @@ class CustomerService:
         mfa_enabled: bool = True,
         is_locked: bool = False,
         description: str | None = None,
+        correlation_id: str | None = None,
     ) -> Customer:
-        """Create a customer and emit customer.created."""
+        """Create a customer. Emits inventory.customer.created."""
         customer = await repo_create_customer(
             session,
             external_id=external_id,
@@ -105,22 +107,24 @@ class CustomerService:
             is_locked=is_locked,
             description=description,
         )
-        payload: dict[str, object] = {
-            'customer_id': str(customer.id),
-            'external_id': customer.external_id,
-            'tenant_id': customer.tenant_id,
-            'plan_tier': customer.plan_tier.value if customer.plan_tier else None,
-        }
-        self._log.emit_safe(
-            'customer.created',
-            LogLevel.INFO,
-            'Customer created',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                payload,
-                actor_component=_COMPONENT,
-                target_id='customer',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.customer.created',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'customer_id': str(customer.id),
+                    'external_id': customer.external_id,
+                    'tenant_id': customer.tenant_id,
+                    'plan_tier': customer.plan_tier.value if customer.plan_tier else None,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(customer.id),
+            )
         )
         return customer
 
@@ -129,21 +133,8 @@ class CustomerService:
         session: AsyncSession,
         customer_id: uuid.UUID,
     ) -> Customer | None:
-        """Get customer by id. Emits customer.retrieved when found."""
-        customer = await repo_get_customer_by_id(session, customer_id)
-        if customer is not None:
-            self._log.emit_safe(
-                'customer.retrieved',
-                LogLevel.INFO,
-                'Customer retrieved',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {'customer_id': str(customer_id)},
-                    actor_component=_COMPONENT,
-                    target_id='customer',
-                ),
-            )
-        return customer
+        """Get customer by id. No event emitted (Q1 — customer.retrieved dropped, audit deferred to future audit.* slice)."""  # noqa: E501
+        return await repo_get_customer_by_id(session, customer_id)
 
     async def list_customers(
         self,
@@ -160,8 +151,9 @@ class CustomerService:
         session: AsyncSession,
         customer_id: uuid.UUID,
         patch: CustomerPatch,
+        correlation_id: str | None = None,
     ) -> Customer:
-        """Apply partial update and emit customer.updated if fields changed."""
+        """Apply partial update to customer. Emits inventory.customer.updated if fields changed. May trigger subject status recompute via SubjectService when lock/verification fields change."""  # noqa: E501
         customer = await repo_get_customer_by_id(session, customer_id)
         if customer is None:
             raise CustomerNotFoundError(customer_id)
@@ -175,19 +167,22 @@ class CustomerService:
             plan_tier=patch.plan_tier,
         )
         if changed_fields:
-            self._log.emit_safe(
-                'customer.updated',
-                LogLevel.INFO,
-                'Customer updated',
-                _COMPONENT,
-                merge_emit_log_participant_fields(
-                    {
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='inventory.customer.updated',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
                         'customer_id': str(customer_id),
                         'changed_fields': sorted(changed_fields),
                     },
-                    actor_component=_COMPONENT,
-                    target_id='customer',
-                ),
+                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=str(customer.id),
+                )
             )
             if changed_fields & {'is_locked', 'email_verified'}:
                 await self._subject_service.recompute_status_for_principal(
@@ -214,8 +209,9 @@ class CustomerService:
         customer_id: uuid.UUID,
         key: str,
         value: str,
+        correlation_id: str | None = None,
     ) -> CustomerAttribute:
-        """Add attribute to customer. Emits customer.attribute.added. Raises on duplicate."""
+        """Add attribute to customer. Emits inventory.customer.attribute_added. Raises on duplicate."""
         customer = await repo_get_customer_by_id(session, customer_id)
         if customer is None:
             raise CustomerNotFoundError(customer_id)
@@ -228,16 +224,22 @@ class CustomerService:
             )
         except IntegrityError:
             raise DuplicateCustomerAttributeError(customer_id, key) from None
-        self._log.emit_safe(
-            'customer.attribute.added',
-            LogLevel.INFO,
-            'Customer attribute added',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'customer_id': str(customer_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='customer',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.customer.attribute_added',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'customer_id': str(customer_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(customer_id),
+            )
         )
         return attr
 
@@ -246,22 +248,29 @@ class CustomerService:
         session: AsyncSession,
         customer_id: uuid.UUID,
         key: str,
+        correlation_id: str | None = None,
     ) -> None:
-        """Remove attribute from customer. Emits customer.attribute.removed. Raises if missing."""
+        """Remove attribute from customer. Emits inventory.customer.attribute_removed. Raises if missing."""
         customer = await repo_get_customer_by_id(session, customer_id)
         if customer is None:
             raise CustomerNotFoundError(customer_id)
         deleted = await repo_delete_customer_attribute(session, customer_id, key)
         if not deleted:
             raise CustomerAttributeNotFoundError(customer_id, key)
-        self._log.emit_safe(
-            'customer.attribute.removed',
-            LogLevel.INFO,
-            'Customer attribute removed',
-            _COMPONENT,
-            merge_emit_log_participant_fields(
-                {'customer_id': str(customer_id), 'key': key},
-                actor_component=_COMPONENT,
-                target_id='customer',
-            ),
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.customer.attribute_removed',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'customer_id': str(customer_id),
+                    'key': key,
+                },
+                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(customer_id),
+            )
         )

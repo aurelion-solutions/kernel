@@ -4,8 +4,8 @@
 
 """Tests for AccountService."""
 
-import json
-from pathlib import Path
+from __future__ import annotations
+
 import uuid
 
 import pytest
@@ -18,26 +18,33 @@ from src.inventory.accounts.service import (
 )
 from src.inventory.subjects.models import Subject, SubjectKind
 from src.platform.applications.models import Application
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> AccountService:
-    return AccountService(log_service=log_service)
+def service(event_service: EventService) -> AccountService:
+    return AccountService(event_service=event_service)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 async def _seed_application(session) -> uuid.UUID:
@@ -82,13 +89,18 @@ async def _seed_account(
     return account
 
 
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_update_account_status_only_emits_event(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """PATCH status=active emits account.updated with changed_fields=['status']."""
+    """PATCH status=active emits inventory.account.updated with changed_fields=['status']."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         account = await _seed_account(session, app_id, status=AccountStatus.unknown)
@@ -101,20 +113,24 @@ async def test_update_account_status_only_emits_event(
         await session.commit()
 
     assert updated.status == AccountStatus.active
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    events = [r for r in records if r.get('event_type') == 'account.updated']
-    assert len(events) == 1
-    assert events[0]['payload']['changed_fields'] == ['status']
+    emitted = capturing_events.filter_by_type('inventory.account.updated')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.accounts'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(account_id)
+    assert envelope.payload['account_id'] == str(account_id)
+    assert envelope.payload['changed_fields'] == ['status']
 
 
 @pytest.mark.asyncio
 async def test_update_account_subject_only_emits_event(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """PATCH subject_id emits account.updated with changed_fields=['subject_id']."""
+    """PATCH subject_id emits inventory.account.updated with changed_fields=['subject_id']."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         subject_id = await _seed_subject(session)
@@ -128,20 +144,18 @@ async def test_update_account_subject_only_emits_event(
         await session.commit()
 
     assert updated.subject_id == subject_id
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    events = [r for r in records if r.get('event_type') == 'account.updated']
-    assert len(events) == 1
-    assert events[0]['payload']['changed_fields'] == ['subject_id']
+    emitted = capturing_events.filter_by_type('inventory.account.updated')
+    assert len(emitted) == 1
+    assert emitted[0].payload['changed_fields'] == ['subject_id']
 
 
 @pytest.mark.asyncio
 async def test_update_account_both_fields_emits_single_event(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """PATCH both fields emits single account.updated with sorted changed_fields."""
+    """PATCH both fields emits single inventory.account.updated with sorted changed_fields."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         subject_id = await _seed_subject(session)
@@ -154,20 +168,18 @@ async def test_update_account_both_fields_emits_single_event(
         await service.update_account(session, account_id, patch)
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    events = [r for r in records if r.get('event_type') == 'account.updated']
-    assert len(events) == 1
-    assert events[0]['payload']['changed_fields'] == ['status', 'subject_id']
+    emitted = capturing_events.filter_by_type('inventory.account.updated')
+    assert len(emitted) == 1
+    assert emitted[0].payload['changed_fields'] == ['status', 'subject_id']
 
 
 @pytest.mark.asyncio
 async def test_update_account_noop_does_not_emit(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """PATCH with same values does not emit account.updated."""
+    """PATCH with same values does not emit inventory.account.updated."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         account = await _seed_account(session, app_id, status=AccountStatus.active)
@@ -179,30 +191,30 @@ async def test_update_account_noop_does_not_emit(
         await service.update_account(session, account_id, patch)
         await session.commit()
 
-    if log_path.exists():
-        lines = log_path.read_text().strip().split('\n')
-        records = [json.loads(line) for line in lines if line.strip()]
-        events = [r for r in records if r.get('event_type') == 'account.updated']
-        assert len(events) == 0
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_update_account_not_found_raises(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """update_account raises AccountNotFoundError for unknown id."""
+    """update_account raises AccountNotFoundError for unknown id. No event emitted."""
     async with session_factory() as session:
         with pytest.raises(AccountNotFoundError):
             await service.update_account(session, uuid.uuid4(), AccountPatch(status=AccountStatus.active))
+
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_update_account_bogus_subject_raises_subject_not_found(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH with unseeded subject_id raises AccountSubjectNotFoundError."""
+    """PATCH with unseeded subject_id raises AccountSubjectNotFoundError. No event emitted."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         account = await _seed_account(session, app_id)
@@ -215,45 +227,89 @@ async def test_update_account_bogus_subject_raises_subject_not_found(
             await service.update_account(session, account_id, patch)
             await session.commit()
 
+    assert capturing_events.emitted == []
+
 
 @pytest.mark.asyncio
-async def test_get_account_emits_retrieved_when_found(
+async def test_get_account_does_not_emit_event(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_account emits account.retrieved when account is found."""
+    """get_account returns account without emitting any event (Q1 — read-side audit dropped)."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         account = await _seed_account(session, app_id)
         account_id = account.id
         await session.commit()
 
-    async with session_factory() as session:
-        result = await service.get_account(session, account_id)
+    capturing_events.clear()
 
-    assert result is not None
-    assert result.id == account_id
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines if line.strip()]
-    events = [r for r in records if r.get('event_type') == 'account.retrieved']
-    assert len(events) == 1
-    assert events[0]['payload']['account_id'] == str(account_id)
+    async with session_factory() as session:
+        found = await service.get_account(session, account_id)
+
+    assert found is not None
+    assert found.id == account_id
+    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio
 async def test_get_account_missing_returns_none_no_emit(
     service: AccountService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """get_account returns None and does not emit when not found."""
+    """get_account returns None and does not emit when account is not found."""
     async with session_factory() as session:
         result = await service.get_account(session, uuid.uuid4())
 
     assert result is None
-    if log_path.exists():
-        lines = log_path.read_text().strip().split('\n')
-        records = [json.loads(line) for line in lines if line.strip()]
-        events = [r for r in records if r.get('event_type') == 'account.retrieved']
-        assert len(events) == 0
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_update_account_propagates_correlation_id(
+    service: AccountService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_account propagates an explicit correlation_id into the envelope."""
+    async with session_factory() as session:
+        app_id = await _seed_application(session)
+        account = await _seed_account(session, app_id, status=AccountStatus.unknown)
+        account_id = account.id
+        await session.commit()
+
+    async with session_factory() as session:
+        patch = AccountPatch(status=AccountStatus.active)
+        await service.update_account(session, account_id, patch, correlation_id='trace-account-xyz')
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.account.updated')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'trace-account-xyz'
+
+
+@pytest.mark.asyncio
+async def test_update_account_generates_correlation_id_when_omitted(
+    service: AccountService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_account generates a uuid4 hex correlation_id when caller omits it."""
+    async with session_factory() as session:
+        app_id = await _seed_application(session)
+        account = await _seed_account(session, app_id, status=AccountStatus.unknown)
+        account_id = account.id
+        await session.commit()
+
+    async with session_factory() as session:
+        patch = AccountPatch(status=AccountStatus.active)
+        await service.update_account(session, account_id, patch)
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.account.updated')
+    assert len(emitted) == 1
+    cid = emitted[0].correlation_id
+    assert isinstance(cid, str)
+    assert len(cid) == 32 and all(c in '0123456789abcdef' for c in cid)

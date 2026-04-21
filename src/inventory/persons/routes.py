@@ -40,6 +40,7 @@ async def create_person(
         external_id=body.external_id,
         description=body.description,
     )
+    await session.commit()
     return PersonRead.model_validate(person)
 
 
@@ -106,6 +107,7 @@ async def add_person_attribute(
             status_code=409,
             detail=f'Attribute key already exists for this person: {body.key}',
         ) from None
+    await session.commit()
     return PersonAttributeRead.model_validate(attr)
 
 
@@ -123,3 +125,4 @@ async def remove_person_attribute(
         raise HTTPException(status_code=404, detail='Person not found') from None
     except PersonAttributeNotFoundError:
         raise HTTPException(status_code=404, detail='Person attribute not found') from None
+    await session.commit()

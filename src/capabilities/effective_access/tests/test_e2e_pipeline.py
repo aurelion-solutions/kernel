@@ -7,35 +7,29 @@
 Proves the full seam:
   raw ACL payload
   → Phase 08 normalization (ACLNormalizerService)
-  → access_fact.* / initiative.* events → FileLogSink
+  → inventory.access_fact.* / inventory.initiative.* events → CapturingEventService
   → EAS incremental consumer (_handle_message_async)
   → effective_grants rows
   → read API (GET /effective-grants, GET /effective-grants/explain)
 
 No live RabbitMQ. No runtime code changed. No new routes. No migrations.
 
-Design: Option B (hybrid, no broker).  The test tails a JSONL log file written
-by real inventory services and feeds each relevant line directly into
-``_handle_message_async`` as UTF-8 bytes — byte-for-byte identical to what
-``FileLogSink`` wrote on disk (confirmed in TASK §6.1.1: one JSON object per
-line, no outer envelope, model_dump(mode='json') compatible with the consumer's
-normalize_mq_log_event_payload decoder).
-
-``CapturingLogService`` is imported from the sibling test module; both live
-under src/ and share the same testpaths, so the import is legal.
+Design: Option B (hybrid, no broker). The test captures EventEnvelopes emitted by
+real inventory services via CapturingEventService, then feeds each relevant envelope
+directly into ``_handle_message_async`` — serialized via ``envelope.model_dump(mode='json')``
++ ``json.dumps(...).encode('utf-8')``.
 
 Four waves:
   W1 — ingest 2 ACL rows + create 1 initiative per fact → 2 active grants
   W2 — expire initiative 1 → 1 active grant, 1 tombstoned
   W3 — invalidate fact 2   → 0 active grants, 2 tombstoned
-  W4 — CAS replay (replay Wave-1 initiative.created bodies) → no resurrection
+  W4 — CAS replay (replay Wave-1 initiative.created envelopes) → no resurrection
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
-from pathlib import Path
 from typing import Any
 import uuid
 
@@ -55,6 +49,9 @@ from src.inventory.initiatives.service import InitiativeService
 from src.inventory.resources.service import ResourceService
 from src.inventory.subjects.models import Subject, SubjectKind
 from src.platform.applications.models import Application
+from src.platform.events.schemas import EventEnvelope
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
 from src.platform.logs.factory import LogSinkFactory
 from src.platform.logs.providers.file import FileLogSink
 from src.platform.logs.service import LogService
@@ -89,39 +86,25 @@ _ROW_2 = ACLEntryPayload(
 
 
 # ---------------------------------------------------------------------------
-# Module-scoped helper — tail the JSONL log and filter to relevant events
+# Module-scoped helper — drain relevant envelopes from CapturingEventService
 # ---------------------------------------------------------------------------
 
 
-def _tail_relevant_events(
-    log_file: Path,
+def _drain_relevant_envelopes(
+    capturing: CapturingEventService,
     *,
     already_consumed: int,
-) -> tuple[list[str], int]:
-    """Return (new_relevant_event_lines, new_cursor).
+) -> tuple[list[EventEnvelope], int]:
+    """Return (new_relevant_envelopes, new_cursor).
 
-    Reads the full file, splits on newlines, parses each non-empty line as
-    JSON **only to inspect event_type**, and returns the **raw lines** at
-    index >= already_consumed whose event_type is in _EVENT_TYPES_RELEVANT.
-    The second tuple element is the updated cursor (total line count), to be
-    passed back as already_consumed on the next call.
-
-    Returning raw lines (not parsed dicts) lets the caller feed
-    ``line.encode('utf-8')`` straight into ``_handle_message_async`` — the
-    exact bytes ``FileLogSink`` wrote, no re-dump round-trip.
+    Reads all emitted envelopes, returns those at index >= already_consumed
+    whose event_type is in _EVENT_TYPES_RELEVANT. The second tuple element
+    is the updated cursor (total envelope count) for the next call.
     """
-    text = log_file.read_text(encoding='utf-8') if log_file.exists() else ''
-    all_lines = [ln for ln in text.splitlines() if ln.strip()]
-    new_lines = all_lines[already_consumed:]
-    new_cursor = len(all_lines)
-    relevant: list[str] = []
-    for line in new_lines:
-        try:
-            rec: dict[str, Any] = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if rec.get('event_type') in _EVENT_TYPES_RELEVANT:
-            relevant.append(line)
+    all_envs = capturing.emitted
+    new_envs = all_envs[already_consumed:]
+    new_cursor = len(all_envs)
+    relevant = [e for e in new_envs if e.event_type in _EVENT_TYPES_RELEVANT]
     return relevant, new_cursor
 
 
@@ -167,30 +150,36 @@ async def _make_e2e_prerequisites(session: AsyncSession) -> dict[str, Any]:
 async def test_eas_pipeline_end_to_end(
     session_factory: async_sessionmaker[AsyncSession],
     client: AsyncClient,
-    tmp_path: Path,
+    tmp_path,
 ) -> None:
     """Phase 09 e2e: 4-wave pipeline from ACL ingest to read API with CAS guard."""
 
     # ------------------------------------------------------------------
     # Pre-wave setup
     # ------------------------------------------------------------------
-    log_file = tmp_path / 'logs.jsonl'
+    from pathlib import Path
 
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_file))
-    inventory_log = LogService(factory=factory, provider_name='file')
+    log_file: Path = tmp_path / 'logs.jsonl'
+    log_factory = LogSinkFactory()
+    log_factory.register('file', lambda: FileLogSink(path=log_file))
+    inventory_log = LogService(factory=log_factory, provider_name='file')
+
+    producer_captured_events = CapturingEventService()
+    producer_event_service = EventService(sink=producer_captured_events)
 
     consumer_log = CapturingLogService()
+    _capturing_consumer_events = CapturingEventService()
+    consumer_events = EventService(sink=_capturing_consumer_events)
 
-    fact_svc = AccessFactService(log_service=inventory_log)
+    fact_svc = AccessFactService(event_service=producer_event_service)
     acl_svc = ACLNormalizerService(
-        artifact_service=AccessArtifactService(log_service=inventory_log),
-        resource_service=ResourceService(log_service=inventory_log),
+        artifact_service=AccessArtifactService(event_service=producer_event_service),
+        resource_service=ResourceService(event_service=producer_event_service),
         access_fact_service=fact_svc,  # shared instance — reused in Wave 3
-        binding_service=ArtifactBindingService(log_service=inventory_log),
+        binding_service=ArtifactBindingService(event_service=producer_event_service),
         log_service=inventory_log,
     )
-    init_svc = InitiativeService(log_service=inventory_log)
+    init_svc = InitiativeService(event_service=producer_event_service)
 
     async with session_factory() as session:
         ids = await _make_e2e_prerequisites(session)
@@ -201,18 +190,20 @@ async def test_eas_pipeline_end_to_end(
     cursor = 0
 
     # ------------------------------------------------------------------
-    # Drive consumer helper — feeds newly appended relevant lines to the handler
+    # Drive consumer helper — feeds newly captured relevant envelopes to the handler
     # ------------------------------------------------------------------
 
     async def _drive_consumer(current_cursor: int) -> int:
-        new_lines, new_cursor = _tail_relevant_events(log_file, already_consumed=current_cursor)
-        for line in new_lines:
-            body = line.encode('utf-8')
+        new_envs, new_cursor = _drain_relevant_envelopes(producer_captured_events, already_consumed=current_cursor)
+        for envelope in new_envs:
+            body = json.dumps(envelope.model_dump(mode='json')).encode('utf-8')
             await _handle_message_async(
                 body,
+                routing_key=envelope.event_type,
                 session_factory=session_factory,
-                projection_service_factory=lambda s, ls: EffectiveAccessProjectionService(s, ls),
+                projection_service_factory=lambda s, es: EffectiveAccessProjectionService(s, event_service=es),
                 log_service=consumer_log,  # type: ignore[arg-type]
+                event_service=consumer_events,
             )
         return new_cursor
 
@@ -288,13 +279,15 @@ async def test_eas_pipeline_end_to_end(
     assert g2['initiative_type'] == 'birthright'
     assert g2['initiative_origin'] == 'birthright'
 
-    # CAS-propagation: observed_at must equal the initiative.created event timestamp
-    all_records = [json.loads(ln) for ln in log_file.read_text().splitlines() if ln.strip()]
-    init_created_ts: dict[str, str] = {
-        r['payload']['initiative_id']: r['timestamp'] for r in all_records if r['event_type'] == 'initiative.created'
+    # CAS-propagation: observed_at must equal the initiative.created event timestamp.
+    # Compare as datetime objects to avoid Z vs +00:00 string format divergence.
+    init_created_dt: dict[str, datetime] = {
+        e.payload['initiative_id']: e.occurred_at
+        for e in producer_captured_events.emitted
+        if e.event_type == 'inventory.initiative.created'
     }
-    assert g1['observed_at'] == init_created_ts[str(init_id_1)]
-    assert g2['observed_at'] == init_created_ts[str(init_id_2)]
+    assert datetime.fromisoformat(g1['observed_at']) == init_created_dt[str(init_id_1)]
+    assert datetime.fromisoformat(g2['observed_at']) == init_created_dt[str(init_id_2)]
 
     # Capture for later invariance checks
     pre_g2_observed_at: str = g2['observed_at']
@@ -344,14 +337,21 @@ async def test_eas_pipeline_end_to_end(
     # Scope correctness: grant 2 is untouched by Wave 2
     assert by_fact[str(fact_id_2)]['observed_at'] == pre_g2_observed_at
 
-    # Tombstone timestamp == initiative.expired event timestamp (capture-then-compare)
-    all_records = [json.loads(ln) for ln in log_file.read_text().splitlines() if ln.strip()]
-    expired_ts = next(
-        r['timestamp']
-        for r in all_records
-        if r['event_type'] == 'initiative.expired' and r['payload']['initiative_id'] == str(init_id_1)
-    )
-    assert by_fact[str(fact_id_1)]['tombstoned_at'] == expired_ts
+    # Tombstone timestamp == the occurred_at of the first event that tombstoned this grant.
+    # With inventory.initiative.updated now in the UPSERT set, the UPSERT path runs
+    # tombstone_effective_grants_for_missing_pairs with its observed_at; the subsequent
+    # inventory.initiative.expired handler call is a no-op (grant already tombstoned).
+    # So tombstoned_at == occurred_at of whichever relevant Wave-2 envelope hit first.
+    # We verify that tombstoned_at is non-null and within the Wave-2 envelope timestamps.
+    wave2_init1_envs = [
+        e
+        for e in producer_captured_events.emitted
+        if e.payload.get('initiative_id') == str(init_id_1)
+        and e.event_type in ('inventory.initiative.updated', 'inventory.initiative.expired')
+    ]
+    assert len(wave2_init1_envs) >= 1
+    wave2_timestamps = {e.occurred_at for e in wave2_init1_envs}
+    assert datetime.fromisoformat(by_fact[str(fact_id_1)]['tombstoned_at']) in wave2_timestamps
 
     # Capture Wave-2 tombstone for the Wave-3 and Wave-4 invariance checks
     prior_fact1_tombstone: str = by_fact[str(fact_id_1)]['tombstoned_at']
@@ -383,32 +383,35 @@ async def test_eas_pipeline_end_to_end(
     # Wave-2 tombstone on fact 1 is not overwritten by the Wave-3 fact-2-scoped invalidate
     assert after[str(fact_id_1)]['tombstoned_at'] == prior_fact1_tombstone
 
-    # CAS-propagation: fact 2 tombstoned_at == access_fact.invalidated event timestamp
-    all_records = [json.loads(ln) for ln in log_file.read_text().splitlines() if ln.strip()]
-    invalidated_ts = next(
-        r['timestamp']
-        for r in all_records
-        if r['event_type'] == 'access_fact.invalidated' and r['payload']['access_fact_id'] == str(fact_id_2)
+    # CAS-propagation: fact 2 tombstoned_at == inventory.access_fact.invalidated event timestamp.
+    # Compare as datetime objects to avoid Z vs +00:00 string format divergence.
+    invalidated_env = next(
+        e
+        for e in producer_captured_events.emitted
+        if e.event_type == 'inventory.access_fact.invalidated' and e.payload.get('access_fact_id') == str(fact_id_2)
     )
-    assert after[str(fact_id_2)]['tombstoned_at'] == invalidated_ts
+    assert datetime.fromisoformat(after[str(fact_id_2)]['tombstoned_at']) == invalidated_env.occurred_at
 
     # ==================================================================
-    # Wave 4 — CAS guard: replay Wave-1 initiative.created lines
+    # Wave 4 — CAS guard: replay Wave-1 initiative.created envelopes
     # ==================================================================
 
-    all_lines = [ln for ln in log_file.read_text().splitlines() if ln.strip()]
-    w1_init_created = [line for line in all_lines if json.loads(line)['event_type'] == 'initiative.created']
-    assert len(w1_init_created) == 2, (
-        f'Expected exactly 2 initiative.created lines for the replay, got {len(w1_init_created)}'
+    w1_init_created_envs = [
+        e for e in producer_captured_events.emitted if e.event_type == 'inventory.initiative.created'
+    ]
+    assert len(w1_init_created_envs) == 2, (
+        f'Expected exactly 2 inventory.initiative.created envelopes for the replay, got {len(w1_init_created_envs)}'
     )
 
-    for line in w1_init_created:
-        body = line.encode('utf-8')
+    for envelope in w1_init_created_envs:
+        body = json.dumps(envelope.model_dump(mode='json')).encode('utf-8')
         await _handle_message_async(
             body,
+            routing_key=envelope.event_type,
             session_factory=session_factory,
-            projection_service_factory=lambda s, ls: EffectiveAccessProjectionService(s, ls),
+            projection_service_factory=lambda s, es: EffectiveAccessProjectionService(s, event_service=es),
             log_service=consumer_log,  # type: ignore[arg-type]
+            event_service=consumer_events,
         )
 
     # No resurrection — active_only=true still returns empty
@@ -423,7 +426,7 @@ async def test_eas_pipeline_end_to_end(
     assert len(final_items) == 2
     final = {item['source_access_fact_id']: item for item in final_items}
     assert final[str(fact_id_1)]['tombstoned_at'] == prior_fact1_tombstone
-    assert final[str(fact_id_2)]['tombstoned_at'] == invalidated_ts
+    assert datetime.fromisoformat(final[str(fact_id_2)]['tombstoned_at']) == invalidated_env.occurred_at
 
     # No ERROR events from the consumer during any of the four waves
     error_events = [e for e in consumer_log.events if e[1].value == 'error']

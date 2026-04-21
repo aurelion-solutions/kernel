@@ -63,12 +63,12 @@ async def ingest_connector_result(
     if validate_application:
         app = await get_application_by_id(session, application_id)
         if app is None:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             log.emit_safe(
-                'ingest.application.not_found',
-                LogLevel.ERROR,
-                f'Application {application_id} not found',
-                'ingest',
-                merge_emit_capability_trace_fields(
+                level=LogLevel.ERROR,
+                message=f'Application {application_id} not found',
+                component='ingest',
+                payload=merge_emit_capability_trace_fields(
                     {
                         'application_id': str(application_id),
                         'task_id': request.task_id,
@@ -96,12 +96,12 @@ async def ingest_connector_result(
         result_id=result_id,
         payload=payload_to_store,
     )
+    # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
     log.emit_safe(
-        'ingest.result.received',
-        LogLevel.INFO,
-        'Connector result ingested',
-        'ingest',
-        merge_emit_capability_trace_fields(
+        level=LogLevel.INFO,
+        message='Connector result ingested',
+        component='ingest',
+        payload=merge_emit_capability_trace_fields(
             {
                 'task_id': str(task_id),
                 'application_id': str(application_id),

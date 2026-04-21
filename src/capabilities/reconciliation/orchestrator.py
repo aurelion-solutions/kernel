@@ -121,12 +121,12 @@ async def begin_reconciliation_trace(
     log = log_service if log_service is not None else noop_log_service
     app = await get_application_by_id(session, application_id)
     if app is None:
+        # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
         log.emit_safe(
-            'reconciliation.failed',
-            LogLevel.ERROR,
-            f'Application {application_id} not found',
-            'reconciliation',
-            merge_emit_capability_trace_fields(
+            level=LogLevel.ERROR,
+            message=f'Application {application_id} not found',
+            component='reconciliation',
+            payload=merge_emit_capability_trace_fields(
                 {
                     'application_id': str(application_id),
                     'reason': 'application_not_found',
@@ -293,12 +293,12 @@ async def execute_reconciliation_continue(
             )
             log.emit_event_safe(failed)
         else:
+            # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             log.emit_safe(
-                'reconciliation.failed',
-                LogLevel.ERROR,
-                f'Reconciliation failed: {e!s}',
-                'reconciliation',
-                merge_emit_capability_trace_fields(
+                level=LogLevel.ERROR,
+                message=f'Reconciliation failed: {e!s}',
+                component='reconciliation',
+                payload=merge_emit_capability_trace_fields(
                     {
                         'application_id': str(application_id),
                         'reason': type(e).__name__,

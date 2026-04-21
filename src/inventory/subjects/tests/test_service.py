@@ -4,12 +4,10 @@
 
 """Tests for SubjectService."""
 
-import json
-from pathlib import Path
 import uuid
 
 import pytest
-from src.inventory.subjects.models import SubjectKind, SubjectNHIKind
+from src.inventory.subjects.models import SubjectKind
 from src.inventory.subjects.schemas import SubjectPatch
 from src.inventory.subjects.service import (
     DuplicateSubjectAttributeError,
@@ -18,26 +16,33 @@ from src.inventory.subjects.service import (
     SubjectNotFoundError,
     SubjectService,
 )
-from src.platform.logs.factory import LogSinkFactory
-from src.platform.logs.providers.file import FileLogSink
-from src.platform.logs.service import LogService
+from src.platform.events.schemas import EventParticipantKind
+from src.platform.events.service import EventService
+from src.platform.events.testing import CapturingEventService
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def log_path(tmp_path: Path) -> Path:
-    return tmp_path / 'logs.jsonl'
+def capturing_events() -> CapturingEventService:
+    return CapturingEventService()
 
 
 @pytest.fixture
-def log_service(log_path: Path) -> LogService:
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+def event_service(capturing_events: CapturingEventService) -> EventService:
+    return EventService(sink=capturing_events)
 
 
 @pytest.fixture
-def service(log_service: LogService) -> SubjectService:
-    return SubjectService(log_service=log_service)
+def service(event_service: EventService) -> SubjectService:
+    return SubjectService(event_service=event_service)
+
+
+# ---------------------------------------------------------------------------
+# Helper factories
+# ---------------------------------------------------------------------------
 
 
 async def _make_employee(session):
@@ -75,90 +80,9 @@ async def _make_customer(session):
     return cust
 
 
-@pytest.mark.asyncio
-async def test_create_subject_employee_emits_event(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """create_subject for employee kind emits subject.created."""
-    async with session_factory() as session:
-        emp = await _make_employee(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-emp-001',
-            kind=SubjectKind.employee,
-            principal_employee_id=emp.id,
-            status='active',
-        )
-        await session.commit()
-
-    assert subject.id is not None
-    assert subject.kind == SubjectKind.employee
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'subject.created']
-    assert len(created) >= 1
-    assert created[-1]['component'] == 'inventory.subjects'
-    assert 'subject_id' in created[-1]['payload']
-    assert created[-1]['payload']['kind'] == 'employee'
-    assert created[-1]['payload']['status'] == 'active'
-
-
-@pytest.mark.asyncio
-async def test_create_subject_nhi_emits_event(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """create_subject for nhi kind emits subject.created with nhi_kind."""
-    async with session_factory() as session:
-        nhi = await _make_nhi(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-nhi-001',
-            kind=SubjectKind.nhi,
-            nhi_kind=SubjectNHIKind.service_account,
-            principal_nhi_id=nhi.id,
-            status='active',
-        )
-        await session.commit()
-
-    assert subject.nhi_kind == SubjectNHIKind.service_account
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    created = [r for r in records if r.get('event_type') == 'subject.created']
-    assert len(created) >= 1
-    assert created[-1]['payload']['nhi_kind'] == 'service_account'
-
-
-@pytest.mark.asyncio
-async def test_get_subject_emits_retrieved(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """get_subject emits subject.retrieved when found."""
-    async with session_factory() as session:
-        emp = await _make_employee(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-get-001',
-            kind=SubjectKind.employee,
-            principal_employee_id=emp.id,
-            status='hired',
-        )
-        await session.commit()
-        subject_id = subject.id
-
-    async with session_factory() as session:
-        await service.get_subject(session, subject_id)
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    retrieved = [r for r in records if r.get('event_type') == 'subject.retrieved']
-    assert len(retrieved) >= 1
-    assert retrieved[-1]['component'] == 'inventory.subjects'
+# ---------------------------------------------------------------------------
+# Behavioural tests (state transitions / raise-before-emit guards)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -169,68 +93,6 @@ async def test_get_subject_returns_none_when_missing(
     async with session_factory() as session:
         result = await service.get_subject(session, uuid.uuid4())
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_update_subject_status_emits_event(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """update_subject with status change emits subject.updated with changed_fields."""
-    async with session_factory() as session:
-        emp = await _make_employee(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-upd-001',
-            kind=SubjectKind.employee,
-            principal_employee_id=emp.id,
-            status='hired',
-        )
-        await session.commit()
-        subject_id = subject.id
-
-    async with session_factory() as session:
-        patch = SubjectPatch(status='active')
-        await service.update_subject(session, subject_id, patch)
-        await session.commit()
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    updated = [r for r in records if r.get('event_type') == 'subject.updated']
-    assert len(updated) >= 1
-    assert 'status' in updated[-1]['payload']['changed_fields']
-
-
-@pytest.mark.asyncio
-async def test_update_subject_noop_no_event(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """update_subject with no changes does not emit subject.updated."""
-    async with session_factory() as session:
-        emp = await _make_employee(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-noop-001',
-            kind=SubjectKind.employee,
-            principal_employee_id=emp.id,
-            status='active',
-        )
-        await session.commit()
-        subject_id = subject.id
-
-    async with session_factory() as session:
-        patch = SubjectPatch(status='active')
-        await service.update_subject(session, subject_id, patch)
-        await session.commit()
-
-    if log_path.exists():
-        lines = log_path.read_text().strip().split('\n')
-        records = [json.loads(line) for line in lines if line.strip()]
-        updated = [r for r in records if r.get('event_type') == 'subject.updated']
-        assert len(updated) == 0
 
 
 @pytest.mark.asyncio
@@ -268,66 +130,33 @@ async def test_update_subject_invalid_status_for_kind(
 
 
 @pytest.mark.asyncio
-async def test_no_status_changed_event_emitted(
+async def test_update_subject_noop_no_event(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
-    """subject.status_changed must NOT be emitted in Step 2 (reserved for Step 15)."""
+    """update_subject with no changes does not emit inventory.subject.updated."""
     async with session_factory() as session:
         emp = await _make_employee(session)
         subject = await service.create_subject(
             session,
-            external_id='subj-sc-001',
+            external_id='subj-noop-001',
             kind=SubjectKind.employee,
             principal_employee_id=emp.id,
-            status='hired',
+            status='active',
         )
         await session.commit()
         subject_id = subject.id
 
+    capturing_events.clear()
+
     async with session_factory() as session:
-        await service.update_subject(session, subject_id, SubjectPatch(status='active'))
+        patch = SubjectPatch(status='active')
+        await service.update_subject(session, subject_id, patch)
         await session.commit()
 
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    status_changed = [r for r in records if r.get('event_type') == 'subject.status_changed']
-    assert len(status_changed) == 0
-
-
-# ---------------------------------------------------------------------------
-# SubjectAttribute service tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_add_attribute_happy_path_emits_subject_attribute_added(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """add_attribute emits subject.attribute.added with correct payload."""
-    async with session_factory() as session:
-        cust = await _make_customer(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-attr-add-001',
-            kind=SubjectKind.customer,
-            principal_customer_id=cust.id,
-            status='registered',
-        )
-        await session.flush()
-        await service.add_attribute(session, subject.id, 'cost_center', 'cc-42')
-        await session.commit()
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    added = [r for r in records if r.get('event_type') == 'subject.attribute.added']
-    assert len(added) >= 1
-    assert added[-1]['component'] == 'inventory.subjects'
-    assert added[-1]['payload']['key'] == 'cost_center'
-    assert 'subject_id' in added[-1]['payload']
+    updated = capturing_events.filter_by_type('inventory.subject.updated')
+    assert updated == []
 
 
 @pytest.mark.asyncio
@@ -372,39 +201,6 @@ async def test_add_attribute_unknown_subject_raises_SubjectNotFoundError(
 
 
 @pytest.mark.asyncio
-async def test_remove_attribute_happy_path_emits_subject_attribute_removed(
-    service: SubjectService,
-    session_factory,
-    log_path: Path,
-) -> None:
-    """remove_attribute emits subject.attribute.removed."""
-    async with session_factory() as session:
-        cust = await _make_customer(session)
-        subject = await service.create_subject(
-            session,
-            external_id='subj-attr-rm-001',
-            kind=SubjectKind.customer,
-            principal_customer_id=cust.id,
-            status='registered',
-        )
-        await session.flush()
-        await service.add_attribute(session, subject.id, 'to_remove', 'x')
-        await session.commit()
-        subject_id = subject.id
-
-    async with session_factory() as session:
-        await service.remove_attribute(session, subject_id, 'to_remove')
-        await session.commit()
-
-    lines = log_path.read_text().strip().split('\n')
-    records = [json.loads(line) for line in lines]
-    removed = [r for r in records if r.get('event_type') == 'subject.attribute.removed']
-    assert len(removed) >= 1
-    assert removed[-1]['payload']['key'] == 'to_remove'
-    assert 'subject_id' in removed[-1]['payload']
-
-
-@pytest.mark.asyncio
 async def test_remove_attribute_missing_key_raises_SubjectAttributeNotFoundError(
     service: SubjectService,
     session_factory,
@@ -430,8 +226,8 @@ async def test_remove_attribute_missing_key_raises_SubjectAttributeNotFoundError
 @pytest.mark.asyncio
 async def test_list_attributes_does_not_emit(
     service: SubjectService,
+    capturing_events: CapturingEventService,
     session_factory,
-    log_path: Path,
 ) -> None:
     """list_attributes does not emit any events."""
     async with session_factory() as session:
@@ -448,10 +244,279 @@ async def test_list_attributes_does_not_emit(
         await session.commit()
         subject_id = subject.id
 
-    count_before = len(log_path.read_text().strip().split('\n')) if log_path.exists() else 0
+    capturing_events.clear()
 
     async with session_factory() as session:
         await service.list_attributes(session, subject_id)
 
-    count_after = len(log_path.read_text().strip().split('\n')) if log_path.exists() else 0
-    assert count_after == count_before
+    assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Event-emission tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_subject_emits_inventory_subject_created(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_subject emits inventory.subject.created with correct envelope fields."""
+    async with session_factory() as session:
+        emp = await _make_employee(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-emit-created-001',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='active',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_id == 'inventory.subjects'
+    assert envelope.target_kind == EventParticipantKind.SYSTEM
+    assert envelope.target_id == str(subject.id)
+    assert envelope.causation_id is None
+    assert isinstance(envelope.correlation_id, str)
+    assert len(envelope.correlation_id) > 0
+    assert envelope.payload['subject_id'] == str(subject.id)
+    assert envelope.payload['kind'] == 'employee'
+    assert envelope.payload['status'] == 'active'
+    assert envelope.payload['principal_employee_id'] == str(emp.id)
+    assert envelope.payload['nhi_kind'] is None
+
+
+@pytest.mark.asyncio
+async def test_update_subject_emits_inventory_subject_updated(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """update_subject emits inventory.subject.updated when fields change."""
+    async with session_factory() as session:
+        emp = await _make_employee(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-emit-updated-001',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='hired',
+        )
+        await session.commit()
+        subject_id = subject.id
+
+    capturing_events.clear()
+
+    async with session_factory() as session:
+        await service.update_subject(session, subject_id, SubjectPatch(status='active'))
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.updated')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.target_id == str(subject_id)
+    assert envelope.payload['subject_id'] == str(subject_id)
+    assert 'status' in envelope.payload['changed_fields']
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_emits_inventory_subject_attribute_added(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """add_attribute emits inventory.subject.attribute_added with correct envelope fields."""
+    async with session_factory() as session:
+        cust = await _make_customer(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-emit-attr-add-001',
+            kind=SubjectKind.customer,
+            principal_customer_id=cust.id,
+            status='registered',
+        )
+        await session.flush()
+        capturing_events.clear()
+        await service.add_attribute(session, subject.id, 'cost_center', 'cc-42')
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.attribute_added')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.actor_id == 'inventory.subjects'
+    assert envelope.target_id == str(subject.id)
+    assert envelope.payload['subject_id'] == str(subject.id)
+    assert envelope.payload['key'] == 'cost_center'
+
+
+@pytest.mark.asyncio
+async def test_remove_attribute_emits_inventory_subject_attribute_removed(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """remove_attribute emits inventory.subject.attribute_removed with correct envelope fields."""
+    async with session_factory() as session:
+        cust = await _make_customer(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-emit-attr-rm-001',
+            kind=SubjectKind.customer,
+            principal_customer_id=cust.id,
+            status='registered',
+        )
+        await session.flush()
+        await service.add_attribute(session, subject.id, 'to_remove', 'x')
+        await session.commit()
+        subject_id = subject.id
+
+    async with session_factory() as session:
+        capturing_events.clear()
+        await service.remove_attribute(session, subject_id, 'to_remove')
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.attribute_removed')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.target_id == str(subject_id)
+    assert envelope.payload['subject_id'] == str(subject_id)
+    assert envelope.payload['key'] == 'to_remove'
+
+
+# ---------------------------------------------------------------------------
+# Drop-retrieved test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_subject_does_not_emit_event(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """get_subject emits no events (Q1 — subject.retrieved dropped)."""
+    async with session_factory() as session:
+        emp = await _make_employee(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-noevt-001',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='hired',
+        )
+        await session.commit()
+        subject_id = subject.id
+
+    capturing_events.clear()
+
+    async with session_factory() as session:
+        await service.get_subject(session, subject_id)
+
+    async with session_factory() as session:
+        await service.get_subject(session, uuid.uuid4())
+
+    assert capturing_events.emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Correlation-id plumbing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_subject_propagates_explicit_correlation_id(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_subject passes caller-supplied correlation_id through to envelope."""
+    async with session_factory() as session:
+        emp = await _make_employee(session)
+        await service.create_subject(
+            session,
+            external_id='subj-corr1',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='active',
+            correlation_id='corr-subject-xyz',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.created')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'corr-subject-xyz'
+
+
+@pytest.mark.asyncio
+async def test_create_subject_generates_correlation_id_when_missing(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_subject auto-generates a 32-char hex correlation_id when none is supplied."""
+    async with session_factory() as session:
+        emp = await _make_employee(session)
+        await service.create_subject(
+            session,
+            external_id='subj-corr2',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='active',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.created')
+    assert len(emitted) == 1
+    corr_id = emitted[0].correlation_id
+    assert isinstance(corr_id, str)
+    assert len(corr_id) == 32
+    assert all(c in '0123456789abcdef' for c in corr_id)
+
+
+@pytest.mark.asyncio
+async def test_add_attribute_propagates_explicit_correlation_id(
+    service: SubjectService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """add_attribute passes caller-supplied correlation_id through to envelope."""
+    async with session_factory() as session:
+        cust = await _make_customer(session)
+        subject = await service.create_subject(
+            session,
+            external_id='subj-corr3',
+            kind=SubjectKind.customer,
+            principal_customer_id=cust.id,
+            status='registered',
+        )
+        await session.flush()
+        capturing_events.clear()
+        await service.add_attribute(
+            session,
+            subject.id,
+            'corr-key',
+            'corr-val',
+            correlation_id='corr-attr-abc',
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.subject.attribute_added')
+    assert len(emitted) == 1
+    assert emitted[0].correlation_id == 'corr-attr-abc'
+
+
+# ---------------------------------------------------------------------------
+# Anti-dual-emit regression test
+# ---------------------------------------------------------------------------
+
+
+def test_service_has_no_log_service_attribute(service: SubjectService) -> None:
+    """SubjectService must not have a _log attribute (DROP variant — LogService removed)."""
+    assert getattr(service, '_log', None) is None
+    assert not hasattr(service, '_log')

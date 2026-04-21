@@ -4,14 +4,20 @@
 
 """Customer route dependencies."""
 
+import os
+
 from src.inventory.customers.service import CustomerService
 from src.inventory.subjects.service import SubjectService
-from src.platform.logs.factory import log_sink_factory
-from src.platform.logs.service import LogService
+from src.platform.events.factory import event_sink_factory
+from src.platform.events.service import EventService
+
+
+def _get_events_provider() -> str:
+    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
 
 
 def get_customer_service() -> CustomerService:
-    """Return CustomerService with injected log service and subject service."""
-    log_service = LogService(factory=log_sink_factory)
-    subject_service = SubjectService(log_service=log_service)
-    return CustomerService(log_service=log_service, subject_service=subject_service)
+    """Return CustomerService with injected EventService; SubjectService shares the same event bus."""
+    event_service = EventService(sink=event_sink_factory.get(_get_events_provider()))
+    subject_service = SubjectService(event_service=event_service)
+    return CustomerService(event_service=event_service, subject_service=subject_service)
