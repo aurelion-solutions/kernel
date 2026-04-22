@@ -149,7 +149,7 @@ async def test_secret_retrieved_emits_info_log_without_event_type(
     log_path = tmp_path / 'retrieved.jsonl'
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
 
     capturing = CapturingEventService()
     event_svc = EventService(sink=capturing)
@@ -203,7 +203,7 @@ async def test_provider_resolution_failure_emits_error_log_without_event_type_an
     log_path = tmp_path / 'provider_fail.jsonl'
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
 
     capturing = CapturingEventService()
     event_svc = EventService(sink=capturing)
@@ -246,7 +246,7 @@ async def test_create_secret_does_not_dual_emit_on_log_and_event_bus(
     log_path = tmp_path / 'create_guard.jsonl'
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
 
     capturing = CapturingEventService()
     event_svc = EventService(sink=capturing)
@@ -280,7 +280,7 @@ async def test_delete_secret_does_not_dual_emit_on_log_and_event_bus(
     log_path = tmp_path / 'delete_guard.jsonl'
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
 
     capturing = CapturingEventService()
     event_svc = EventService(sink=capturing)

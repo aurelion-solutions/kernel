@@ -9,6 +9,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
+from src.core.http.errors import translate_service_errors
 from src.inventory.nhi.deps import get_nhi_service
 from src.inventory.nhi.schemas import (
     NHIAttributeCreate,
@@ -37,7 +38,12 @@ async def create_nhi(
     service: NHIService = DependsService,
 ) -> NHIRead:
     """Create an NHI."""
-    try:
+    with translate_service_errors(
+        {
+            InvalidOwnerEmployeeIdError: (404, 'Employee not found'),
+            InvalidApplicationIdError: (404, 'Application not found'),
+        }
+    ):
         nhi = await service.create_nhi(
             session,
             external_id=body.external_id,
@@ -48,16 +54,6 @@ async def create_nhi(
             owner_employee_id=body.owner_employee_id,
             application_id=body.application_id,
         )
-    except InvalidOwnerEmployeeIdError:
-        raise HTTPException(
-            status_code=404,
-            detail='Employee not found',
-        ) from None
-    except InvalidApplicationIdError:
-        raise HTTPException(
-            status_code=404,
-            detail='Application not found',
-        ) from None
     await session.commit()
     return NHIRead.model_validate(nhi)
 
@@ -92,10 +88,8 @@ async def list_nhi_attributes(
     service: NHIService = DependsService,
 ) -> list[NHIAttributeRead]:
     """List attributes for an NHI."""
-    try:
+    with translate_service_errors({NHINotFoundError: (404, 'NHI not found')}):
         attrs = await service.list_attributes(session, nhi_id)
-    except NHINotFoundError:
-        raise HTTPException(status_code=404, detail='NHI not found') from None
     return [NHIAttributeRead.model_validate(a) for a in attrs]
 
 
@@ -111,20 +105,21 @@ async def add_nhi_attribute(
     service: NHIService = DependsService,
 ) -> NHIAttributeRead:
     """Add attribute to an NHI."""
-    try:
+    with translate_service_errors(
+        {
+            NHINotFoundError: (404, 'NHI not found'),
+            DuplicateNHIAttributeError: (
+                409,
+                lambda _exc: f'Attribute key already exists for this NHI: {body.key}',
+            ),
+        }
+    ):
         attr = await service.add_attribute(
             session,
             nhi_id=nhi_id,
             key=body.key,
             value=body.value,
         )
-    except NHINotFoundError:
-        raise HTTPException(status_code=404, detail='NHI not found') from None
-    except DuplicateNHIAttributeError:
-        raise HTTPException(
-            status_code=409,
-            detail=f'Attribute key already exists for this NHI: {body.key}',
-        ) from None
     await session.commit()
     return NHIAttributeRead.model_validate(attr)
 
@@ -137,10 +132,11 @@ async def remove_nhi_attribute(
     service: NHIService = DependsService,
 ) -> None:
     """Remove attribute from an NHI."""
-    try:
+    with translate_service_errors(
+        {
+            NHINotFoundError: (404, 'NHI not found'),
+            NHIAttributeNotFoundError: (404, 'NHI attribute not found'),
+        }
+    ):
         await service.remove_attribute(session, nhi_id, key)
-    except NHINotFoundError:
-        raise HTTPException(status_code=404, detail='NHI not found') from None
-    except NHIAttributeNotFoundError:
-        raise HTTPException(status_code=404, detail='NHI attribute not found') from None
     await session.commit()

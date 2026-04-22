@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
+from src.core.http.errors import translate_service_errors
 from src.inventory.resources.deps import get_resource_service
 from src.inventory.resources.schemas import (
     ResourceAttributeCreate,
@@ -44,7 +45,16 @@ async def create_resource(
     service: ResourceService = DependsService,
 ) -> ResourceRead:
     """Create a resource."""
-    try:
+    with translate_service_errors(
+        {
+            ResourceApplicationNotFoundError: (422, 'Application does not exist'),
+            ResourceParentNotFoundError: (422, 'Parent resource does not exist'),
+            DuplicateResourceError: (
+                409,
+                'Resource with this (application_id, external_id) already exists',
+            ),
+        }
+    ):
         resource = await service.create_resource(
             session,
             external_id=body.external_id,
@@ -57,15 +67,6 @@ async def create_resource(
             environment=body.environment,
             data_sensitivity=body.data_sensitivity,
         )
-    except ResourceApplicationNotFoundError:
-        raise HTTPException(status_code=422, detail='Application does not exist') from None
-    except ResourceParentNotFoundError:
-        raise HTTPException(status_code=422, detail='Parent resource does not exist') from None
-    except DuplicateResourceError:
-        raise HTTPException(
-            status_code=409,
-            detail='Resource with this (application_id, external_id) already exists',
-        ) from None
     await session.commit()
     return ResourceRead.model_validate(resource)
 
@@ -113,12 +114,13 @@ async def update_resource(
     service: ResourceService = DependsService,
 ) -> ResourceRead:
     """Partially update a resource."""
-    try:
+    with translate_service_errors(
+        {
+            ResourceNotFoundError: (404, 'Resource not found'),
+            ResourceParentNotFoundError: (422, 'Parent resource does not exist'),
+        }
+    ):
         resource = await service.update_resource(session, resource_id, body)
-    except ResourceNotFoundError:
-        raise HTTPException(status_code=404, detail='Resource not found') from None
-    except ResourceParentNotFoundError:
-        raise HTTPException(status_code=422, detail='Parent resource does not exist') from None
     await session.commit()
     return ResourceRead.model_validate(resource)
 
@@ -130,10 +132,8 @@ async def list_resource_attributes(
     service: ResourceService = DependsService,
 ) -> list[ResourceAttributeRead]:
     """List attributes for a resource."""
-    try:
+    with translate_service_errors({ResourceNotFoundError: (404, 'Resource not found')}):
         attrs = await service.list_attributes(session, resource_id)
-    except ResourceNotFoundError:
-        raise HTTPException(status_code=404, detail='Resource not found') from None
     return [ResourceAttributeRead.model_validate(a) for a in attrs]
 
 
@@ -149,20 +149,21 @@ async def add_resource_attribute(
     service: ResourceService = DependsService,
 ) -> ResourceAttributeRead:
     """Add attribute to a resource."""
-    try:
+    with translate_service_errors(
+        {
+            ResourceNotFoundError: (404, 'Resource not found'),
+            DuplicateResourceAttributeError: (
+                409,
+                lambda _exc: f'Attribute key already exists for this resource: {body.key}',
+            ),
+        }
+    ):
         attr = await service.add_attribute(
             session,
             resource_id=resource_id,
             key=body.key,
             value=body.value,
         )
-    except ResourceNotFoundError:
-        raise HTTPException(status_code=404, detail='Resource not found') from None
-    except DuplicateResourceAttributeError:
-        raise HTTPException(
-            status_code=409,
-            detail=f'Attribute key already exists for this resource: {body.key}',
-        ) from None
     await session.commit()
     return ResourceAttributeRead.model_validate(attr)
 
@@ -175,10 +176,11 @@ async def remove_resource_attribute(
     service: ResourceService = DependsService,
 ) -> None:
     """Remove attribute from a resource."""
-    try:
+    with translate_service_errors(
+        {
+            ResourceNotFoundError: (404, 'Resource not found'),
+            ResourceAttributeNotFoundError: (404, 'Resource attribute not found'),
+        }
+    ):
         await service.remove_attribute(session, resource_id, key)
-    except ResourceNotFoundError:
-        raise HTTPException(status_code=404, detail='Resource not found') from None
-    except ResourceAttributeNotFoundError:
-        raise HTTPException(status_code=404, detail='Resource attribute not found') from None
     await session.commit()

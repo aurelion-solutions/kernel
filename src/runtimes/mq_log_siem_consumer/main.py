@@ -15,14 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
 def _str_env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
@@ -34,12 +26,14 @@ def _parse_binding_keys(raw: str | None) -> list[str]:
 
 
 def main() -> None:
-    host = _str_env('AURELION_RABBITMQ_HOST', 'localhost')
-    port = _int_env('AURELION_RABBITMQ_PORT', 5672)
-    username = os.environ.get('AURELION_RABBITMQ_USERNAME') or None
-    password = os.environ.get('AURELION_RABBITMQ_PASSWORD') or None
+    from src.core.config import settings
 
-    exchange = _str_env('AURELION_LOGS_EXCHANGE', 'aurelion.logs')
+    host = settings.rabbitmq_host
+    port = settings.rabbitmq_port
+    username: str | None = settings.rabbitmq_username
+    password: str | None = settings.rabbitmq_password
+
+    exchange = settings.rabbitmq_logs_exchange
     queue_name = _str_env('AURELION_LOGS_QUEUE', 'aurelion.logs.siem')
     buffer_queue = _str_env('AURELION_LOGS_BUFFER_QUEUE', 'aurelion.logs.buffer')
     binding_keys = _parse_binding_keys(os.environ.get('AURELION_LOGS_BINDINGS'))
@@ -50,7 +44,7 @@ def main() -> None:
     from src.platform.logs.schemas import LogLevel
     from src.platform.logs.service import LogService
 
-    log_service = LogService(factory=log_sink_factory, provider_name=sink_provider)
+    log_service = LogService(sink=log_sink_factory.get(sink_provider))
 
     def on_parse_error(raw: dict[str, Any], message: str) -> None:
         # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.

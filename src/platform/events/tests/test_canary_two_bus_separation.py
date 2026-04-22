@@ -41,7 +41,7 @@ def capturing_log_sink() -> CapturingLogSink:
 def log_service(capturing_log_sink: CapturingLogSink) -> LogService:
     factory = LogSinkFactory()
     factory.register('capture', lambda: capturing_log_sink)
-    return LogService(factory=factory, provider_name='capture')
+    return LogService(sink=factory.get('capture'))
 
 
 async def test_event_service_emit_goes_to_events_sink_not_log_sink(

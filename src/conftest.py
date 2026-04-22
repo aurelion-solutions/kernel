@@ -16,7 +16,9 @@ from sqlalchemy.pool import NullPool
 import src.capabilities.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
 from src.core.db.base import Base
 from src.core.db.deps import get_db
+from src.platform.events.buffer import InMemoryEventBuffer
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all
+from src.platform.logs.service import NoOpLogService
 from src.routers.v0 import router
 
 load_dotenv()
@@ -91,6 +93,8 @@ async def app(engine):
     app = FastAPI()
     app.include_router(router, prefix='/api/v0')
     app.dependency_overrides[get_db] = override_get_db
+    app.state.log_service = NoOpLogService()
+    app.state.event_buffer = InMemoryEventBuffer()
     return app
 
 

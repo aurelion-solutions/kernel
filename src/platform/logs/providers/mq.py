@@ -5,7 +5,6 @@
 """RabbitMQ-backed log sink."""
 
 import json
-import os
 
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.platform.logs.interface import LogSink
@@ -21,17 +20,18 @@ class RabbitMQLogSink(LogSink):
 
     Accepts an :class:`~src.core.mq.async_publisher.AsyncRabbitMQPublisher`
     that is shared across the application lifetime (created in lifespan).
+    The ``exchange`` name is injected by the composition root (``settings.rabbitmq_logs_exchange``).
     """
 
-    def __init__(self, publisher: AsyncRabbitMQPublisher) -> None:
+    def __init__(self, publisher: AsyncRabbitMQPublisher, *, exchange: str) -> None:
         self._publisher = publisher
+        self._exchange = exchange
 
     async def emit(self, event: LogEvent) -> None:
-        exchange = os.environ.get('AURELION_LOGS_EXCHANGE', 'aurelion.logs')
         routing_key = f'{_sanitize_component(event.component)}.{event.level.value}'
         body = json.dumps(event.model_dump(mode='json'), ensure_ascii=False).encode('utf-8')
         await self._publisher.publish(
-            exchange=exchange,
+            exchange=self._exchange,
             exchange_type='topic',
             routing_key=routing_key,
             body=body,

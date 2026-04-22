@@ -38,7 +38,7 @@ def log_service(tmp_path) -> LogService:
     log_path: Path = tmp_path / 'logs.jsonl'
     factory = LogSinkFactory()
     factory.register('file', lambda: FileLogSink(path=log_path))
-    return LogService(factory=factory, provider_name='file')
+    return LogService(sink=factory.get('file'))
 
 
 @pytest.fixture

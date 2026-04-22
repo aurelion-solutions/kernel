@@ -26,7 +26,7 @@ async def test_ingest_success_log_uses_ingest_capability_and_application_target(
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     async with session_factory() as session:
         app = Application(name='ingest-app', code='ingest-app', config={})

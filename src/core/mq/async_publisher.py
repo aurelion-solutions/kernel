@@ -6,7 +6,6 @@
 
 import asyncio
 import logging
-import os
 from typing import Any
 
 import aio_pika
@@ -15,23 +14,18 @@ import aio_pika.abc
 logger = logging.getLogger(__name__)
 
 
-def _rabbitmq_url() -> str:
-    host = os.environ.get('AURELION_RABBITMQ_HOST', 'localhost')
-    port = os.environ.get('AURELION_RABBITMQ_PORT', '5672')
-    username = os.environ.get('AURELION_RABBITMQ_USERNAME', 'guest')
-    password = os.environ.get('AURELION_RABBITMQ_PASSWORD', 'guest')
-    return f'amqp://{username}:{password}@{host}:{port}/'
-
-
 class AsyncRabbitMQPublisher:
     """Persistent async RabbitMQ publisher with publisher confirms and retry.
 
     Uses ``aio_pika.connect_robust`` so the connection auto-reconnects on
     transient failures without caller intervention.
 
+    Callers must pass ``settings.rabbitmq_url`` from the composition root;
+    this class does not read environment variables.
+
     Usage::
 
-        publisher = AsyncRabbitMQPublisher()
+        publisher = AsyncRabbitMQPublisher(url=settings.rabbitmq_url)
         await publisher.connect()
         await publisher.publish(
             exchange='aurelion.events',
@@ -45,8 +39,8 @@ class AsyncRabbitMQPublisher:
     _MAX_ATTEMPTS = 3
     _RETRY_DELAYS = (0.5, 1.0, 2.0)  # seconds between attempt 1→2, 2→3
 
-    def __init__(self, url: str | None = None) -> None:
-        self._url = url if url is not None else _rabbitmq_url()
+    def __init__(self, *, url: str) -> None:
+        self._url = url
         self._connection: aio_pika.abc.AbstractRobustConnection | None = None
         self._channel: aio_pika.abc.AbstractChannel | None = None
         # Cache of already-declared exchange names → aio_pika.Exchange objects

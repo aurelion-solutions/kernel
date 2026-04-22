@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import asyncio
-import os
 from typing import Any
 
 from pydantic import ValidationError
@@ -51,30 +50,26 @@ async def handle_connector_registration(
         await session.commit()
 
 
-def run_connector_registration_consumer(main_loop: asyncio.AbstractEventLoop) -> None:
+def run_connector_registration_consumer(
+    main_loop: asyncio.AbstractEventLoop,
+    *,
+    host: str,
+    port: int,
+    username: str | None,
+    password: str | None,
+    registration_exchange: str,
+    registration_queue: str,
+    registration_binding_keys: list[str],
+) -> None:
     """Block forever: consume connector registration / heartbeat JSON from RabbitMQ.
 
     DB work runs on *main_loop* (uvicorn's loop) via run_coroutine_threadsafe so asyncpg
     shares the same event loop as the AsyncEngine; a per-thread loop would break pool
     teardown on shutdown.
+
+    All connection and topology parameters are passed explicitly by the caller
+    (composition root).  This function does not read environment variables.
     """
-    host = os.environ.get('AURELION_RABBITMQ_HOST', 'localhost')
-    port = int(os.environ.get('AURELION_RABBITMQ_PORT', '5672'))
-    username = os.environ.get('AURELION_RABBITMQ_USERNAME')
-    password = os.environ.get('AURELION_RABBITMQ_PASSWORD')
-    exchange = os.environ.get(
-        'AURELION_CONNECTOR_REGISTRATION_EXCHANGE',
-        'aurelion.connectors.registry',
-    )
-    queue_name = os.environ.get(
-        'AURELION_CONNECTOR_REGISTRATION_QUEUE',
-        'aurelion.connectors.registration',
-    )
-    binding_raw = os.environ.get(
-        'AURELION_CONNECTOR_REGISTRATION_BINDINGS',
-        'connector.registered,connector.heartbeat',
-    )
-    binding_keys = [k.strip() for k in binding_raw.split(',') if k.strip()]
 
     def on_event(raw: dict[str, Any], _routing_key: str, _props: Any) -> None:
         fut = asyncio.run_coroutine_threadsafe(
@@ -87,10 +82,10 @@ def run_connector_registration_consumer(main_loop: asyncio.AbstractEventLoop) ->
         on_event=on_event,
         host=host,
         port=port,
-        exchange=exchange,
+        exchange=registration_exchange,
         exchange_type='topic',
-        queue_name=queue_name,
-        binding_keys=binding_keys,
+        queue_name=registration_queue,
+        binding_keys=registration_binding_keys,
         username=username,
         password=password,
     )

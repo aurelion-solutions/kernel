@@ -162,7 +162,7 @@ async def test_eas_pipeline_end_to_end(
     log_file: Path = tmp_path / 'logs.jsonl'
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_file))
-    inventory_log = LogService(factory=log_factory, provider_name='file')
+    inventory_log = LogService(sink=log_factory.get('file'))
 
     producer_captured_events = CapturingEventService()
     producer_event_service = EventService(sink=producer_captured_events)

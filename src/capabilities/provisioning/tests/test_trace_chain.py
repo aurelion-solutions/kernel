@@ -34,7 +34,7 @@ async def test_create_account_emits_trace_and_invoke_carries_trace_context(sessi
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     stub = RecordingStubRPCClient(
         {'create_account': {'status': 'ok', 'payload': {'username': 'alice', 'email': 'a@b.c'}}},

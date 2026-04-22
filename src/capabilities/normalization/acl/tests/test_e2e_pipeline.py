@@ -104,7 +104,7 @@ async def test_acl_pipeline_end_to_end(
     log_file: Path = tmp_path / 'logs.jsonl'
     factory = LogSinkFactory()
     factory.register('file', lambda: FileLogSink(path=log_file))
-    log_service = LogService(factory=factory, provider_name='file')
+    log_service = LogService(sink=factory.get('file'))
 
     capturing_events = CapturingEventService()
     event_service = EventService(sink=capturing_events)

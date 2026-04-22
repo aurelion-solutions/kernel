@@ -7,12 +7,14 @@
 Run from the aurelion-kernel root:
     python -m src.runtimes.mq_eas_projection_consumer.main
 
-Env vars:
-    AURELION_RABBITMQ_HOST           (default: localhost)
-    AURELION_RABBITMQ_PORT           (default: 5672)
-    AURELION_RABBITMQ_USERNAME       (default: guest)
-    AURELION_RABBITMQ_PASSWORD       (default: guest)
-    AURELION_EVENTS_EXCHANGE         (default: aurelion.events)
+Env vars (Settings-driven — set via RABBITMQ_* keys or .env):
+    RABBITMQ_HOST                    (default: localhost)
+    RABBITMQ_PORT                    (default: 5672)
+    RABBITMQ_USERNAME                (default: guest)
+    RABBITMQ_PASSWORD                (default: guest)
+    RABBITMQ_EVENTS_EXCHANGE         (default: aurelion.events)
+
+Env vars (still read directly — out of Phase 11 Step 1 scope):
     AURELION_EAS_PROJECTION_QUEUE    (default: eas.projection.incremental)
     AURELION_EAS_PROJECTION_BINDINGS (default: inventory.access_fact.*,inventory.initiative.*)
     AURELION_LOG_SINK_PROVIDER       (default: file)
@@ -29,6 +31,7 @@ import pika
 from pika.adapters.blocking_connection import BlockingChannel
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.effective_access.service import EffectiveAccessProjectionService
+from src.core.config import settings
 from src.core.db.session import SessionLocal
 from src.core.mq.rabbitmq import declare_consumer_topology
 from src.platform.events.factory import event_sink_factory
@@ -44,14 +47,6 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 
 def _str_env(name: str, default: str) -> str:
@@ -74,18 +69,18 @@ def _parse_binding_keys(raw: str | None) -> list[str]:
 
 
 def main() -> None:
-    host = _str_env('AURELION_RABBITMQ_HOST', 'localhost')
-    port = _int_env('AURELION_RABBITMQ_PORT', 5672)
-    username = os.environ.get('AURELION_RABBITMQ_USERNAME') or None
-    password = os.environ.get('AURELION_RABBITMQ_PASSWORD') or None
+    host = settings.rabbitmq_host
+    port = settings.rabbitmq_port
+    username = settings.rabbitmq_username
+    password = settings.rabbitmq_password
 
-    exchange = _str_env('AURELION_EVENTS_EXCHANGE', 'aurelion.events')
+    exchange = settings.rabbitmq_events_exchange
     queue = _str_env('AURELION_EAS_PROJECTION_QUEUE', 'eas.projection.incremental')
     bindings_raw = os.environ.get('AURELION_EAS_PROJECTION_BINDINGS')
     bindings = _parse_binding_keys(bindings_raw)
     sink_provider = _str_env('AURELION_LOG_SINK_PROVIDER', 'file')
 
-    log_service = LogService(factory=log_sink_factory, provider_name=sink_provider)
+    log_service = LogService(sink=log_sink_factory.get(sink_provider))
     event_service = EventService(sink=event_sink_factory.get(_get_events_provider()))
 
     def projection_service_factory(
@@ -93,9 +88,7 @@ def main() -> None:
     ) -> EffectiveAccessProjectionService:
         return EffectiveAccessProjectionService(session, event_service=event_service)
 
-    user = username if username is not None else 'guest'
-    passwd = password if password is not None else 'guest'
-    credentials = pika.PlainCredentials(username=user, password=passwd)
+    credentials = pika.PlainCredentials(username=username, password=password)
     params = pika.ConnectionParameters(host=host, port=port, credentials=credentials)
     connection = pika.BlockingConnection(params)
     channel: BlockingChannel = connection.channel()

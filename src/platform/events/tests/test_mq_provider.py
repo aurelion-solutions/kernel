@@ -35,28 +35,24 @@ def _make_mock_publisher() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_calls_publish_with_default_exchange(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv('AURELION_EVENTS_EXCHANGE', raising=False)
+async def test_emit_calls_publish_with_default_exchange() -> None:
     publisher = _make_mock_publisher()
 
-    await RabbitMQEventSink(publisher).emit(_make_envelope())
+    await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(_make_envelope())
 
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     assert _kwargs['exchange'] == 'aurelion.events'
 
 
 # ---------------------------------------------------------------------------
-# 2. Exchange override via env var
+# 2. Exchange override via constructor argument
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_honours_events_exchange_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('AURELION_EVENTS_EXCHANGE', 'test.events')
+async def test_emit_honours_events_exchange_override() -> None:
     publisher = _make_mock_publisher()
 
-    await RabbitMQEventSink(publisher).emit(_make_envelope())
+    await RabbitMQEventSink(publisher, exchange='test.events').emit(_make_envelope())
 
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     assert _kwargs['exchange'] == 'test.events'
@@ -67,11 +63,10 @@ async def test_emit_honours_events_exchange_override(monkeypatch: pytest.MonkeyP
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_uses_topic_exchange_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv('AURELION_EVENTS_EXCHANGE', raising=False)
+async def test_emit_uses_topic_exchange_type() -> None:
     publisher = _make_mock_publisher()
 
-    await RabbitMQEventSink(publisher).emit(_make_envelope())
+    await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(_make_envelope())
 
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     assert _kwargs['exchange_type'] == 'topic'
@@ -82,12 +77,11 @@ async def test_emit_uses_topic_exchange_type(monkeypatch: pytest.MonkeyPatch) ->
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_routing_key_equals_event_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv('AURELION_EVENTS_EXCHANGE', raising=False)
+async def test_emit_routing_key_equals_event_type() -> None:
     publisher = _make_mock_publisher()
     event_type = 'inventory.access_fact.created'
 
-    await RabbitMQEventSink(publisher).emit(_make_envelope(event_type=event_type))
+    await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(_make_envelope(event_type=event_type))
 
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     assert _kwargs['routing_key'] == event_type
@@ -98,14 +92,13 @@ async def test_emit_routing_key_equals_event_type(monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_serialises_via_model_dump_json_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_emit_serialises_via_model_dump_json_mode() -> None:
     import json
 
-    monkeypatch.delenv('AURELION_EVENTS_EXCHANGE', raising=False)
     publisher = _make_mock_publisher()
     envelope = _make_envelope()
 
-    await RabbitMQEventSink(publisher).emit(envelope)
+    await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(envelope)
 
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     body_dict = json.loads(_kwargs['body'].decode('utf-8'))
@@ -121,31 +114,30 @@ async def test_emit_serialises_via_model_dump_json_mode(monkeypatch: pytest.Monk
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_reraises_on_publish_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv('AURELION_EVENTS_EXCHANGE', raising=False)
+async def test_emit_reraises_on_publish_failure() -> None:
     publisher = MagicMock()
     publisher.publish = AsyncMock(side_effect=RuntimeError('connection refused'))
 
     with pytest.raises(RuntimeError, match='connection refused'):
-        await RabbitMQEventSink(publisher).emit(_make_envelope())
+        await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(_make_envelope())
 
 
 # ---------------------------------------------------------------------------
-# 7. Env credentials NOT forwarded (publisher owns connection)
+# 7. Connection data NOT forwarded to publish (publisher owns connection)
 # ---------------------------------------------------------------------------
 
 
-async def test_emit_does_not_pass_host_or_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Publisher owns connection; the sink does NOT forward host/port/credentials."""
-    monkeypatch.setenv('AURELION_RABBITMQ_HOST', 'mq.example.com')
-    monkeypatch.setenv('AURELION_RABBITMQ_PORT', '5673')
-    monkeypatch.setenv('AURELION_RABBITMQ_USERNAME', 'alice')
-    monkeypatch.setenv('AURELION_RABBITMQ_PASSWORD', 's3cr3t')
+async def test_emit_does_not_pass_host_or_credentials() -> None:
+    """Publisher owns connection; the sink does NOT forward host/port/credentials to publish()."""
     publisher = _make_mock_publisher()
 
-    await RabbitMQEventSink(publisher).emit(_make_envelope())
+    await RabbitMQEventSink(publisher, exchange='aurelion.events').emit(_make_envelope())
 
     # publish() must NOT receive host/port/username/password — publisher owns them
     _kwargs: dict[str, Any] = publisher.publish.call_args.kwargs
     assert 'host' not in _kwargs
+    assert 'port' not in _kwargs
     assert 'username' not in _kwargs
+    assert 'password' not in _kwargs
+    # Only envelope-serialization keys are passed
+    assert set(_kwargs.keys()) == {'exchange', 'exchange_type', 'routing_key', 'body'}

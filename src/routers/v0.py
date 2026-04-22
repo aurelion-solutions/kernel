@@ -27,6 +27,8 @@ from src.inventory.subjects.routes import router as subjects_router
 from src.inventory.threat_facts.routes import router as threat_facts_router
 from src.platform.applications.routes import router as applications_router
 from src.platform.connectors.routes import router as connector_instances_router
+from src.platform.events.routes import router as platform_events_router
+from src.platform.logs.buffer_recent_routes import router as platform_logs_router
 from src.platform.logs.buffer_routes import router as log_buffer_router
 from src.platform.logs.routes import router as logs_router
 from src.platform.secrets.provider_config.routes import router as secrets_providers_router
@@ -56,6 +58,8 @@ router.include_router(lake_batches_router)
 router.include_router(connector_instances_router)
 router.include_router(logs_router)
 router.include_router(log_buffer_router)
+router.include_router(platform_events_router)
+router.include_router(platform_logs_router)
 router.include_router(secrets_providers_router)
 router.include_router(secrets_router)
 router.include_router(policy_router)

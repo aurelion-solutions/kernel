@@ -18,6 +18,26 @@ class Settings(BaseSettings):
     #: Max age of rows in ``log_event_buffer`` (by event ``timestamp``) before cleanup deletes them.
     log_buffer_retention_seconds: int = Field(default=3600, ge=1)
 
+    # --- RabbitMQ ---
+    rabbitmq_host: str = 'localhost'
+    rabbitmq_port: int = 5672
+    rabbitmq_username: str = 'guest'
+    rabbitmq_password: str = 'guest'
+    rabbitmq_events_exchange: str = 'aurelion.events'
+    rabbitmq_logs_exchange: str = 'aurelion.logs'
+    rabbitmq_connector_commands_exchange: str = 'aurelion.connectors.commands'
+    rabbitmq_connector_responses_exchange: str = 'aurelion.connectors.responses'
+
+    @property
+    def rabbitmq_url(self) -> str:
+        """Build the AMQP connection URL from the four connection fields.
+
+        This is the single place that constructs the URL.  Callers (composition
+        roots) pass ``settings.rabbitmq_url`` into library code; library code
+        never reads environment variables itself.
+        """
+        return f'amqp://{self.rabbitmq_username}:{self.rabbitmq_password}@{self.rabbitmq_host}:{self.rabbitmq_port}/'
+
     cors_allow_origins: list[str] = ['*']
 
     @field_validator('cors_allow_origins', mode='before')

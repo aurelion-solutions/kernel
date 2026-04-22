@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -115,6 +115,149 @@ class SubjectStatusRecomputePrincipalMissingError(Exception):
         super().__init__(f'Subject {subject_id} references {kind} principal {principal_id} which does not exist')
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers — validators, translators, envelope builders
+# ---------------------------------------------------------------------------
+
+
+def _validate_subject_status_for_kind(kind: SubjectKind, status: str) -> None:
+    """Raise InvalidSubjectStatusForKindError if status is incompatible with kind."""
+    try:
+        _check_status_for_kind(kind, status)
+    except ValueError as exc:
+        raise InvalidSubjectStatusForKindError(kind, status) from exc
+
+
+def _translate_subject_create_integrity_error(exc: IntegrityError) -> NoReturn:
+    """Translate pgcode 23503/23505 to domain errors; re-raises original otherwise."""
+    orig = exc.orig
+    pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
+    if pgcode == '23503':
+        raise SubjectPrincipalNotFoundError() from None
+    if pgcode == '23505':
+        raise SubjectPrincipalAlreadyBoundError() from None
+    raise exc
+
+
+def _build_subject_created_event(subject: Subject, correlation_id: str | None) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.created."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.created',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'subject_id': str(subject.id),
+            'kind': subject.kind.value,
+            'nhi_kind': subject.nhi_kind.value if subject.nhi_kind else None,
+            'principal_employee_id': (str(subject.principal_employee_id) if subject.principal_employee_id else None),
+            'principal_nhi_id': (str(subject.principal_nhi_id) if subject.principal_nhi_id else None),
+            'principal_customer_id': (str(subject.principal_customer_id) if subject.principal_customer_id else None),
+            'status': subject.status,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(subject.id),
+    )
+
+
+def _build_subject_updated_event(
+    subject_id: uuid.UUID,
+    changed_fields: set[str] | frozenset[str] | list[str],
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.updated."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.updated',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'subject_id': str(subject_id),
+            'changed_fields': sorted(changed_fields),
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(subject_id),
+    )
+
+
+def _build_subject_attribute_added_event(
+    subject_id: uuid.UUID,
+    key: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.attribute_added."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.attribute_added',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'subject_id': str(subject_id),
+            'key': key,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(subject_id),
+    )
+
+
+def _build_subject_attribute_removed_event(
+    subject_id: uuid.UUID,
+    key: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.attribute_removed."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.attribute_removed',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'subject_id': str(subject_id),
+            'key': key,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(subject_id),
+    )
+
+
+def _build_subject_status_changed_event(
+    subject: Subject,
+    previous_status: str,
+    new_status: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.status_changed."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.status_changed',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'subject_id': str(subject.id),
+            'previous_status': previous_status,
+            'new_status': new_status,
+            'at': datetime.now(UTC).isoformat(),
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(subject.id),
+    )
+
+
 class SubjectService:
     """Orchestrates subject CRUD and event emission."""
 
@@ -147,42 +290,9 @@ class SubjectService:
                 status=status,
             )
         except IntegrityError as exc:
-            # Discriminate FK violation (23503) from unique violation (23505).
-            # With asyncpg the original exception is an asyncpg error; pgcode lives on it.
-            orig = exc.orig
-            pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
-            if pgcode == '23503':
-                raise SubjectPrincipalNotFoundError() from None
-            if pgcode == '23505':
-                raise SubjectPrincipalAlreadyBoundError() from None
-            raise
+            _translate_subject_create_integrity_error(exc)
 
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.subject.created',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'subject_id': str(subject.id),
-                    'kind': subject.kind.value,
-                    'nhi_kind': subject.nhi_kind.value if subject.nhi_kind else None,
-                    'principal_employee_id': (
-                        str(subject.principal_employee_id) if subject.principal_employee_id else None
-                    ),
-                    'principal_nhi_id': (str(subject.principal_nhi_id) if subject.principal_nhi_id else None),
-                    'principal_customer_id': (
-                        str(subject.principal_customer_id) if subject.principal_customer_id else None
-                    ),
-                    'status': subject.status,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(subject.id),
-            )
-        )
+        await self._events.emit(_build_subject_created_event(subject, correlation_id))
         return subject
 
     async def get_subject(
@@ -216,10 +326,7 @@ class SubjectService:
             raise SubjectNotFoundError(subject_id)
 
         if patch.status is not None:
-            try:
-                _check_status_for_kind(subject.kind, patch.status)
-            except ValueError as exc:
-                raise InvalidSubjectStatusForKindError(subject.kind, patch.status) from exc
+            _validate_subject_status_for_kind(subject.kind, patch.status)
 
         changed_fields = await repo_update_subject(
             session,
@@ -227,23 +334,7 @@ class SubjectService:
             status=patch.status,
         )
         if changed_fields:
-            await self._events.emit(
-                EventEnvelope(
-                    event_id=uuid.uuid4(),
-                    event_type='inventory.subject.updated',
-                    occurred_at=datetime.now(UTC),
-                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                    causation_id=None,
-                    payload={
-                        'subject_id': str(subject_id),
-                        'changed_fields': sorted(changed_fields),
-                    },
-                    actor_kind=EventParticipantKind.CAPABILITY,
-                    actor_id=_COMPONENT,
-                    target_kind=EventParticipantKind.SYSTEM,
-                    target_id=str(subject_id),
-                )
-            )
+            await self._events.emit(_build_subject_updated_event(subject_id, changed_fields, correlation_id))
         return subject
 
     async def list_attributes(
@@ -278,23 +369,7 @@ class SubjectService:
             )
         except IntegrityError:
             raise DuplicateSubjectAttributeError(subject_id, key) from None
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.subject.attribute_added',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'subject_id': str(subject_id),
-                    'key': key,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(subject_id),
-            )
-        )
+        await self._events.emit(_build_subject_attribute_added_event(subject_id, key, correlation_id))
         return attr
 
     async def remove_attribute(
@@ -311,23 +386,7 @@ class SubjectService:
         deleted = await repo_delete_subject_attribute(session, subject_id, key)
         if not deleted:
             raise SubjectAttributeNotFoundError(subject_id, key)
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.subject.attribute_removed',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'subject_id': str(subject_id),
-                    'key': key,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(subject_id),
-            )
-        )
+        await self._events.emit(_build_subject_attribute_removed_event(subject_id, key, correlation_id))
 
     async def recompute_status_for_principal(
         self,
@@ -364,23 +423,7 @@ class SubjectService:
         await session.flush()
 
         await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.subject.status_changed',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'subject_id': str(subject.id),
-                    'previous_status': previous_status,
-                    'new_status': new_status,
-                    'at': datetime.now(UTC).isoformat(),
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(subject.id),
-            )
+            _build_subject_status_changed_event(subject, previous_status, new_status, correlation_id)
         )
         return subject
 

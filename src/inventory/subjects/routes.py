@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
+from src.core.http.errors import translate_service_errors
 from src.inventory.subjects.deps import get_subject_service
 from src.inventory.subjects.schemas import (
     SubjectAttributeCreate,
@@ -43,7 +44,12 @@ async def create_subject(
     service: SubjectService = DependsService,
 ) -> SubjectRead:
     """Create a subject."""
-    try:
+    with translate_service_errors(
+        {
+            SubjectPrincipalNotFoundError: (422, 'Referenced principal entity does not exist'),
+            SubjectPrincipalAlreadyBoundError: (409, 'Principal is already bound to a Subject'),
+        }
+    ):
         subject = await service.create_subject(
             session,
             external_id=body.external_id,
@@ -54,10 +60,6 @@ async def create_subject(
             principal_customer_id=body.principal_customer_id,
             status=body.status,
         )
-    except SubjectPrincipalNotFoundError:
-        raise HTTPException(status_code=422, detail='Referenced principal entity does not exist') from None
-    except SubjectPrincipalAlreadyBoundError:
-        raise HTTPException(status_code=409, detail='Principal is already bound to a Subject') from None
     await session.commit()
     return SubjectRead.model_validate(subject)
 
@@ -95,12 +97,13 @@ async def update_subject(
     service: SubjectService = DependsService,
 ) -> SubjectRead:
     """Partially update a subject (status only)."""
-    try:
+    with translate_service_errors(
+        {
+            SubjectNotFoundError: (404, 'Subject not found'),
+            InvalidSubjectStatusForKindError: (422, lambda exc: str(exc)),
+        }
+    ):
         subject = await service.update_subject(session, subject_id, body)
-    except SubjectNotFoundError:
-        raise HTTPException(status_code=404, detail='Subject not found') from None
-    except InvalidSubjectStatusForKindError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
     await session.commit()
     return SubjectRead.model_validate(subject)
 
@@ -112,10 +115,8 @@ async def list_subject_attributes(
     service: SubjectService = DependsService,
 ) -> list[SubjectAttributeRead]:
     """List attributes for a subject."""
-    try:
+    with translate_service_errors({SubjectNotFoundError: (404, 'Subject not found')}):
         attrs = await service.list_attributes(session, subject_id)
-    except SubjectNotFoundError:
-        raise HTTPException(status_code=404, detail='Subject not found') from None
     return [SubjectAttributeRead.model_validate(a) for a in attrs]
 
 
@@ -131,20 +132,21 @@ async def add_subject_attribute(
     service: SubjectService = DependsService,
 ) -> SubjectAttributeRead:
     """Add attribute to a subject."""
-    try:
+    with translate_service_errors(
+        {
+            SubjectNotFoundError: (404, 'Subject not found'),
+            DuplicateSubjectAttributeError: (
+                409,
+                lambda _exc: f'Attribute key already exists for this subject: {body.key}',
+            ),
+        }
+    ):
         attr = await service.add_attribute(
             session,
             subject_id=subject_id,
             key=body.key,
             value=body.value,
         )
-    except SubjectNotFoundError:
-        raise HTTPException(status_code=404, detail='Subject not found') from None
-    except DuplicateSubjectAttributeError:
-        raise HTTPException(
-            status_code=409,
-            detail=f'Attribute key already exists for this subject: {body.key}',
-        ) from None
     await session.commit()
     return SubjectAttributeRead.model_validate(attr)
 
@@ -157,10 +159,11 @@ async def remove_subject_attribute(
     service: SubjectService = DependsService,
 ) -> None:
     """Remove attribute from a subject."""
-    try:
+    with translate_service_errors(
+        {
+            SubjectNotFoundError: (404, 'Subject not found'),
+            SubjectAttributeNotFoundError: (404, 'Subject attribute not found'),
+        }
+    ):
         await service.remove_attribute(session, subject_id, key)
-    except SubjectNotFoundError:
-        raise HTTPException(status_code=404, detail='Subject not found') from None
-    except SubjectAttributeNotFoundError:
-        raise HTTPException(status_code=404, detail='Subject attribute not found') from None
     await session.commit()

@@ -62,7 +62,7 @@ def test_get_mq_returns_rabbitmq_sink_without_network() -> None:
     publisher_stub.publish = AsyncMock()
 
     factory = EventSinkFactory()
-    factory.register('mq', lambda: RabbitMQEventSink(publisher_stub))
+    factory.register('mq', lambda: RabbitMQEventSink(publisher_stub, exchange='aurelion.events'))
     sink = factory.get('mq')
     assert isinstance(sink, RabbitMQEventSink)
 

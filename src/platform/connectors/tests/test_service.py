@@ -123,7 +123,7 @@ async def test_register_from_message_emits_capability_actor_and_connector_target
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     async with session_factory() as session:
         await service.register_from_message(

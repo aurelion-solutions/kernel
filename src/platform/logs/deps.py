@@ -4,10 +4,10 @@
 
 """Log service dependency for route injection."""
 
-from src.platform.logs.factory import log_sink_factory
-from src.platform.logs.service import LogService
+from fastapi import Request
+from src.platform.logs.service import LogService, NoOpLogService
 
 
-def get_log_service() -> LogService:
-    """Return LogService with default factory."""
-    return LogService(factory=log_sink_factory)
+def get_log_service(request: Request) -> LogService:
+    """Return the app-scoped LogService singleton, falling back to NoOp in tests."""
+    return getattr(request.app.state, 'log_service', None) or NoOpLogService()

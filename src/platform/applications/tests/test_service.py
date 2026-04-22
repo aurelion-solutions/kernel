@@ -26,7 +26,7 @@ def _make_log() -> tuple[LogService, _CaptureSink]:
     sink = _CaptureSink()
     factory = LogSinkFactory()
     factory.register('cap', lambda: sink)
-    return LogService(factory, provider_name='cap'), sink
+    return LogService(sink=factory.get('cap')), sink
 
 
 @pytest.mark.asyncio

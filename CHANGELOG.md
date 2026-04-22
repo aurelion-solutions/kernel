@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.3] - 2026-04-22
+
+### Added
+
+- **Engineering Studio — Events & Logs panel (Phase 11 Step 5).** New read endpoints `GET /api/v0/platform/events` and `GET /api/v0/platform/logs`. Events are buffered in-process via `InMemoryEventBuffer` (capped `deque(maxlen=500)`) behind a `TeeEventSink` — RabbitMQ publish stays primary, the buffer is a best-effort tap (errors in the tap never affect the primary). Logs are served from the existing `log_event_buffer` without the discriminator-filter requirement of `/api/v0/log-buffer`.
+
+### Changed
+
+- Introduced `src/core/http/errors.py::translate_service_errors` — a minimal context manager that maps slice-specific service errors to `HTTPException` via an explicit per-call table. Applied to `inventory/resources`, `inventory/subjects`, and `inventory/nhi` route files as proof of concept (~25 repetitive `except` blocks collapsed). No HTTP contract change; all existing route tests pass. Rule documented in `ARCH_CONTEXT.md`.
+- Refactored `SubjectService` and `ResourceService` to the "services orchestrate only" pattern: extracted inline validators, inline `EventEnvelope` assembly, and inline `IntegrityError` translation into named helper functions within each slice. No public signatures changed, no event payload changes. Rule documented in `ARCH_CONTEXT.md`.
+- Simplified LogService plumbing: collapsed pure-delegation layers, unified fire-and-forget wrapper (`_run_fire_and_forget`), extracted `_resolve_sink` helper, documented the four-way app-log / domain-event / audit-record / trace-metadata split. Public signatures unchanged (40+ call sites untouched).
+- RabbitMQ configuration centralized in `Settings` (composition root): 8 connection/exchange fields + `rabbitmq_url` property
+- `AsyncRabbitMQPublisher` `url` argument keyword-only and required; no env fallback
+- `RabbitMQEventSink` and `RabbitMQLogSink` require `exchange` keyword argument; composition root injects value
+- `run_connector_registration_consumer` fully argument-driven; no internal `os.environ` reads
+- Operators must migrate `AURELION_RABBITMQ_*` / `AURELION_*_EXCHANGE` env keys to unprefixed `RABBITMQ_*` forms — see `.env.example`
+- Unset `RABBITMQ_USERNAME`/`RABBITMQ_PASSWORD` now resolve to `'guest'` via Settings defaults (was Python `None`)
 
 ## [0.1.2] - 2026-04-21
 

@@ -8,7 +8,7 @@ import os
 import threading
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
 load_dotenv()
 # ruff: noqa: E402
@@ -19,44 +19,41 @@ from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient
 from src.platform.connectors.client import ConnectorClient
 from src.platform.connectors.registration_consumer import run_connector_registration_consumer
+from src.platform.events.buffer import InMemoryEventBuffer, InMemoryEventBufferSink
 from src.platform.events.factory import event_sink_factory
 from src.platform.events.providers.mq import RabbitMQEventSink
-from src.platform.logs.factory import log_sink_factory
+from src.platform.events.tee_sink import TeeEventSink
 from src.platform.logs.providers.mq import RabbitMQLogSink
+from src.platform.logs.service import LogService
 from src.routers.v0 import router as v0_router
-
-
-def _rabbitmq_url() -> str:
-    host = os.environ.get('AURELION_RABBITMQ_HOST', 'localhost')
-    port = os.environ.get('AURELION_RABBITMQ_PORT', '5672')
-    username = os.environ.get('AURELION_RABBITMQ_USERNAME', 'guest')
-    password = os.environ.get('AURELION_RABBITMQ_PASSWORD', 'guest')
-    return f'amqp://{username}:{password}@{host}:{port}/'
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    url = _rabbitmq_url()
+    url = settings.rabbitmq_url
 
     publisher = AsyncRabbitMQPublisher(url=url)
     await publisher.connect()
 
-    # Wire up MQ-backed sinks with the shared publisher
-    event_sink_factory.register('mq', lambda: RabbitMQEventSink(publisher))
-    log_sink_factory.register('mq', lambda: RabbitMQLogSink(publisher))
+    # In-memory event ring buffer for the IDE observability panel
+    event_buffer = InMemoryEventBuffer()
+    app.state.event_buffer = event_buffer
 
-    commands_exchange = os.environ.get(
-        'AURELION_CONNECTOR_COMMANDS_EXCHANGE',
-        'aurelion.connectors.commands',
+    # Wire up MQ-backed primary sink + in-memory tap via TeeEventSink
+    event_sink_factory.register(
+        'mq',
+        lambda: TeeEventSink(
+            RabbitMQEventSink(publisher, exchange=settings.rabbitmq_events_exchange),
+            InMemoryEventBufferSink(event_buffer),
+        ),
     )
-    responses_exchange = os.environ.get(
-        'AURELION_CONNECTOR_RESPONSES_EXCHANGE',
-        'aurelion.connectors.responses',
-    )
+    log_sink = RabbitMQLogSink(publisher, exchange=settings.rabbitmq_logs_exchange)
+    app.state.log_service = LogService(sink=log_sink)
+
     rpc_client = AsyncRabbitMQRPCClient(
         url=url,
-        commands_exchange=commands_exchange,
-        responses_exchange=responses_exchange,
+        commands_exchange=settings.rabbitmq_connector_commands_exchange,
+        responses_exchange=settings.rabbitmq_connector_responses_exchange,
     )
     await rpc_client.connect()
 
@@ -64,10 +61,34 @@ async def lifespan(app: FastAPI):
     app.state.rpc_client = rpc_client
     app.state.connector_client = ConnectorClient(rpc_client=rpc_client)
 
+    # Read registration topology from env (out of Phase 11 Step 1 Settings field list).
+    registration_exchange = os.environ.get(
+        'AURELION_CONNECTOR_REGISTRATION_EXCHANGE',
+        'aurelion.connectors.registry',
+    )
+    registration_queue = os.environ.get(
+        'AURELION_CONNECTOR_REGISTRATION_QUEUE',
+        'aurelion.connectors.registration',
+    )
+    registration_binding_raw = os.environ.get(
+        'AURELION_CONNECTOR_REGISTRATION_BINDINGS',
+        'connector.registered,connector.heartbeat',
+    )
+    registration_binding_keys = [k.strip() for k in registration_binding_raw.split(',') if k.strip()]
+
     main_loop = asyncio.get_running_loop()
     connector_registration_thread = threading.Thread(
         target=run_connector_registration_consumer,
         args=(main_loop,),
+        kwargs={
+            'host': settings.rabbitmq_host,
+            'port': settings.rabbitmq_port,
+            'username': settings.rabbitmq_username,
+            'password': settings.rabbitmq_password,
+            'registration_exchange': registration_exchange,
+            'registration_queue': registration_queue,
+            'registration_binding_keys': registration_binding_keys,
+        },
         daemon=True,
     )
     connector_registration_thread.start()
@@ -93,15 +114,6 @@ app.add_middleware(
 @app.get('/health')
 async def health() -> dict:
     return {'status': 'ok'}
-
-
-@app.middleware('http')
-async def attach_log_service(request: Request, call_next):
-    from src.platform.logs.service import LogService
-
-    request.state.log_service = LogService(factory=log_sink_factory)
-    response = await call_next(request)
-    return response
 
 
 app.include_router(v0_router, prefix='/api/v0')

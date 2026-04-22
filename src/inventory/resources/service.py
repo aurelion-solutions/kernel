@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import NoReturn
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -108,6 +109,127 @@ async def _application_exists(session: AsyncSession, application_id: uuid.UUID) 
     return result is not None
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers — validators, translators, envelope builders
+# ---------------------------------------------------------------------------
+
+
+async def _validate_resource_parent_exists(session: AsyncSession, parent_id: uuid.UUID) -> None:
+    """Raise ResourceParentNotFoundError if parent resource does not exist."""
+    parent = await repo_get_resource_by_id(session, parent_id)
+    if parent is None:
+        raise ResourceParentNotFoundError(parent_id)
+
+
+def _translate_resource_create_integrity_error(
+    exc: IntegrityError,
+    *,
+    application_id: uuid.UUID,
+    external_id: str,
+) -> NoReturn:
+    """Translate pgcode 23505 to DuplicateResourceError; re-raises original otherwise."""
+    orig = exc.orig
+    pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
+    if pgcode == '23505':
+        raise DuplicateResourceError(application_id, external_id) from None
+    raise exc
+
+
+def _build_resource_created_event(
+    resource: Resource,
+    application_id: uuid.UUID,
+    kind: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.resource.created."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.resource.created',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'resource_id': str(resource.id),
+            'application_id': str(application_id),
+            'kind': kind,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(resource.id),
+    )
+
+
+def _build_resource_updated_event(
+    resource: Resource,
+    resource_id: uuid.UUID,
+    changed_fields: set[str] | frozenset[str] | list[str],
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.resource.updated."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.resource.updated',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'resource_id': str(resource_id),
+            'changed_fields': sorted(changed_fields),
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(resource.id),
+    )
+
+
+def _build_resource_attribute_added_event(
+    resource_id: uuid.UUID,
+    key: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.resource.attribute_added."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.resource.attribute_added',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'resource_id': str(resource_id),
+            'key': key,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(resource_id),
+    )
+
+
+def _build_resource_attribute_removed_event(
+    resource_id: uuid.UUID,
+    key: str,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.resource.attribute_removed."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.resource.attribute_removed',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'resource_id': str(resource_id),
+            'key': key,
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(resource_id),
+    )
+
+
 class ResourceService:
     """Orchestrates resource CRUD and event emission."""
 
@@ -134,9 +256,7 @@ class ResourceService:
             raise ResourceApplicationNotFoundError(application_id)
 
         if parent_id is not None:
-            parent = await repo_get_resource_by_id(session, parent_id)
-            if parent is None:
-                raise ResourceParentNotFoundError(parent_id)
+            await _validate_resource_parent_exists(session, parent_id)
 
         try:
             resource = await repo_create_resource(
@@ -152,30 +272,9 @@ class ResourceService:
                 data_sensitivity=data_sensitivity,
             )
         except IntegrityError as exc:
-            orig = exc.orig
-            pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
-            if pgcode == '23505':
-                raise DuplicateResourceError(application_id, external_id) from None
-            raise
+            _translate_resource_create_integrity_error(exc, application_id=application_id, external_id=external_id)
 
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.resource.created',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'resource_id': str(resource.id),
-                    'application_id': str(application_id),
-                    'kind': kind,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(resource.id),
-            )
-        )
+        await self._events.emit(_build_resource_created_event(resource, application_id, kind, correlation_id))
         return resource
 
     async def get_resource_by_external_id(
@@ -231,9 +330,7 @@ class ResourceService:
         fields_to_update = {field: getattr(patch, field) for field in patch.model_fields_set}
 
         if 'parent_id' in fields_to_update and fields_to_update['parent_id'] is not None:
-            parent = await repo_get_resource_by_id(session, fields_to_update['parent_id'])
-            if parent is None:
-                raise ResourceParentNotFoundError(fields_to_update['parent_id'])
+            await _validate_resource_parent_exists(session, fields_to_update['parent_id'])
 
         changed_fields = await repo_update_resource(
             session,
@@ -243,21 +340,7 @@ class ResourceService:
 
         if changed_fields:
             await self._events.emit(
-                EventEnvelope(
-                    event_id=uuid.uuid4(),
-                    event_type='inventory.resource.updated',
-                    occurred_at=datetime.now(UTC),
-                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                    causation_id=None,
-                    payload={
-                        'resource_id': str(resource_id),
-                        'changed_fields': sorted(changed_fields),
-                    },
-                    actor_kind=EventParticipantKind.CAPABILITY,
-                    actor_id=_COMPONENT,
-                    target_kind=EventParticipantKind.SYSTEM,
-                    target_id=str(resource.id),
-                )
+                _build_resource_updated_event(resource, resource_id, changed_fields, correlation_id)
             )
         return resource
 
@@ -293,23 +376,7 @@ class ResourceService:
             )
         except IntegrityError:
             raise DuplicateResourceAttributeError(resource_id, key) from None
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.resource.attribute_added',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'resource_id': str(resource_id),
-                    'key': key,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(resource_id),
-            )
-        )
+        await self._events.emit(_build_resource_attribute_added_event(resource_id, key, correlation_id))
         return attr
 
     async def remove_attribute(
@@ -326,20 +393,4 @@ class ResourceService:
         deleted = await repo_delete_resource_attribute(session, resource_id, key)
         if not deleted:
             raise ResourceAttributeNotFoundError(resource_id, key)
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.resource.attribute_removed',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'resource_id': str(resource_id),
-                    'key': key,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(resource_id),
-            )
-        )
+        await self._events.emit(_build_resource_attribute_removed_event(resource_id, key, correlation_id))

@@ -16,6 +16,18 @@ Public API
 - :data:`event_sink_factory` — module-level singleton of :class:`EventSinkFactory`
 - :class:`CapturingEventService` — in-memory capture for tests
 - :class:`RabbitMQEventSink` — MQ provider (re-exported for DI)
+
+Four-way split (canonical in ``ARCH_CONTEXT.md``)
+-------------------------------------------------
+- **domain events** — ``<layer>.<entity>.<verb>`` routing keys on
+  ``aurelion.events``. Emitted via :meth:`EventService.emit`.
+- **audit records** — ``audit.*`` routing keys on the same
+  ``aurelion.events`` bus. Same :meth:`EventService.emit`. Different
+  consumers (audit sink) can bind only to the ``audit.#`` pattern.
+- **app logs** — separate bus ``aurelion.logs``; see
+  :mod:`src.platform.logs`. Not this package.
+- **trace metadata** — carried inside :class:`EventEnvelope` fields;
+  not a separate bus.
 """
 
 from src.platform.events.factory import EventSinkFactory, UnsupportedProviderError, event_sink_factory

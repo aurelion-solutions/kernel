@@ -45,7 +45,7 @@ async def test_begin_then_execute_continue_shares_correlation_like_async_http_jo
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     stub = RecordingStubRPCClient(
         {
@@ -109,7 +109,7 @@ async def test_reconciliation_emits_trace_and_each_invoke_carries_trace_context(
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     stub = RecordingStubRPCClient(
         {
@@ -192,7 +192,7 @@ async def test_reconciliation_failed_shares_correlation_after_operation_started(
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     stub = RecordingStubRPCClient(
         {

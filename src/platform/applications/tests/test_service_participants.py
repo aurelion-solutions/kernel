@@ -25,7 +25,7 @@ async def test_create_application_log_uses_applications_capability_and_applicati
 
     factory = LogSinkFactory()
     factory.register('cap', lambda: _CapSink())
-    log = LogService(factory, provider_name='cap')
+    log = LogService(sink=factory.get('cap'))
 
     async with session_factory() as session:
         app = await create_application(

@@ -4,10 +4,12 @@
 
 """Policy service dependency for route injection."""
 
+from fastapi import Request
 from src.capabilities.policy.service import PolicyService
-from src.platform.logs.deps import get_log_service
+from src.platform.logs.service import NoOpLogService
 
 
-def get_policy_service() -> PolicyService:
-    """Return PolicyService with injected log service."""
-    return PolicyService(log_service=get_log_service())
+def get_policy_service(request: Request) -> PolicyService:
+    """Return PolicyService with injected log service from app state."""
+    log_service = getattr(request.app.state, 'log_service', None) or NoOpLogService()
+    return PolicyService(log_service=log_service)

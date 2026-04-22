@@ -12,7 +12,6 @@ import uuid
 
 import aio_pika
 import aio_pika.abc
-from src.core.mq.async_publisher import _rabbitmq_url
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,12 @@ class AsyncRabbitMQRPCClient:
     ``asyncio.Future`` so ``request()`` truly suspends the coroutine
     instead of polling.
 
+    Callers must pass ``settings.rabbitmq_url`` from the composition root;
+    this class does not read environment variables.
+
     Usage::
 
-        client = AsyncRabbitMQRPCClient(url=...)
+        client = AsyncRabbitMQRPCClient(url=settings.rabbitmq_url)
         await client.connect()
         result = await client.request(instance_id='...', operation='...', payload={})
         await client.close()
@@ -34,12 +36,12 @@ class AsyncRabbitMQRPCClient:
 
     def __init__(
         self,
-        url: str | None = None,
+        url: str,
         commands_exchange: str = 'aurelion.connectors.commands',
         responses_exchange: str = 'aurelion.connectors.responses',
         timeout_seconds: int = 60,
     ) -> None:
-        self._url = url if url is not None else _rabbitmq_url()
+        self._url = url
         self._commands_exchange = commands_exchange
         self._responses_exchange = responses_exchange
         self._timeout_seconds = timeout_seconds

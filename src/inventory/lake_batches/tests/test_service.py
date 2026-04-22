@@ -306,17 +306,15 @@ async def test_delete_batch_emits_inventory_lake_batch_deleted_event(
 async def test_storage_resolution_failure_logs_without_event_type_and_re_raises(
     tmp_path: Path,
     session_factory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Storage resolution failure emits ERROR log without event_type and re-raises."""
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'file')
     lake_path = tmp_path / 'lake'
     log_path = tmp_path / 'provider_fail.jsonl'
     storage_factory = DataLakeStorageFactory()
     storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
     svc = LakeBatchService(
         storage_factory=storage_factory,
         log_service=log_service,
@@ -349,17 +347,15 @@ async def test_storage_resolution_failure_logs_without_event_type_and_re_raises(
 async def test_create_batch_does_not_emit_legacy_log_event_types(
     tmp_path: Path,
     session_factory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """KEEP-variant anti-dual-emit guard: create_batch log records have no event_type key."""
-    monkeypatch.setenv('AURELION_LOG_PROVIDER', 'file')
     lake_path = tmp_path / 'lake'
     log_path = tmp_path / 'logs.jsonl'
     storage_factory = DataLakeStorageFactory()
     storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
     log_factory = LogSinkFactory()
     log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(factory=log_factory, provider_name='file')
+    log_service = LogService(sink=log_factory.get('file'))
 
     capturing = CapturingEventService()
     event_svc = EventService(sink=capturing)

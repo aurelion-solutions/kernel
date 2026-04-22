@@ -40,4 +40,7 @@ class EventService:
 
     async def emit(self, event: EventEnvelope) -> None:
         """Emit a domain event. Re-raises on sink failure."""
+        # Single-method service: the thin layer exists to enforce the "only services
+        # emit events" invariant. Do not collapse into the sink — the seam is the audit
+        # boundary for the two-bus contract.
         await self._sink.emit(event)
