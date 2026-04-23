@@ -11,24 +11,29 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 from src.inventory.access_facts.models import AccessFactEffect
-from src.inventory.enums import Action
 
 __all__ = [
     'AccessFactCreate',
     'AccessFactRead',
     'AccessFactEffect',
-    'Action',
 ]
 
 
 class AccessFactCreate(BaseModel):
-    """Internal schema for creating an access fact. NOT exposed via REST."""
+    """Internal schema for creating an access fact. NOT exposed via REST.
+
+    action_slug is resolved to action_id by the service layer. Handlers and
+    internal callers identify actions by slug (human-friendly, stable across
+    reseeds) — not by FK id.
+    """
 
     subject_id: uuid.UUID
     account_id: uuid.UUID | None = None
     resource_id: uuid.UUID
-    action: Action
+    action_slug: str
     effect: AccessFactEffect
+    # caller-supplied — no default (TASK.md Q8: server-side default would hide source-time signal)
+    observed_at: datetime
     valid_from: datetime | None = None
     valid_until: datetime | None = None
 
@@ -40,8 +45,11 @@ class AccessFactRead(BaseModel):
     subject_id: uuid.UUID
     account_id: uuid.UUID | None
     resource_id: uuid.UUID
-    action: Action
+    action_slug: str
     effect: AccessFactEffect
+    is_active: bool
+    revoked_at: datetime | None
+    observed_at: datetime
     valid_from: datetime
     valid_until: datetime | None
     created_at: datetime

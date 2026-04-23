@@ -147,7 +147,7 @@ async def test_ingest_and_normalize_creates_artifact_resource_fact_binding(
     assert result.binding_id is not None
 
     event_types = [e.event_type for e in capturing_events.emitted]
-    assert event_types.count('inventory.access_artifact.created') == 1
+    assert event_types.count('inventory.access_artifact.ingested') == 1
     assert event_types.count('inventory.resource.created') == 1
     assert event_types.count('inventory.access_fact.created') == 1
     assert event_types.count('inventory.artifact_binding.created') == 1
@@ -229,7 +229,7 @@ async def test_replay_does_not_duplicate_access_fact(
 
     event_types = [e.event_type for e in capturing_events.emitted]
     assert event_types.count('inventory.access_fact.created') == 1
-    assert event_types.count('inventory.access_artifact.created') == 2
+    assert event_types.count('inventory.access_artifact.ingested') == 2
     assert event_types.count('inventory.artifact_binding.created') == 2
 
 

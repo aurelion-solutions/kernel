@@ -26,6 +26,8 @@ async def create_resource(
     external_id: str,
     application_id: uuid.UUID,
     kind: str,
+    resource_type: str,
+    resource_key: str,
     parent_id: uuid.UUID | None = None,
     path: str | None = None,
     description: str | None = None,
@@ -38,6 +40,8 @@ async def create_resource(
         external_id=external_id,
         application_id=application_id,
         kind=kind,
+        resource_type=resource_type,
+        resource_key=resource_key,
         parent_id=parent_id,
         path=path,
         description=description,
@@ -57,6 +61,23 @@ async def get_resource_by_id(
 ) -> Resource | None:
     """Load resource by id."""
     result = await session.execute(select(Resource).where(Resource.id == resource_id))
+    return result.scalar_one_or_none()
+
+
+async def get_resource_by_identity(
+    session: AsyncSession,
+    application_id: uuid.UUID,
+    resource_type: str,
+    resource_key: str,
+) -> Resource | None:
+    """Load resource by (application_id, resource_type, resource_key). Returns None if not found."""
+    result = await session.execute(
+        select(Resource).where(
+            Resource.application_id == application_id,
+            Resource.resource_type == resource_type,
+            Resource.resource_key == resource_key,
+        )
+    )
     return result.scalar_one_or_none()
 
 

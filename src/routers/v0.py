@@ -12,6 +12,7 @@ from src.inventory.access_artifacts.routes import router as access_artifacts_rou
 from src.inventory.access_facts.routes import router as access_facts_router
 from src.inventory.access_usage_facts.routes import router as access_usage_facts_router
 from src.inventory.accounts.routes import router as accounts_router
+from src.inventory.actions.routes import router as actions_router
 from src.inventory.artifact_bindings.routes import router as artifact_bindings_router
 from src.inventory.customers.routes import router as customers_router
 from src.inventory.employee_records.routes import router as employee_records_router
@@ -40,6 +41,7 @@ router.include_router(reconciliation_router)
 router.include_router(effective_grants_router)
 router.include_router(persons_router)
 router.include_router(accounts_router)
+router.include_router(actions_router)
 router.include_router(customers_router)
 router.include_router(subjects_router)
 router.include_router(resources_router)

@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""ArtifactBinding model — junction entity linking AccessArtifact to normalized entities."""
+"""ArtifactBinding model — polymorphic (target_type, target_id) binding to any normalized entity."""
 
 from __future__ import annotations
 
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import CheckConstraint, ForeignKey, Index
+from sqlalchemy import ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -17,7 +17,11 @@ from src.core.db.base import Base
 
 
 class ArtifactBinding(Base):
-    """Links a raw AccessArtifact to normalized entities (AccessFact, Resource, Account)."""
+    """Links a raw AccessArtifact to any normalized entity via a polymorphic (target_type, target_id) pair.
+
+    target_type is an open snake_case string (no DB ENUM); supported values defined in service.py.
+    target_id has no DB-level FK — application-level integrity is enforced in the service.
+    """
 
     __tablename__ = 'artifact_bindings'
 
@@ -31,20 +35,13 @@ class ArtifactBinding(Base):
         ForeignKey('access_artifacts.id', ondelete='CASCADE'),
         nullable=False,
     )
-    access_fact_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('access_facts.id', ondelete='CASCADE'),
-        nullable=True,
+    target_type: Mapped[str] = mapped_column(
+        sa.String(64),
+        nullable=False,
     )
-    resource_id: Mapped[uuid.UUID | None] = mapped_column(
+    target_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey('resources.id', ondelete='CASCADE'),
-        nullable=True,
-    )
-    account_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey('ent_accounts.id', ondelete='CASCADE'),
-        nullable=True,
+        nullable=False,
     )
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True),
@@ -53,12 +50,12 @@ class ArtifactBinding(Base):
     )
 
     __table_args__ = (
-        CheckConstraint(
-            'COALESCE(access_fact_id::text, resource_id::text, account_id::text) IS NOT NULL',
-            name='chk_artifact_binding_has_target',
+        UniqueConstraint(
+            'artifact_id',
+            'target_type',
+            'target_id',
+            name='uq_artifact_bindings_artifact_id_target_type_target_id',
         ),
         Index('ix_artifact_bindings_artifact_id', 'artifact_id'),
-        Index('ix_artifact_bindings_access_fact_id', 'access_fact_id'),
-        Index('ix_artifact_bindings_resource_id', 'resource_id'),
-        Index('ix_artifact_bindings_account_id', 'account_id'),
+        Index('ix_artifact_bindings_target', 'target_type', 'target_id'),
     )

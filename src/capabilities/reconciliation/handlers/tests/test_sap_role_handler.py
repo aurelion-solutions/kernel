@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+"""Tests for reconciliation.handlers.sap_role."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import uuid
+
+import pytest
+from src.capabilities.reconciliation.handlers.sap_role import SapRoleHandler
+from src.capabilities.reconciliation.registry import _reset_registry_for_tests, get_handler, register_handler
+
+# ---------------------------------------------------------------------------
+# Seed helpers
+# ---------------------------------------------------------------------------
+
+
+async def _make_application(session) -> uuid.UUID:
+    from src.platform.applications.models import Application
+
+    app = Application(
+        name=f'sap-handler-test-{uuid.uuid4()}',
+        code=f'sh-{uuid.uuid4().hex[:8]}',
+        config={},
+        required_connector_tags=[],
+        is_active=True,
+    )
+    session.add(app)
+    await session.flush()
+    return app.id
+
+
+def _make_artifact(application_id: uuid.UUID, payload: dict, artifact_type: str = 'sap_role'):
+    from src.inventory.access_artifacts.models import AccessArtifact
+
+    return AccessArtifact(
+        id=uuid.uuid4(),
+        application_id=application_id,
+        artifact_type=artifact_type,
+        external_id=str(uuid.uuid4()),
+        payload=payload,
+        observed_at=datetime.now(UTC),
+        is_active=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_sap_role_handler_registered_at_import():
+    """SapRoleHandler can be registered and retrieved from the registry."""
+    _reset_registry_for_tests()
+    assert get_handler('sap_role') is None
+
+    register_handler('sap_role', SapRoleHandler())
+    assert get_handler('sap_role') is not None
+    _reset_registry_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_sap_role_handler_happy_path(session_factory):
+    """Valid SAP payload → single NormalizationResult with expected fields."""
+    _reset_registry_for_tests()
+    register_handler('sap_role', SapRoleHandler())
+    handler = get_handler('sap_role')
+    assert handler is not None
+
+    subject_id = uuid.uuid4()
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        payload = {
+            'subject_id': str(subject_id),
+            'resource_type': 'sap_tcode',
+            'resource_key': 'FI01',
+            'action_slug': 'use',
+            'effect': 'allow',
+        }
+        artifact = _make_artifact(app_id, payload)
+        session.add(artifact)
+        await session.flush()
+
+        results = await handler.handle(artifact, session)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.subject_id == subject_id
+    assert r.account_id is None
+    assert r.action_slug == 'use'
+    assert r.effect == 'allow'
+    assert r.resource_id is not None
+
+    _reset_registry_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_sap_role_handler_invalid_payload_returns_empty(session_factory):
+    """Missing required keys → [] (not an exception)."""
+    _reset_registry_for_tests()
+    register_handler('sap_role', SapRoleHandler())
+    handler = get_handler('sap_role')
+    assert handler is not None
+
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact = _make_artifact(app_id, {'some_key': 'some_value'})
+        session.add(artifact)
+        await session.flush()
+
+        results = await handler.handle(artifact, session)
+
+    assert results == []
+    _reset_registry_for_tests()

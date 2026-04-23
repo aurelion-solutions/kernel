@@ -665,3 +665,220 @@ def test_resource_service_has_no_log_attribute() -> None:
     """ResourceService must not carry a _log attribute (anti-dual-emit guard)."""
     service = ResourceService()
     assert getattr(service, '_log', None) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 Step 6 — identity triple tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_resource_with_explicit_identity(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """create_resource persists explicit resource_type / resource_key verbatim."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='identity-explicit-001',
+            application_id=app_id,
+            kind='table',
+            resource_type='snowflake_table',
+            resource_key='finance.public.orders',
+        )
+        await session.commit()
+
+    assert resource.resource_type == 'snowflake_table'
+    assert resource.resource_key == 'finance.public.orders'
+
+
+@pytest.mark.asyncio
+async def test_create_resource_defaults_identity_from_kind_and_external_id(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """create_resource defaults resource_type = kind, resource_key = external_id when not provided."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.create_resource(
+            session,
+            external_id='identity-default-001',
+            application_id=app_id,
+            kind='bucket',
+        )
+        await session.commit()
+
+    assert resource.resource_type == 'bucket'
+    assert resource.resource_key == 'identity-default-001'
+
+
+@pytest.mark.asyncio
+async def test_create_resource_identity_duplicate_raises(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """Two creates with same identity triple but different external_id raise DuplicateResourceError."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        await service.create_resource(
+            session,
+            external_id='id-dup-first',
+            application_id=app_id,
+            kind='table',
+            resource_type='pg_table',
+            resource_key='public.events',
+        )
+        await session.commit()
+
+    with pytest.raises(DuplicateResourceError):
+        async with session_factory() as session:
+            await service.create_resource(
+                session,
+                external_id='id-dup-second',
+                application_id=app_id,
+                kind='table',
+                resource_type='pg_table',
+                resource_key='public.events',
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_get_resource_by_identity_via_service(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """get_resource_by_identity returns the correct resource."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        created = await service.create_resource(
+            session,
+            external_id='identity-lookup-001',
+            application_id=app_id,
+            kind='view',
+            resource_type='bq_view',
+            resource_key='project.dataset.my_view',
+        )
+        await session.commit()
+        resource_id = created.id
+
+    async with session_factory() as session:
+        found = await service.get_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='bq_view',
+            resource_key='project.dataset.my_view',
+        )
+
+    assert found is not None
+    assert found.id == resource_id
+
+
+@pytest.mark.asyncio
+async def test_get_resource_by_identity_returns_none_when_absent(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """get_resource_by_identity returns None when the triple does not exist."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        await session.commit()
+
+    async with session_factory() as session:
+        found = await service.get_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='missing_type',
+            resource_key='missing_key',
+        )
+
+    assert found is None
+
+
+# ---------------------------------------------------------------------------
+# ensure_resource_by_identity tests (Step 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_resource_by_identity_creates_new(
+    service: ResourceService,
+    session_factory,
+    capturing_events: CapturingEventService,
+) -> None:
+    """ensure_resource_by_identity creates a new Resource when triple doesn't exist."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        resource = await service.ensure_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='table',
+            resource_key='orders',
+        )
+        await session.commit()
+
+    assert resource.id is not None
+    assert resource.resource_type == 'table'
+    assert resource.resource_key == 'orders'
+    assert resource.external_id == 'orders'
+    assert resource.kind == 'table'
+
+    created = capturing_events.filter_by_type('inventory.resource.created')
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_resource_by_identity_returns_existing(
+    service: ResourceService,
+    session_factory,
+    capturing_events: CapturingEventService,
+) -> None:
+    """ensure_resource_by_identity returns existing Resource without creating duplicate."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+
+        r1 = await service.ensure_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='table',
+            resource_key='users',
+        )
+        r2 = await service.ensure_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='table',
+            resource_key='users',
+        )
+        await session.commit()
+
+    assert r1.id == r2.id
+    # Only one created event — second call is a read
+    created = capturing_events.filter_by_type('inventory.resource.created')
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_resource_by_identity_different_keys_separate_rows(
+    service: ResourceService,
+    session_factory,
+) -> None:
+    """Different resource_keys produce different Resources."""
+    async with session_factory() as session:
+        app_id = await _make_application_id(session)
+        r1 = await service.ensure_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='table',
+            resource_key='table_a',
+        )
+        r2 = await service.ensure_resource_by_identity(
+            session,
+            application_id=app_id,
+            resource_type='table',
+            resource_key='table_b',
+        )
+        await session.commit()
+
+    assert r1.id != r2.id

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 load_dotenv()
 # ruff: noqa: E402
 from fastapi.middleware.cors import CORSMiddleware
+import src.capabilities.reconciliation.handlers  # noqa: F401 — bootstrap handler registry
 from src.core.config import settings
 from src.core.db.session import engine
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher

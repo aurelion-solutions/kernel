@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import NoReturn
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.artifact_bindings.models import ArtifactBinding
 from src.inventory.artifact_bindings.repository import (
@@ -20,22 +23,130 @@ from src.inventory.artifact_bindings.repository import (
 from src.inventory.artifact_bindings.repository import (
     list_artifact_bindings as repo_list_artifact_bindings,
 )
+from src.inventory.artifact_bindings.schemas import SUPPORTED_TARGET_TYPES
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.artifact_bindings'
 
 
-class ArtifactBindingTargetRequiredError(Exception):
-    """Raised when all three target FKs are None."""
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
 
-class ArtifactBindingForeignKeyError(Exception):
-    """Raised when a referenced entity is not found or FK constraint fails."""
+class ArtifactBindingArtifactNotFoundError(Exception):
+    """Raised when the referenced AccessArtifact does not exist."""
 
-    def __init__(self, detail: str) -> None:
-        self.detail = detail
-        super().__init__(detail)
+
+class ArtifactBindingTargetNotFoundError(Exception):
+    """Raised when target_id does not exist in the table implied by target_type (404)."""
+
+
+class ArtifactBindingUnknownTargetTypeError(Exception):
+    """Raised when target_type is not in SUPPORTED_TARGET_TYPES (400)."""
+
+
+class ArtifactBindingDuplicateError(Exception):
+    """Raised on UNIQUE (artifact_id, target_type, target_id) collision."""
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (service-layer discipline: Phase 11 Step 3)
+# ---------------------------------------------------------------------------
+
+# Loader type: (session, target_id) → ORM instance | None
+_TargetLoader = Callable[[AsyncSession, uuid.UUID], Awaitable[object | None]]
+
+
+def _resolve_target_loader(target_type: str) -> _TargetLoader:
+    """Return the async loader for the given target_type.
+
+    Each loader is a thin wrapper around session.get(ModelClass, pk).
+    Dispatch is done via a static dict — no hardcoded if/elif chains.
+    """
+
+    async def _load_access_fact(session: AsyncSession, target_id: uuid.UUID) -> object | None:
+        from src.inventory.access_facts.models import AccessFact
+
+        return await session.get(AccessFact, target_id)
+
+    async def _load_resource(session: AsyncSession, target_id: uuid.UUID) -> object | None:
+        from src.inventory.resources.models import Resource
+
+        return await session.get(Resource, target_id)
+
+    async def _load_account(session: AsyncSession, target_id: uuid.UUID) -> object | None:
+        from src.inventory.accounts.models import Account
+
+        return await session.get(Account, target_id)
+
+    async def _load_subject(session: AsyncSession, target_id: uuid.UUID) -> object | None:
+        from src.inventory.subjects.models import Subject
+
+        return await session.get(Subject, target_id)
+
+    _loaders: dict[str, _TargetLoader] = {
+        'access_fact': _load_access_fact,
+        'resource': _load_resource,
+        'account': _load_account,
+        'subject': _load_subject,
+    }
+    return _loaders[target_type]
+
+
+def _validate_target_type(target_type: str) -> None:
+    """Raise ArtifactBindingUnknownTargetTypeError for unsupported target_type values."""
+    if target_type not in SUPPORTED_TARGET_TYPES:
+        raise ArtifactBindingUnknownTargetTypeError(
+            f'Unknown target_type {target_type!r}. Supported: {sorted(SUPPORTED_TARGET_TYPES)}'
+        )
+
+
+def _build_artifact_binding_created_event(
+    binding: ArtifactBinding,
+    *,
+    artifact_id: uuid.UUID,
+    target_type: str,
+    target_id: uuid.UUID,
+    correlation_id: str,
+) -> EventEnvelope:
+    """Build the inventory.artifact_binding.created event envelope."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.artifact_binding.created',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id,
+        causation_id=None,
+        payload={
+            'binding_id': str(binding.id),
+            'artifact_id': str(artifact_id),
+            'target_type': target_type,
+            'target_id': str(target_id),
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(binding.id),
+    )
+
+
+def _translate_create_integrity_error(exc: IntegrityError) -> NoReturn:
+    """Translate IntegrityError 23505 on the UNIQUE triple → ArtifactBindingDuplicateError.
+
+    Re-raises the original exception for any other pgcode.
+    """
+    pgcode = getattr(getattr(exc, 'orig', None), 'pgcode', None)
+    if pgcode == '23505':
+        raise ArtifactBindingDuplicateError(
+            'Duplicate binding: (artifact_id, target_type, target_id) already exists.'
+        ) from exc
+    raise
+
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
 
 
 class ArtifactBindingService:
@@ -52,72 +163,47 @@ class ArtifactBindingService:
         session: AsyncSession,
         *,
         artifact_id: uuid.UUID,
-        access_fact_id: uuid.UUID | None = None,
-        resource_id: uuid.UUID | None = None,
-        account_id: uuid.UUID | None = None,
+        target_type: str,
+        target_id: uuid.UUID,
         correlation_id: str | None = None,
     ) -> ArtifactBinding:
-        """Create an artifact binding. Validates all referenced entities exist. Emits inventory.artifact_binding.created."""  # noqa: E501
-        if access_fact_id is None and resource_id is None and account_id is None:
-            raise ArtifactBindingTargetRequiredError(
-                'At least one of access_fact_id, resource_id, account_id is required'
-            )
+        """Create an artifact binding.
+
+        Validates target_type is supported, artifact exists, and target entity exists.
+        Emits inventory.artifact_binding.created on success.
+        """
+        _validate_target_type(target_type)
 
         from src.inventory.access_artifacts.models import AccessArtifact
 
         artifact = await session.get(AccessArtifact, artifact_id)
         if artifact is None:
-            raise ArtifactBindingForeignKeyError(f'Access artifact not found: {artifact_id}')
+            raise ArtifactBindingArtifactNotFoundError(f'Access artifact not found: {artifact_id}')
 
-        if access_fact_id is not None:
-            from src.inventory.access_facts.models import AccessFact
+        loader = _resolve_target_loader(target_type)
+        target = await loader(session, target_id)
+        if target is None:
+            raise ArtifactBindingTargetNotFoundError(f'Target {target_type!r} with id {target_id} not found.')
 
-            fact = await session.get(AccessFact, access_fact_id)
-            if fact is None:
-                raise ArtifactBindingForeignKeyError(f'Access fact not found: {access_fact_id}')
-
-        if resource_id is not None:
-            from src.inventory.resources.models import Resource
-
-            resource = await session.get(Resource, resource_id)
-            if resource is None:
-                raise ArtifactBindingForeignKeyError(f'Resource not found: {resource_id}')
-
-        if account_id is not None:
-            from src.inventory.accounts.models import Account
-
-            account = await session.get(Account, account_id)
-            if account is None:
-                raise ArtifactBindingForeignKeyError(f'Account not found: {account_id}')
-
-        binding = await repo_create_artifact_binding(
-            session,
-            artifact_id=artifact_id,
-            access_fact_id=access_fact_id,
-            resource_id=resource_id,
-            account_id=account_id,
-        )
-
-        await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.artifact_binding.created',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'binding_id': str(binding.id),
-                    'artifact_id': str(artifact_id),
-                    'access_fact_id': str(access_fact_id) if access_fact_id is not None else None,
-                    'resource_id': str(resource_id) if resource_id is not None else None,
-                    'account_id': str(account_id) if account_id is not None else None,
-                },
-                actor_kind=EventParticipantKind.CAPABILITY,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(binding.id),
+        try:
+            binding = await repo_create_artifact_binding(
+                session,
+                artifact_id=artifact_id,
+                target_type=target_type,
+                target_id=target_id,
             )
+        except IntegrityError as exc:
+            _translate_create_integrity_error(exc)
+
+        effective_correlation_id = correlation_id if correlation_id is not None else uuid.uuid4().hex
+        event = _build_artifact_binding_created_event(
+            binding,
+            artifact_id=artifact_id,
+            target_type=target_type,
+            target_id=target_id,
+            correlation_id=effective_correlation_id,
         )
+        await self._events.emit(event)
         return binding
 
     async def get_binding(
@@ -125,7 +211,7 @@ class ArtifactBindingService:
         session: AsyncSession,
         binding_id: uuid.UUID,
     ) -> ArtifactBinding | None:
-        """Get artifact binding by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
+        """Get artifact binding by id. No event emitted (read-side audit deferred)."""
         return await repo_get_artifact_binding_by_id(session, binding_id)
 
     async def list_bindings(
@@ -133,9 +219,8 @@ class ArtifactBindingService:
         session: AsyncSession,
         *,
         artifact_id: uuid.UUID | None = None,
-        access_fact_id: uuid.UUID | None = None,
-        resource_id: uuid.UUID | None = None,
-        account_id: uuid.UUID | None = None,
+        target_type: str | None = None,
+        target_id: uuid.UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArtifactBinding]:
@@ -143,9 +228,8 @@ class ArtifactBindingService:
         return await repo_list_artifact_bindings(
             session,
             artifact_id=artifact_id,
-            access_fact_id=access_fact_id,
-            resource_id=resource_id,
-            account_id=account_id,
+            target_type=target_type,
+            target_id=target_id,
             limit=limit,
             offset=offset,
         )

@@ -35,6 +35,9 @@ from src.inventory.resources.repository import (
     get_resource_by_id as repo_get_resource_by_id,
 )
 from src.inventory.resources.repository import (
+    get_resource_by_identity as repo_get_resource_by_identity,
+)
+from src.inventory.resources.repository import (
     list_resource_attributes as repo_list_resource_attributes,
 )
 from src.inventory.resources.repository import (
@@ -75,12 +78,24 @@ class ResourceParentNotFoundError(Exception):
 
 
 class DuplicateResourceError(Exception):
-    """Raised when a resource with the same (application_id, external_id) already exists."""
+    """Raised when a resource with the same (application_id, external_id) or identity triple already exists."""
 
-    def __init__(self, application_id: uuid.UUID, external_id: str) -> None:
+    def __init__(
+        self,
+        application_id: uuid.UUID,
+        external_id: str,
+        *,
+        resource_type: str | None = None,
+        resource_key: str | None = None,
+    ) -> None:
         self.application_id = application_id
         self.external_id = external_id
-        super().__init__(f'Duplicate resource: application_id={application_id}, external_id={external_id}')
+        self.resource_type = resource_type
+        self.resource_key = resource_key
+        msg = f'Duplicate resource: application_id={application_id}, external_id={external_id}'
+        if resource_type is not None or resource_key is not None:
+            msg += f', resource_type={resource_type}, resource_key={resource_key}'
+        super().__init__(msg)
 
 
 class DuplicateResourceAttributeError(Exception):
@@ -126,12 +141,19 @@ def _translate_resource_create_integrity_error(
     *,
     application_id: uuid.UUID,
     external_id: str,
+    resource_type: str | None = None,
+    resource_key: str | None = None,
 ) -> NoReturn:
     """Translate pgcode 23505 to DuplicateResourceError; re-raises original otherwise."""
     orig = exc.orig
     pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
     if pgcode == '23505':
-        raise DuplicateResourceError(application_id, external_id) from None
+        raise DuplicateResourceError(
+            application_id,
+            external_id,
+            resource_type=resource_type,
+            resource_key=resource_key,
+        ) from None
     raise exc
 
 
@@ -243,6 +265,8 @@ class ResourceService:
         external_id: str,
         application_id: uuid.UUID,
         kind: str,
+        resource_type: str | None = None,
+        resource_key: str | None = None,
         parent_id: uuid.UUID | None = None,
         path: str | None = None,
         description: str | None = None,
@@ -252,6 +276,11 @@ class ResourceService:
         correlation_id: str | None = None,
     ) -> Resource:
         """Create a resource. Pre-validates application_id and parent_id. Emits inventory.resource.created."""
+        if resource_type is None:
+            resource_type = kind
+        if resource_key is None:
+            resource_key = external_id
+
         if not await _application_exists(session, application_id):
             raise ResourceApplicationNotFoundError(application_id)
 
@@ -264,6 +293,8 @@ class ResourceService:
                 external_id=external_id,
                 application_id=application_id,
                 kind=kind,
+                resource_type=resource_type,
+                resource_key=resource_key,
                 parent_id=parent_id,
                 path=path,
                 description=description,
@@ -272,7 +303,13 @@ class ResourceService:
                 data_sensitivity=data_sensitivity,
             )
         except IntegrityError as exc:
-            _translate_resource_create_integrity_error(exc, application_id=application_id, external_id=external_id)
+            _translate_resource_create_integrity_error(
+                exc,
+                application_id=application_id,
+                external_id=external_id,
+                resource_type=resource_type,
+                resource_key=resource_key,
+            )
 
         await self._events.emit(_build_resource_created_event(resource, application_id, kind, correlation_id))
         return resource
@@ -286,6 +323,17 @@ class ResourceService:
     ) -> Resource | None:
         """Look up resource by (application_id, external_id). Silent — no event emitted."""
         return await repo_get_resource_by_application_and_external_id(session, application_id, external_id)
+
+    async def get_resource_by_identity(
+        self,
+        session: AsyncSession,
+        *,
+        application_id: uuid.UUID,
+        resource_type: str,
+        resource_key: str,
+    ) -> Resource | None:
+        """Look up resource by (application_id, resource_type, resource_key). Silent — no event emitted."""
+        return await repo_get_resource_by_identity(session, application_id, resource_type, resource_key)
 
     async def get_resource(
         self,
@@ -394,3 +442,48 @@ class ResourceService:
         if not deleted:
             raise ResourceAttributeNotFoundError(resource_id, key)
         await self._events.emit(_build_resource_attribute_removed_event(resource_id, key, correlation_id))
+
+    async def ensure_resource_by_identity(
+        self,
+        session: AsyncSession,
+        *,
+        application_id: uuid.UUID,
+        resource_type: str,
+        resource_key: str,
+        correlation_id: str | None = None,
+    ) -> Resource:
+        """Upsert a Resource by its identity triple (application_id, resource_type, resource_key).
+
+        If the row already exists, returns it unchanged.
+        If not, creates a placeholder row: kind=resource_type, external_id=resource_key,
+        name defaults to resource_key. Emits inventory.resource.created for new rows.
+        Race-safe: a concurrent insert raises IntegrityError 23505 → re-fetches the row.
+        """
+        existing = await repo_get_resource_by_identity(session, application_id, resource_type, resource_key)
+        if existing is not None:
+            return existing
+
+        resource: Resource | None = None
+        try:
+            async with session.begin_nested():
+                resource = await repo_create_resource(
+                    session,
+                    external_id=resource_key,
+                    application_id=application_id,
+                    kind=resource_type,
+                    resource_type=resource_type,
+                    resource_key=resource_key,
+                )
+        except IntegrityError as exc:
+            orig = exc.orig
+            pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
+            if pgcode == '23505':
+                # SAVEPOINT was rolled back automatically; outer transaction intact.
+                row = await repo_get_resource_by_identity(session, application_id, resource_type, resource_key)
+                if row is not None:
+                    return row
+            raise
+
+        assert resource is not None  # create path succeeded
+        await self._events.emit(_build_resource_created_event(resource, application_id, resource_type, correlation_id))
+        return resource

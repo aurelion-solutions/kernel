@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Reconciliation handler registry (`capabilities/reconciliation/registry.py`) mapping `artifact_type → Handler`
+- `NormalizationResult` frozen dataclass and `Handler` Protocol in `contracts.py`
+- `pipeline.run_reconciliation` with per-application set-diff on normalized fact key (create / reactivate / update / revoke)
+- `capabilities/reconciliation/handlers/` sub-package with smoke `role` handler
+- `ensure_resource_by_identity` for handler-driven Resource auto-provisioning
+- `AccessFactService.refresh_fact_fields` + `AccessFactNotActiveError` + `inventory.access_fact.updated` event
+- `reconciliation.run.completed` event (three-segment routing key, WARNING when `facts_revoked > 100`)
+- `POST /reconciliation/runs` endpoint returning eight-field run summary
+- `al reconciliation run --application-id <UUID>` CLI command
+- Phase 12 Universal Access Artifacts + Normalized Access Facts complete (15/15 milestones)
+- `sap_role`, `acl_entry`, `db_grant`, `privilege` smoke handlers covering all four Phase 12 artifact classes
+- DB-grant handler with `SELECT→read`, `INSERT/UPDATE/DELETE→write`, `EXECUTE→execute`, `ADMIN OPTION→admin` mapping; non-standard privileges silently dropped
+- End-to-end integration tests seeding via `AccessArtifactService.upsert_artifact` and running via `ReconciliationService.run` across all five artifact types in a single pipeline run
+- Re-run idempotency and tombstone-driven revocation end-to-end tests
+- `test_handler_vocabulary_guard` — AST-walk static guard asserting all `action_slug` literals exist in seeded `ref_actions` vocabulary
+- Repo-wide `ent_roles` / `ent_privileges` / `role_id` / `privilege_id` grep-guard across `aurelion-kernel/src/`
+
+### Changed
+
+- `ReconciliationService` rewritten around artifact-first `pipeline.run_reconciliation`; legacy role/privilege/account-centric orchestration removed
+- `capabilities/reconciliation/handlers/__init__.py` imports four new handler modules (`acl_entry`, `db_grant`, `privilege`, `sap_role`) alongside the existing `role` — registration fires at kernel bootstrap for all five
+
+### Removed
+
+- Legacy reconciliation `engine.py`, `orchestrator.py`, and `reconciler_account.py`
+- Role/privilege-specific DTOs from `schemas.py`
+- Legacy `POST /applications/{id}/reconcile` connector-based reconciliation endpoint
+
+### Changed (continued)
+
+- `AccessFact` as current-state store: `action_id` FK to `ref_actions`, partial unique indexes on active rows, reactivate-on-re-grant idempotency, application-scope invariant guard, `revoke_fact` / `inventory.access_fact.revoked` + `inventory.access_fact.reactivated` events, `invalidate_fact` removed, EAS read-path patched to JOIN `ref_actions`
+- `ArtifactBinding` redesigned as a generic polymorphic target binding: `(target_type, target_id)` pair replaces three nullable FK columns; UNIQUE `(artifact_id, target_type, target_id)` enforces dedup; `GET /artifact-bindings` query params updated to `?target_type=&target_id=`
+
+### Added
+
+- `AccessArtifactService.tombstone_artifact` with idempotent `inventory.access_artifact.tombstoned` domain event
+- Reactivation-on-upsert: `upsert_access_artifact` restores `is_active=true`, `tombstoned_at=NULL` when a tombstoned row is re-observed
+- `is_active` filter on `GET /access-artifacts`
+
+### Changed
+
+- `inventory.access_artifact.ingested` replaces `inventory.access_artifact.created`; payload extended with `raw_name`, `effect`, `valid_from`, `valid_until` (timestamps as ISO-8601)
+- `AccessArtifact` create-path: `AccessArtifactService.create_artifact(...)` replaced by `upsert_artifact(...) -> tuple[AccessArtifact, bool]` using PG `INSERT ... ON CONFLICT DO UPDATE` on `uq_access_artifacts_application_id_artifact_type_external_id`. Re-observation refreshes `payload`, `observed_at`, `ingest_batch_id`, `ingested_at` in place; `is_active` and `tombstoned_at` are preserved across upserts (lifecycle transitions are Step 11's concern). Repository `create_access_artifact` replaced by `upsert_access_artifact` returning `(artifact, was_inserted)`. `was_inserted` derived from `RETURNING (xmax = 0)` — safe because `access_artifacts` is not partitioned (see ARCH_CONTEXT). `inventory.access_artifact.created` event now emits only on fresh inserts (`was_inserted=True`); update path is silent until Step 10. (Phase 12 Step 8)
+- `AccessArtifact`: renamed `source_kind` column → `artifact_type` (DB column, ORM field, Pydantic schema field, `GET /access-artifacts?source_kind=` query param renamed to `?artifact_type=`, and `inventory.access_artifact.created` event payload key). **Breaking** for clients that relied on the old names. (Phase 12 Step 7)
+
+### Added
+
+- `AccessArtifact` permitted universal fields: `raw_name` (`String(255)`, nullable), `effect` (`Text`, nullable, source-raw string; NOT normalized to `allow|deny` — the normalized `allow|deny` contract lives on `AccessFact.effect` (Step 13)), `valid_from` (`TIMESTAMPTZ`, nullable), `valid_until` (`TIMESTAMPTZ`, nullable). All four nullable, no defaults, no CHECK constraints, no indexes. Added to ORM model, `AccessArtifactCreate` / `AccessArtifactRead` schemas, `upsert_artifact` / `upsert_access_artifact` signatures, and the upsert `set_` dict (re-observation refreshes these fields in place, same semantics as `payload`; passing `None` sets field to `NULL`). Event payload is unchanged — `inventory.access_artifact.created` still carries the Step 8 shape; Step 10 will extend payload with these four fields. Alembic migration `2026_04_24_0300_add_access_artifact_permitted_universal_fields.py` (revision `c4d5e6f7a8b9`) adds the four columns as nullable. (Phase 12 Step 9)
+- `AccessArtifact` lifecycle columns: `observed_at` (TIMESTAMPTZ NOT NULL, defaults to `now()` on create when not provided by caller), `is_active` (BOOLEAN NOT NULL DEFAULT TRUE), `tombstoned_at` (TIMESTAMPTZ NULL). UNIQUE constraint `uq_access_artifacts_application_id_artifact_type_external_id` on `(application_id, artifact_type, external_id)`. `DuplicateAccessArtifactError` raised on identity-triple collision, mapped to HTTP 409 on the create path. Migration: `2026_04_24_0200_access_artifact_artifact_type_and_lifecycle`. (Phase 12 Step 7)
+- `Resource`: normalized identity columns `resource_type` (VARCHAR 255) and `resource_key` (VARCHAR 1024) with UNIQUE constraint `uq_resources_application_id_resource_type_resource_key`. Additive to existing `kind` / `external_id`. Transitional defaults: when not provided on create, `resource_type = kind`, `resource_key = external_id`. New service method `get_resource_by_identity(application_id, resource_type, resource_key)` for internal lookup. Migration: `2026_04_24_0100_add_resource_identity_columns`. (Phase 12 Step 6)
+- Reference table `ref_actions` with seeded minimum vocabulary (`read`, `write`, `execute`, `approve`, `admin`, `use`, `own`) via migration `2026_04_24_0000_add_ref_actions`. Backing ORM: `src/inventory/actions/models.py` (`Action` class). Pydantic schemas, service, REST endpoints, and CLI commands are deferred to subsequent Phase 12 Step 2 sub-steps.
+- `ActionRead` Pydantic v2 schema (`src/inventory/actions/schemas.py`) and read-only `ActionService` (`src/inventory/actions/service.py`) with `list_actions()` and `get_action_by_slug(slug)` methods. Service takes `AsyncSession` + `LogService`; emits no domain events (reference vocabulary has no domain lifecycle). REST endpoints (Step 4) and CLI commands (Step 5) follow.
+- `GET /actions` and `GET /actions/{slug}` read-only REST endpoints for the `Action` reference vocabulary; `404` on unknown slug; case-sensitive lookup; no mutation endpoints
+
+### Removed
+
+- `DuplicateAccessArtifactError` and `_translate_access_artifact_create_integrity_error` from `inventory/access_artifacts/service.py` — both unreachable after upsert wiring. Callers that caught `DuplicateAccessArtifactError` must be updated. (Phase 12 Step 8)
+- `Role` and `Privilege` inventory slices (ORM models, schemas, repositories, reconcilers, tables `ent_roles` / `ent_privileges`)
+- Reconciliation orchestrator trimmed to accounts-only; `roles` / `privileges` branches and result fields gone
+- `ReconciliationResult` no longer carries `roles` / `privileges` fields; `reconciliation.completed` log event drops the four role/privilege counters
+- CLI sweep confirmed clean — no role/privilege commands existed
+
 ## [0.1.3] - 2026-04-22
 
 ### Added

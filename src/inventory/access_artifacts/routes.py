@@ -23,7 +23,8 @@ DependsService = Depends(get_access_artifact_service)
 @router.get('', response_model=list[AccessArtifactRead])
 async def list_access_artifacts(
     application_id: uuid.UUID | None = None,
-    source_kind: str | None = None,
+    artifact_type: str | None = None,
+    is_active: bool | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = DependsSession,
@@ -33,7 +34,8 @@ async def list_access_artifacts(
     artifacts = await service.list_artifacts(
         session,
         application_id=application_id,
-        source_kind=source_kind,
+        artifact_type=artifact_type,
+        is_active=is_active,
         limit=limit,
         offset=offset,
     )

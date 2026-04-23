@@ -60,7 +60,7 @@ _EVENT_TYPES_UPSERT: frozenset[str] = frozenset(
         'inventory.initiative.updated',
     }
 )
-_EVENT_TYPES_INVALIDATE_FACT: frozenset[str] = frozenset({'inventory.access_fact.invalidated'})
+_EVENT_TYPES_INVALIDATE_FACT: frozenset[str] = frozenset({'inventory.access_fact.revoked'})
 _EVENT_TYPES_INVALIDATE_INITIATIVE: frozenset[str] = frozenset({'inventory.initiative.expired'})
 _EVENT_TYPES_RELEVANT: frozenset[str] = (
     _EVENT_TYPES_UPSERT | _EVENT_TYPES_INVALIDATE_FACT | _EVENT_TYPES_INVALIDATE_INITIATIVE
@@ -245,8 +245,11 @@ async def _handle_message_async(
         routed_kind = IncrementalApplyKind.INVALIDATE_INITIATIVE
         scope_key = str(routed_initiative_id)
     else:
+        # inventory.access_fact.revoked uses 'fact_id'; older events used 'access_fact_id'.
+        # Try 'fact_id' first (Step 13+), fall back to 'access_fact_id' for backwards compat.
+        fact_id_field = 'fact_id' if 'fact_id' in envelope.payload else 'access_fact_id'
         routed_access_fact_id = _parse_uuid_field(
-            envelope, 'access_fact_id', 'eas.projection.consumer.missing_fact_id', log_service
+            envelope, fact_id_field, 'eas.projection.consumer.missing_fact_id', log_service
         )
         if routed_access_fact_id is None:
             return

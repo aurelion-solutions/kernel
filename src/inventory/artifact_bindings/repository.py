@@ -17,16 +17,14 @@ async def create_artifact_binding(
     session: AsyncSession,
     *,
     artifact_id: uuid.UUID,
-    access_fact_id: uuid.UUID | None = None,
-    resource_id: uuid.UUID | None = None,
-    account_id: uuid.UUID | None = None,
+    target_type: str,
+    target_id: uuid.UUID,
 ) -> ArtifactBinding:
     """Create and persist an artifact binding."""
     binding = ArtifactBinding(
         artifact_id=artifact_id,
-        access_fact_id=access_fact_id,
-        resource_id=resource_id,
-        account_id=account_id,
+        target_type=target_type,
+        target_id=target_id,
     )
     session.add(binding)
     await session.flush()
@@ -47,9 +45,8 @@ async def list_artifact_bindings(
     session: AsyncSession,
     *,
     artifact_id: uuid.UUID | None = None,
-    access_fact_id: uuid.UUID | None = None,
-    resource_id: uuid.UUID | None = None,
-    account_id: uuid.UUID | None = None,
+    target_type: str | None = None,
+    target_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[ArtifactBinding]:
@@ -57,12 +54,10 @@ async def list_artifact_bindings(
     query = select(ArtifactBinding).order_by(ArtifactBinding.created_at.desc())
     if artifact_id is not None:
         query = query.where(ArtifactBinding.artifact_id == artifact_id)
-    if access_fact_id is not None:
-        query = query.where(ArtifactBinding.access_fact_id == access_fact_id)
-    if resource_id is not None:
-        query = query.where(ArtifactBinding.resource_id == resource_id)
-    if account_id is not None:
-        query = query.where(ArtifactBinding.account_id == account_id)
+    if target_type is not None:
+        query = query.where(ArtifactBinding.target_type == target_type)
+    if target_id is not None:
+        query = query.where(ArtifactBinding.target_id == target_id)
     query = query.limit(min(limit, 200)).offset(offset)
     result = await session.execute(query)
     return list(result.scalars().all())

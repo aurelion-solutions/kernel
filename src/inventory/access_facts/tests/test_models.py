@@ -2,16 +2,19 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""DB-level tests for AccessFact model constraints and indexes."""
+"""DB-level tests for AccessFact model constraints and indexes — Step 13 current-state shape."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import uuid
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-from src.inventory.enums import Action
+
+_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,10 +57,13 @@ async def _make_resource(session) -> uuid.UUID:
     session.add(app)
     await session.flush()
 
+    ext = str(uuid.uuid4())
     resource = Resource(
-        external_id=str(uuid.uuid4()),
+        external_id=ext,
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=ext,
     )
     session.add(resource)
     await session.flush()
@@ -71,6 +77,14 @@ async def _make_prerequisites(session) -> tuple[uuid.UUID, uuid.UUID]:
     return subject_id, resource_id
 
 
+async def _get_read_action_id(session) -> int:
+    from sqlalchemy import select
+    from src.inventory.actions.models import Action as RefAction
+
+    result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    return result.scalar_one()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -81,13 +95,15 @@ async def test_access_fact_creation_stores_all_fields(session_factory) -> None:
     """Happy path: access fact with all fields persists and created_at/valid_from auto-set."""
     async with session_factory() as session:
         subject_id, resource_id = await _make_prerequisites(session)
+        action_id = await _get_read_action_id(session)
 
         fact = AccessFact(
             subject_id=subject_id,
             account_id=None,
             resource_id=resource_id,
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=_NOW,
         )
         session.add(fact)
         await session.flush()
@@ -96,9 +112,12 @@ async def test_access_fact_creation_stores_all_fields(session_factory) -> None:
         assert fact.id is not None
         assert fact.subject_id == subject_id
         assert fact.resource_id == resource_id
-        assert fact.action == Action.read
+        assert fact.action_id == action_id
         assert fact.effect == AccessFactEffect.allow
         assert fact.account_id is None
+        assert fact.is_active is True
+        assert fact.revoked_at is None
+        assert fact.observed_at == _NOW
         assert fact.valid_from is not None
         assert fact.created_at is not None
         assert fact.valid_until is None
@@ -109,12 +128,14 @@ async def test_access_fact_fk_to_subject(session_factory) -> None:
     """AccessFact with non-existent subject_id raises IntegrityError."""
     async with session_factory() as session:
         _, resource_id = await _make_prerequisites(session)
+        action_id = await _get_read_action_id(session)
 
         fact = AccessFact(
             subject_id=uuid.uuid4(),
             resource_id=resource_id,
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=_NOW,
         )
         session.add(fact)
         with pytest.raises(IntegrityError):
@@ -126,41 +147,15 @@ async def test_access_fact_fk_to_resource(session_factory) -> None:
     """AccessFact with non-existent resource_id raises IntegrityError."""
     async with session_factory() as session:
         subject_id, _ = await _make_prerequisites(session)
+        action_id = await _get_read_action_id(session)
 
         fact = AccessFact(
             subject_id=subject_id,
             resource_id=uuid.uuid4(),
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=_NOW,
         )
         session.add(fact)
-        with pytest.raises(IntegrityError):
-            await session.flush()
-
-
-@pytest.mark.asyncio
-async def test_access_fact_uniqueness_constraint(session_factory) -> None:
-    """Duplicate (subject_id, account_id, resource_id, action, effect) raises IntegrityError."""
-    async with session_factory() as session:
-        subject_id, resource_id = await _make_prerequisites(session)
-
-        f1 = AccessFact(
-            subject_id=subject_id,
-            account_id=None,
-            resource_id=resource_id,
-            action=Action.write,
-            effect=AccessFactEffect.allow,
-        )
-        session.add(f1)
-        await session.flush()
-
-        f2 = AccessFact(
-            subject_id=subject_id,
-            account_id=None,
-            resource_id=resource_id,
-            action=Action.write,
-            effect=AccessFactEffect.allow,
-        )
-        session.add(f2)
         with pytest.raises(IntegrityError):
             await session.flush()

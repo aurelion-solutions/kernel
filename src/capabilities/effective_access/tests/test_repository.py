@@ -95,10 +95,13 @@ async def _make_app_and_resource(session) -> tuple[UUID, UUID]:  # type: ignore[
     )
     session.add(app)
     await session.flush()
+    ext = str(uuid.uuid4())
     resource = Resource(
-        external_id=str(uuid.uuid4()),
+        external_id=ext,
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=ext,
     )
     session.add(resource)
     await session.flush()
@@ -106,13 +109,19 @@ async def _make_app_and_resource(session) -> tuple[UUID, UUID]:  # type: ignore[
 
 
 async def _make_access_fact(session, subject_id: UUID, resource_id: UUID) -> UUID:  # type: ignore[no-untyped-def]
+    from sqlalchemy import select
     from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    from src.inventory.actions.models import Action as RefAction
+
+    read_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    read_action_id = read_id_result.scalar_one()
 
     fact = AccessFact(
         subject_id=subject_id,
         resource_id=resource_id,
-        action=Action.read,
+        action_id=read_action_id,
         effect=AccessFactEffect.allow,
+        observed_at=_NOW,
         valid_from=_NOW,
     )
     session.add(fact)
@@ -268,19 +277,29 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
         await session.flush()
         app_id = app.id
 
+        from sqlalchemy import select as sa_select
+        from src.inventory.actions.models import Action as RefAction
+
+        read_id_result = await session.execute(sa_select(RefAction.id).where(RefAction.slug == 'read'))
+        read_action_id = read_id_result.scalar_one()
+
         for _ in range(7):
+            res_ext = str(uuid.uuid4())
             resource = Resource(
-                external_id=str(uuid.uuid4()),
+                external_id=res_ext,
                 application_id=app_id,
                 kind='database',
+                resource_type='database',
+                resource_key=res_ext,
             )
             session.add(resource)
             await session.flush()
             fact = AccessFact(
                 subject_id=subject_id,
                 resource_id=resource.id,
-                action=Action.read,
+                action_id=read_action_id,
                 effect=AccessFactEffect.allow,
+                observed_at=_NOW,
                 valid_from=_NOW,
             )
             session.add(fact)
@@ -1089,3 +1108,26 @@ async def test_tombstone_missing_pairs_respects_cas_guard(session_factory) -> No
         assert g.observed_at == t2
 
         await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# EAS read-path slug→enum round-trip (Step 13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_access_fact_with_initiatives_resolves_action_slug_to_enum(session_factory) -> None:
+    """EAS _build_fact_select JOINs ref_actions; slug 'read' → Action.read Python enum."""
+    async with session_factory() as session:
+        subject_id = await _make_employee_subject(session)
+        app_id, resource_id = await _make_app_and_resource(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await fetch_access_fact_with_initiatives(session, fact_id)
+        assert result is not None
+        fact_row, _ = result
+        # The JOIN resolves action_id → slug='read' → Python enum Action.read
+        assert fact_row.action == Action.read
+        assert fact_row.action.value == 'read'

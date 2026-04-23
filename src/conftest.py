@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 import src.capabilities.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
 from src.core.db.base import Base
 from src.core.db.deps import get_db
+import src.inventory.actions.models  # noqa: F401 — registers ref_actions for create_all
 from src.platform.events.buffer import InMemoryEventBuffer
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all
 from src.platform.logs.service import NoOpLogService
@@ -44,13 +45,39 @@ test_db = db_name.rsplit('_', 1)[0] + '_test' if '_' in db_name else db_name + '
 TEST_DATABASE_URL = urlunparse(parsed._replace(path='/' + test_db))
 
 
+_REF_ACTIONS_SEED = [
+    {'slug': 'read', 'description': 'Read access'},
+    {'slug': 'write', 'description': 'Write access'},
+    {'slug': 'execute', 'description': 'Execute access'},
+    {'slug': 'administer', 'description': 'Administer access'},
+    {'slug': 'approve', 'description': 'Approve access'},
+    {'slug': 'delegate', 'description': 'Delegate access'},
+    {'slug': 'review', 'description': 'Review access'},
+    # Phase 12 canonical vocabulary (from migration 2026_04_24_0000_add_ref_actions.py)
+    {'slug': 'admin', 'description': 'Administer configuration of a resource.'},
+    {'slug': 'use', 'description': 'Consume a resource as a functional user.'},
+    {'slug': 'own', 'description': 'Ownership-level control of a resource.'},
+]
+
+
 @pytest_asyncio.fixture
 async def engine():
+    import sqlalchemy as _sa
+    from src.inventory.actions.models import Action as _RefAction
+
     engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
+    # Seed reference data
+    async with AsyncSession(engine) as session:
+        for row in _REF_ACTIONS_SEED:
+            existing = await session.execute(_sa.select(_RefAction.id).where(_RefAction.slug == row['slug']))
+            if existing.scalar_one_or_none() is None:
+                session.add(_RefAction(slug=row['slug'], description=row['description']))
+        await session.commit()
 
     try:
         yield engine

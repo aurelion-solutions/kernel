@@ -346,3 +346,93 @@ async def test_delete_attribute_404(app_with_resources, engine) -> None:
         response = await client.delete(f'/api/v0/resources/{resource_id}/attributes/nonexistent')
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 Step 6 — identity round-trip tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_resource_with_identity_round_trips_through_get(app_with_resources, engine) -> None:
+    """POST /resources with explicit resource_type/resource_key round-trips through GET."""
+    app_id = await _make_application_id(engine)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_resources),
+        base_url='http://testserver',
+    ) as client:
+        create_resp = await client.post(
+            '/api/v0/resources',
+            json={
+                'external_id': 'identity-rt-001',
+                'application_id': str(app_id),
+                'kind': 'table',
+                'resource_type': 'snowflake_table',
+                'resource_key': 'finance.public.orders',
+            },
+        )
+        assert create_resp.status_code == 201
+        created = create_resp.json()
+        assert created['resource_type'] == 'snowflake_table'
+        assert created['resource_key'] == 'finance.public.orders'
+
+        get_resp = await client.get(f'/api/v0/resources/{created["id"]}')
+        assert get_resp.status_code == 200
+        fetched = get_resp.json()
+        assert fetched['resource_type'] == 'snowflake_table'
+        assert fetched['resource_key'] == 'finance.public.orders'
+
+
+@pytest.mark.asyncio
+async def test_post_resource_without_identity_defaults_correctly(app_with_resources, engine) -> None:
+    """POST /resources without identity fields defaults resource_type=kind, resource_key=external_id."""
+    app_id = await _make_application_id(engine)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_resources),
+        base_url='http://testserver',
+    ) as client:
+        create_resp = await client.post(
+            '/api/v0/resources',
+            json={
+                'external_id': 'identity-default-rt-001',
+                'application_id': str(app_id),
+                'kind': 'bucket',
+            },
+        )
+    assert create_resp.status_code == 201
+    data = create_resp.json()
+    assert data['resource_type'] == 'bucket'
+    assert data['resource_key'] == 'identity-default-rt-001'
+
+
+@pytest.mark.asyncio
+async def test_post_resource_identity_duplicate_returns_409(app_with_resources, engine) -> None:
+    """POST /resources with same identity triple but different external_id returns 409."""
+    app_id = await _make_application_id(engine)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_resources),
+        base_url='http://testserver',
+    ) as client:
+        first = await client.post(
+            '/api/v0/resources',
+            json={
+                'external_id': 'id-dup-first',
+                'application_id': str(app_id),
+                'kind': 'table',
+                'resource_type': 'pg_table',
+                'resource_key': 'public.events',
+            },
+        )
+        assert first.status_code == 201
+
+        second = await client.post(
+            '/api/v0/resources',
+            json={
+                'external_id': 'id-dup-second',
+                'application_id': str(app_id),
+                'kind': 'table',
+                'resource_type': 'pg_table',
+                'resource_key': 'public.events',
+            },
+        )
+        assert second.status_code == 409

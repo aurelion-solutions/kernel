@@ -47,6 +47,7 @@ from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGr
 from src.capabilities.effective_access.projector import EffectiveGrantDraft
 from src.capabilities.effective_access.schemas import AccessFactRow, InitiativeRow
 from src.inventory.access_facts.models import AccessFact
+from src.inventory.actions.models import Action as RefAction
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
 from src.inventory.resources.models import Resource
@@ -77,6 +78,9 @@ class UpsertResult:
 
 
 def _fact_row_from_row(row: sa.engine.Row) -> AccessFactRow:  # type: ignore[type-arg]
+    # row.action_slug is the slug resolved via JOIN on ref_actions.
+    # Map slug → Python Action enum. KeyError on unknown slug = projector contract violation;
+    # the slug must round-trip through the seven-slug vocabulary.
     return AccessFactRow(
         id=row.id,
         subject_id=row.subject_id,
@@ -84,7 +88,7 @@ def _fact_row_from_row(row: sa.engine.Row) -> AccessFactRow:  # type: ignore[typ
         account_id=row.account_id,
         application_id=row.application_id,
         resource_id=row.resource_id,
-        action=row.action,
+        action=Action(row.action_slug),
         effect=row.effect,
         valid_from=row.valid_from,
         valid_until=row.valid_until,
@@ -103,7 +107,12 @@ def _initiative_row_from_orm(orm: Initiative) -> InitiativeRow:
 
 
 def _build_fact_select() -> sa.Select:  # type: ignore[type-arg]
-    """Base SELECT joining access_facts → subjects → resources for denormalization."""
+    """Base SELECT joining access_facts → subjects → resources → ref_actions for denormalization.
+
+    ref_actions JOIN resolves action_id → slug so that the projector boundary
+    continues to use the Python Action enum (EAS writes effective_grants.action
+    as Enum(Action, name='action', create_type=False) — unchanged in Step 13).
+    """
     return (
         sa.select(
             AccessFact.id,
@@ -112,13 +121,14 @@ def _build_fact_select() -> sa.Select:  # type: ignore[type-arg]
             AccessFact.account_id,
             Resource.application_id.label('application_id'),
             AccessFact.resource_id,
-            AccessFact.action,
+            RefAction.slug.label('action_slug'),
             AccessFact.effect,
             AccessFact.valid_from,
             AccessFact.valid_until,
         )
         .join(Subject, Subject.id == AccessFact.subject_id)
         .join(Resource, Resource.id == AccessFact.resource_id)
+        .join(RefAction, RefAction.id == AccessFact.action_id)
     )
 
 

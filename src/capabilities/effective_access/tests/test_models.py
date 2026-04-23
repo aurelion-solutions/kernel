@@ -83,10 +83,13 @@ async def _make_application_and_resource(session) -> tuple[uuid.UUID, uuid.UUID]
     session.add(app)
     await session.flush()
 
+    res_ext = str(uuid.uuid4())
     resource = Resource(
-        external_id=str(uuid.uuid4()),
+        external_id=res_ext,
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=res_ext,
     )
     session.add(resource)
     await session.flush()
@@ -99,13 +102,21 @@ async def _make_access_fact(
     resource_id: uuid.UUID,
 ) -> uuid.UUID:
     """Create AccessFact, return fact.id."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
     from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    from src.inventory.actions.models import Action as RefAction
+
+    read_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    read_action_id = read_id_result.scalar_one()
 
     fact = AccessFact(
         subject_id=subject_id,
         resource_id=resource_id,
-        action=Action.read,
+        action_id=read_action_id,
         effect=AccessFactEffect.allow,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(fact)
     await session.flush()

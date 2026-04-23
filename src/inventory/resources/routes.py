@@ -51,7 +51,16 @@ async def create_resource(
             ResourceParentNotFoundError: (422, 'Parent resource does not exist'),
             DuplicateResourceError: (
                 409,
-                'Resource with this (application_id, external_id) already exists',
+                lambda exc: (
+                    f'Duplicate resource (application_id={exc.application_id}, '
+                    f'external_id={exc.external_id}'
+                    + (
+                        f', resource_type={exc.resource_type}, resource_key={exc.resource_key}'
+                        if exc.resource_type is not None
+                        else ''
+                    )
+                    + ')'
+                ),
             ),
         }
     ):
@@ -60,6 +69,8 @@ async def create_resource(
             external_id=body.external_id,
             application_id=body.application_id,
             kind=body.kind,
+            resource_type=body.resource_type,
+            resource_key=body.resource_key,
             parent_id=body.parent_id,
             path=body.path,
             description=body.description,

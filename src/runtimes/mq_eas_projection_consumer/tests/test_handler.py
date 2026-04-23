@@ -162,14 +162,14 @@ def test_handler_decodes_access_fact_created_and_calls_apply() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T7 — inventory.access_fact.invalidated maps to INVALIDATE_FACT
+# T7 — inventory.access_fact.revoked maps to INVALIDATE_FACT
 # ---------------------------------------------------------------------------
 
 _IID = uuid.UUID('44444444-4444-4444-4444-444444444444')
 
 
-def test_access_fact_invalidated_maps_to_invalidate_fact() -> None:
-    """T7: inventory.access_fact.invalidated maps to INVALIDATE_FACT with access_fact_id."""
+def test_access_fact_revoked_maps_to_invalidate_fact() -> None:
+    """T7: inventory.access_fact.revoked maps to INVALIDATE_FACT with fact_id payload key."""
     stub_session = MagicMock()
     stub_session.commit = AsyncMock()
     stub_session.rollback = AsyncMock()
@@ -179,13 +179,20 @@ def test_access_fact_invalidated_maps_to_invalidate_fact() -> None:
     log = CapturingLogService()
 
     body = _make_event_body(
-        'inventory.access_fact.invalidated',
-        {'access_fact_id': str(_FID), 'at': '2026-01-01T00:00:00+00:00'},
+        'inventory.access_fact.revoked',
+        {
+            'fact_id': str(_FID),
+            'subject_id': str(uuid.uuid4()),
+            'resource_id': str(uuid.uuid4()),
+            'action_id': 1,
+            'action_slug': 'read',
+            'revoked_at': '2026-01-01T00:00:00+00:00',
+        },
     )
 
     handle_message(
         body,
-        routing_key='inventory.access_fact.invalidated',
+        routing_key='inventory.access_fact.revoked',
         session_factory=session_factory,
         projection_service_factory=lambda session, es: stub_svc,
         log_service=log,  # type: ignore[arg-type]

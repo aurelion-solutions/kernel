@@ -1,6 +1,6 @@
 [project]
 name = "aurelion-kernel"
-version = "0.1.3"
+version = "0.1.4"
 description = ""
 readme = "README.md"
 requires-python = ">=3.13"
@@ -31,9 +31,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["src"]
+testpaths = ["src", "ops/db_versions/tests"]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
+pythonpath = ["."]
 
 [tool.mypy]
 files = ["src", "tests"]

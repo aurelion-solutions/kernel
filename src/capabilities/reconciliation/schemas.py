@@ -2,33 +2,31 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Reconciliation result schemas."""
+"""Reconciliation request / response schemas."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-class EntityReconciliationResult(BaseModel):
-    """Per-entity reconciliation counters. Used for accounts, roles, privileges."""
+class ReconciliationRunRequest(BaseModel):
+    """Request body for POST /reconciliation/runs."""
 
-    source_total: int = Field(0, ge=0, description='Total items in source payload')
-    created: int = Field(0, ge=0, description='New records created')
-    updated: int = Field(0, ge=0, description='Existing records updated')
-    unchanged: int = Field(0, ge=0, description='Records unchanged')
-    deactivated: int = Field(0, ge=0, description='Records marked inactive (missing from source)')
-    errors: int = Field(0, ge=0, description='Validation or processing errors')
+    application_id: UUID = Field(..., description='Application to reconcile')
 
 
-class ReconciliationResult(BaseModel):
-    """Top-level reconciliation result for one application."""
+class ReconciliationRunSummary(BaseModel):
+    """Result summary returned after a reconciliation run."""
 
-    application_id: str = Field(..., description='Application identifier')
-    accounts: EntityReconciliationResult = Field(default_factory=EntityReconciliationResult)
-    roles: EntityReconciliationResult = Field(default_factory=EntityReconciliationResult)
-    privileges: EntityReconciliationResult = Field(default_factory=EntityReconciliationResult)
-
-
-class ReconciliationAccepted(BaseModel):
-    """HTTP 202 body after reconciliation is queued; use ``correlation_id`` with log buffer / events."""
-
-    correlation_id: str = Field(..., description='Trace id for reconciliation.operation_started and follow-up events')
-    application_id: str = Field(..., description='Application identifier')
+    application_id: UUID
+    started_at: datetime
+    finished_at: datetime
+    artifacts_ingested: int = Field(ge=0)
+    facts_created: int = Field(ge=0)
+    facts_updated: int = Field(ge=0)
+    facts_revoked: int = Field(ge=0)
+    artifacts_unhandled: int = Field(ge=0)
+    facts_errored: int = Field(ge=0, default=0)

@@ -34,6 +34,8 @@ class ResourceCreate(BaseModel):
     external_id: str = Field(..., min_length=1, max_length=255)
     application_id: uuid.UUID
     kind: str = Field(..., min_length=1, max_length=255)
+    resource_type: str | None = Field(None, min_length=1, max_length=255)
+    resource_key: str | None = Field(None, min_length=1, max_length=1024)
     parent_id: uuid.UUID | None = None
     path: str | None = Field(None, max_length=1024)
     description: str | None = Field(None, max_length=1024)
@@ -49,6 +51,8 @@ class ResourceRead(BaseModel):
     external_id: str
     application_id: uuid.UUID
     kind: str
+    resource_type: str
+    resource_key: str
     parent_id: uuid.UUID | None
     path: str | None
     description: str | None
@@ -65,6 +69,8 @@ class ResourcePatch(BaseModel):
     """Request body for PATCH /resources/{id}. Uses model_fields_set for partial updates."""
 
     kind: str | None = Field(None, min_length=1, max_length=255)
+    resource_type: str | None = Field(None, min_length=1, max_length=255)
+    resource_key: str | None = Field(None, min_length=1, max_length=1024)
     parent_id: uuid.UUID | None = None
     path: str | None = None
     description: str | None = None

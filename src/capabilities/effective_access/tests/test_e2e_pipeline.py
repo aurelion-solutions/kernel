@@ -361,7 +361,7 @@ async def test_eas_pipeline_end_to_end(
     # ==================================================================
 
     async with session_factory() as session:
-        await fact_svc.invalidate_fact(session, fact_id_2)
+        await fact_svc.revoke_fact(session, fact_id_2, observed_at=datetime.now(UTC))
         await session.commit()
 
     cursor = await _drive_consumer(cursor)
@@ -383,12 +383,12 @@ async def test_eas_pipeline_end_to_end(
     # Wave-2 tombstone on fact 1 is not overwritten by the Wave-3 fact-2-scoped invalidate
     assert after[str(fact_id_1)]['tombstoned_at'] == prior_fact1_tombstone
 
-    # CAS-propagation: fact 2 tombstoned_at == inventory.access_fact.invalidated event timestamp.
+    # CAS-propagation: fact 2 tombstoned_at == inventory.access_fact.revoked event occurred_at.
     # Compare as datetime objects to avoid Z vs +00:00 string format divergence.
     invalidated_env = next(
         e
         for e in producer_captured_events.emitted
-        if e.event_type == 'inventory.access_fact.invalidated' and e.payload.get('access_fact_id') == str(fact_id_2)
+        if e.event_type == 'inventory.access_fact.revoked' and e.payload.get('fact_id') == str(fact_id_2)
     )
     assert datetime.fromisoformat(after[str(fact_id_2)]['tombstoned_at']) == invalidated_env.occurred_at
 
@@ -426,7 +426,7 @@ async def test_eas_pipeline_end_to_end(
     assert len(final_items) == 2
     final = {item['source_access_fact_id']: item for item in final_items}
     assert final[str(fact_id_1)]['tombstoned_at'] == prior_fact1_tombstone
-    assert datetime.fromisoformat(final[str(fact_id_2)]['tombstoned_at']) == invalidated_env.occurred_at
+    assert datetime.fromisoformat(final[str(fact_id_2)]['tombstoned_at']) == invalidated_env.occurred_at  # revoked
 
     # No ERROR events from the consumer during any of the four waves
     error_events = [e for e in consumer_log.events if e[1].value == 'error']

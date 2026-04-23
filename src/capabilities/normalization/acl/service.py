@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.normalization.acl.normalizer import normalize_acl_entry
 from src.capabilities.normalization.acl.schemas import ACLEntryPayload, NormalizationResult
 from src.inventory.access_artifacts.service import AccessArtifactService
-from src.inventory.access_facts.service import AccessFactService, DuplicateAccessFactError
+from src.inventory.access_facts.service import (
+    AccessFactService,
+    DuplicateActiveAccessFactError,
+)
 from src.inventory.artifact_bindings.service import ArtifactBindingService
 from src.inventory.resources.service import DuplicateResourceError, ResourceService
 from src.platform.logs.service import LogService
@@ -65,11 +68,11 @@ class ACLNormalizerService:
 
         The caller owns the transaction boundary — this method does NOT commit.
         """
-        # Step 1 — write AccessArtifact (always new, append-only).
-        artifact = await self._artifact_service.create_artifact(
+        # Step 1 — upsert AccessArtifact on identity triple (application_id, artifact_type, external_id).
+        artifact, _ = await self._artifact_service.upsert_artifact(
             session,
             application_id=application_id,
-            source_kind='acl_entry',
+            artifact_type='acl_entry',
             external_id=artifact_external_id,
             payload=payload.model_dump(),
             ingest_batch_id=ingest_batch_id,
@@ -119,10 +122,16 @@ class ACLNormalizerService:
         resource_id: uuid.UUID = resource.id
 
         # Step 4 — create-or-resolve AccessFact.
-        # Wrap create_fact in a SAVEPOINT so that on IntegrityError / DuplicateAccessFactError
+        # Wrap create_fact in a SAVEPOINT so that on DuplicateActiveAccessFactError
         # only the savepoint is rolled back; the outer transaction (AccessArtifact + Resource
         # written in steps 1–3) remains intact.
+        from datetime import UTC, datetime
+
         from src.inventory.access_facts.models import AccessFact  # local import to avoid cycles
+
+        # normalized.action is the Python Action StrEnum — its .value is the slug
+        action_slug: str = normalized.action.value
+        observed_now = datetime.now(UTC)
 
         fact: AccessFact
         created_fact: bool
@@ -133,19 +142,20 @@ class ACLNormalizerService:
                     subject_id=subject_id,
                     account_id=account_id,
                     resource_id=resource_id,
-                    action=normalized.action,
+                    action_slug=action_slug,
                     effect=normalized.effect,
+                    observed_at=observed_now,
                 )
             created_fact = True
-        except DuplicateAccessFactError:
+        except DuplicateActiveAccessFactError:
+            # Active row already exists for this key; resolve it.
             # Savepoint rolled back; outer transaction (artifact + resource) intact.
             fact = await self._access_fact_service.get_fact_by_natural_key(
                 session,
                 subject_id=subject_id,
                 account_id=account_id,
                 resource_id=resource_id,
-                action=normalized.action,
-                effect=normalized.effect,
+                action_slug=action_slug,
             )
             # Row must exist — duplicate exception proves it.
             assert fact is not None
@@ -157,8 +167,8 @@ class ACLNormalizerService:
         binding = await self._binding_service.create_binding(
             session,
             artifact_id=artifact_id,
-            access_fact_id=fact_id,
-            resource_id=resource_id,
+            target_type='access_fact',
+            target_id=fact_id,
         )
 
         return NormalizationResult(

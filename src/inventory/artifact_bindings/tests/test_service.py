@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Tests for ArtifactBindingService."""
+"""Tests for ArtifactBindingService — polymorphic (target_type, target_id) shape."""
 
 from __future__ import annotations
 
@@ -10,9 +10,11 @@ import uuid
 
 import pytest
 from src.inventory.artifact_bindings.service import (
-    ArtifactBindingForeignKeyError,
+    ArtifactBindingArtifactNotFoundError,
+    ArtifactBindingDuplicateError,
     ArtifactBindingService,
-    ArtifactBindingTargetRequiredError,
+    ArtifactBindingTargetNotFoundError,
+    ArtifactBindingUnknownTargetTypeError,
 )
 from src.platform.events.schemas import EventParticipantKind
 from src.platform.events.service import EventService
@@ -39,35 +41,12 @@ def service(event_service: EventService) -> ArtifactBindingService:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Entity builders
 # ---------------------------------------------------------------------------
 
 
-async def _make_prerequisites(session) -> dict:
-    """Create all required entities, return dict with ids."""
-    from src.inventory.access_artifacts.models import AccessArtifact
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-    from src.inventory.accounts.models import Account, AccountStatus
-    from src.inventory.employees.repository import create_employee
-    from src.inventory.enums import Action
-    from src.inventory.persons.repository import create_person
-    from src.inventory.resources.models import Resource
-    from src.inventory.subjects.models import Subject, SubjectKind
+async def _make_application(session) -> uuid.UUID:
     from src.platform.applications.models import Application
-
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
-    await session.flush()
-    emp = await create_employee(session, person_id=person.id)
-    await session.flush()
-
-    subj = Subject(
-        external_id=str(uuid.uuid4()),
-        kind=SubjectKind.employee,
-        principal_employee_id=emp.id,
-        status='active',
-    )
-    session.add(subj)
-    await session.flush()
 
     app = Application(
         name=f'test-app-{uuid.uuid4()}',
@@ -78,181 +57,360 @@ async def _make_prerequisites(session) -> dict:
     )
     session.add(app)
     await session.flush()
+    return app.id
+
+
+async def _make_artifact(session, app_id: uuid.UUID) -> uuid.UUID:
+    from src.inventory.access_artifacts.models import AccessArtifact
+
+    artifact = AccessArtifact(
+        application_id=app_id,
+        artifact_type='acl_entry',
+        external_id=str(uuid.uuid4()),
+        payload={'raw': 'data'},
+    )
+    session.add(artifact)
+    await session.flush()
+    return artifact.id
+
+
+async def _make_resource(session, app_id: uuid.UUID) -> uuid.UUID:
+    from src.inventory.resources.models import Resource
 
     resource = Resource(
         external_id=str(uuid.uuid4()),
-        application_id=app.id,
+        application_id=app_id,
         kind='database',
     )
     session.add(resource)
     await session.flush()
+    return resource.id
+
+
+async def _make_account(session, app_id: uuid.UUID) -> uuid.UUID:
+    from src.inventory.accounts.models import Account, AccountStatus
 
     account = Account(
-        application_id=app.id,
+        application_id=app_id,
         username=f'user-{uuid.uuid4().hex[:8]}',
         status=AccountStatus.active,
         meta={},
     )
     session.add(account)
     await session.flush()
+    return account.id
 
-    artifact = AccessArtifact(
-        application_id=app.id,
-        source_kind='acl_entry',
-        external_id=str(uuid.uuid4()),
-        payload={'raw': 'data'},
-    )
-    session.add(artifact)
+
+async def _make_subject(session) -> uuid.UUID:
+    from src.inventory.employees.repository import create_employee
+    from src.inventory.persons.repository import create_person
+    from src.inventory.subjects.models import Subject, SubjectKind
+
+    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
     await session.flush()
+    emp = await create_employee(session, person_id=person.id)
+    await session.flush()
+    subj = Subject(
+        external_id=str(uuid.uuid4()),
+        kind=SubjectKind.employee,
+        principal_employee_id=emp.id,
+        status='active',
+    )
+    session.add(subj)
+    await session.flush()
+    return subj.id
+
+
+async def _make_access_fact(session, subject_id: uuid.UUID, resource_id: uuid.UUID) -> uuid.UUID:
+    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    from src.inventory.enums import Action
 
     fact = AccessFact(
-        subject_id=subj.id,
-        resource_id=resource.id,
+        subject_id=subject_id,
+        resource_id=resource_id,
         action=Action.read,
         effect=AccessFactEffect.allow,
     )
     session.add(fact)
     await session.flush()
-
-    return {
-        'artifact_id': artifact.id,
-        'access_fact_id': fact.id,
-        'resource_id': resource.id,
-        'account_id': account.id,
-    }
+    return fact.id
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests — create_binding per target type
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_create_binding_happy_path(
+async def test_create_binding_target_access_fact(
     service: ArtifactBindingService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """create_binding creates binding with all targets and emits inventory.artifact_binding.created."""
+    """create_binding with target_type='access_fact' persists row and emits event."""
     async with session_factory() as session:
-        ids = await _make_prerequisites(session)
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+        subject_id = await _make_subject(session)
+        fact_id = await _make_access_fact(session, subject_id, resource_id)
+
         binding = await service.create_binding(
             session,
-            artifact_id=ids['artifact_id'],
-            access_fact_id=ids['access_fact_id'],
-            resource_id=ids['resource_id'],
-            account_id=ids['account_id'],
+            artifact_id=artifact_id,
+            target_type='access_fact',
+            target_id=fact_id,
         )
         await session.commit()
 
     assert binding.id is not None
-    assert binding.artifact_id == ids['artifact_id']
-    assert binding.access_fact_id == ids['access_fact_id']
-    assert binding.resource_id == ids['resource_id']
-    assert binding.account_id == ids['account_id']
+    assert binding.artifact_id == artifact_id
+    assert binding.target_type == 'access_fact'
+    assert binding.target_id == fact_id
 
     emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
     assert len(emitted) == 1
-    envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
-    assert envelope.actor_id == 'inventory.artifact_bindings'
-    assert envelope.target_kind == EventParticipantKind.SYSTEM
-    assert envelope.target_id == str(binding.id)
-    assert envelope.payload['binding_id'] == str(binding.id)
-    assert envelope.payload['artifact_id'] == str(ids['artifact_id'])
-    assert envelope.payload['access_fact_id'] == str(ids['access_fact_id'])
-    assert envelope.payload['resource_id'] == str(ids['resource_id'])
-    assert envelope.payload['account_id'] == str(ids['account_id'])
+    p = emitted[0].payload
+    assert p['binding_id'] == str(binding.id)
+    assert p['artifact_id'] == str(artifact_id)
+    assert p['target_type'] == 'access_fact'
+    assert p['target_id'] == str(fact_id)
+    assert set(p.keys()) == {'binding_id', 'artifact_id', 'target_type', 'target_id'}
 
 
 @pytest.mark.asyncio
-async def test_create_binding_no_target_raises(
+async def test_create_binding_target_resource(
     service: ArtifactBindingService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """create_binding raises ArtifactBindingTargetRequiredError when all targets are None."""
+    """create_binding with target_type='resource' persists row and emits event."""
     async with session_factory() as session:
-        ids = await _make_prerequisites(session)
-        with pytest.raises(ArtifactBindingTargetRequiredError):
-            await service.create_binding(
-                session,
-                artifact_id=ids['artifact_id'],
-                access_fact_id=None,
-                resource_id=None,
-                account_id=None,
-            )
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
 
-    assert capturing_events.emitted == []
-
-
-@pytest.mark.asyncio
-async def test_create_binding_bad_artifact_id(
-    service: ArtifactBindingService,
-    capturing_events: CapturingEventService,
-    session_factory,
-) -> None:
-    """create_binding raises ArtifactBindingForeignKeyError for unknown artifact_id."""
-    async with session_factory() as session:
-        ids = await _make_prerequisites(session)
-        with pytest.raises(ArtifactBindingForeignKeyError):
-            await service.create_binding(
-                session,
-                artifact_id=uuid.uuid4(),  # non-existent
-                access_fact_id=ids['access_fact_id'],
-            )
-
-    assert capturing_events.emitted == []
-
-
-@pytest.mark.asyncio
-async def test_get_binding_does_not_emit_event(
-    service: ArtifactBindingService,
-    capturing_events: CapturingEventService,
-    session_factory,
-) -> None:
-    """get_binding returns binding without emitting any event (Q1 — read-side audit dropped)."""
-    async with session_factory() as session:
-        ids = await _make_prerequisites(session)
         binding = await service.create_binding(
             session,
-            artifact_id=ids['artifact_id'],
-            access_fact_id=ids['access_fact_id'],
+            artifact_id=artifact_id,
+            target_type='resource',
+            target_id=resource_id,
         )
         await session.commit()
-        binding_id = binding.id
 
-    # Reset captured events so only get_binding's effect is observed
-    capturing_events.clear()
+    assert binding.target_type == 'resource'
+    assert binding.target_id == resource_id
 
-    async with session_factory() as session:
-        found = await service.get_binding(session, binding_id)
-
-    assert found is not None
-    assert found.id == binding_id
-    assert capturing_events.emitted == []
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    assert emitted[0].payload['target_type'] == 'resource'
+    assert emitted[0].payload['target_id'] == str(resource_id)
 
 
 @pytest.mark.asyncio
-async def test_create_binding_propagates_correlation_id(
+async def test_create_binding_target_account(
     service: ArtifactBindingService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """create_binding propagates an explicit correlation_id into the envelope."""
+    """create_binding with target_type='account' persists row and emits event."""
     async with session_factory() as session:
-        ids = await _make_prerequisites(session)
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        account_id = await _make_account(session, app_id)
+
+        binding = await service.create_binding(
+            session,
+            artifact_id=artifact_id,
+            target_type='account',
+            target_id=account_id,
+        )
+        await session.commit()
+
+    assert binding.target_type == 'account'
+    assert binding.target_id == account_id
+
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    assert emitted[0].payload['target_type'] == 'account'
+
+
+@pytest.mark.asyncio
+async def test_create_binding_target_subject(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_binding with target_type='subject' persists row and emits event."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        subject_id = await _make_subject(session)
+
+        binding = await service.create_binding(
+            session,
+            artifact_id=artifact_id,
+            target_type='subject',
+            target_id=subject_id,
+        )
+        await session.commit()
+
+    assert binding.target_type == 'subject'
+    assert binding.target_id == subject_id
+
+    emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
+    assert len(emitted) == 1
+    assert emitted[0].payload['target_type'] == 'subject'
+
+
+# ---------------------------------------------------------------------------
+# Tests — error paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_binding_unknown_target_type_raises(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """target_type='wat' raises ArtifactBindingUnknownTargetTypeError, no event, no row."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+
+        with pytest.raises(ArtifactBindingUnknownTargetTypeError):
+            await service.create_binding(
+                session,
+                artifact_id=artifact_id,
+                target_type='wat',
+                target_id=uuid.uuid4(),
+            )
+
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_create_binding_artifact_not_found_raises(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """Random artifact_id raises ArtifactBindingArtifactNotFoundError, no event."""
+    async with session_factory() as session:
+        with pytest.raises(ArtifactBindingArtifactNotFoundError):
+            await service.create_binding(
+                session,
+                artifact_id=uuid.uuid4(),
+                target_type='resource',
+                target_id=uuid.uuid4(),
+            )
+
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_create_binding_target_not_found_raises(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """Valid target_type='access_fact' + random target_id raises ArtifactBindingTargetNotFoundError."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+
+        with pytest.raises(ArtifactBindingTargetNotFoundError):
+            await service.create_binding(
+                session,
+                artifact_id=artifact_id,
+                target_type='access_fact',
+                target_id=uuid.uuid4(),
+            )
+
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_create_binding_duplicate_raises(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """Second call with same (artifact_id, target_type, target_id) raises ArtifactBindingDuplicateError."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+
         await service.create_binding(
             session,
-            artifact_id=ids['artifact_id'],
-            access_fact_id=ids['access_fact_id'],
-            correlation_id='trace-binding-xyz',
+            artifact_id=artifact_id,
+            target_type='resource',
+            target_id=resource_id,
+        )
+        await session.commit()
+
+    # First event emitted
+    assert len(capturing_events.filter_by_type('inventory.artifact_binding.created')) == 1
+
+    # Second call — same triple → duplicate
+    async with session_factory() as session:
+        # Re-fetch artifact and resource in new session
+        from src.inventory.access_artifacts.models import AccessArtifact
+        from src.inventory.resources.models import Resource
+
+        artifact = await session.get(AccessArtifact, artifact_id)
+        resource = await session.get(Resource, resource_id)
+        assert artifact is not None
+        assert resource is not None
+
+        with pytest.raises(ArtifactBindingDuplicateError):
+            await service.create_binding(
+                session,
+                artifact_id=artifact_id,
+                target_type='resource',
+                target_id=resource_id,
+            )
+
+    # Only one event total (second call raised before emit)
+    assert len(capturing_events.filter_by_type('inventory.artifact_binding.created')) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests — correlation_id propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_binding_correlation_id_propagation(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """Explicit correlation_id is propagated into the event envelope."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+
+        await service.create_binding(
+            session,
+            artifact_id=artifact_id,
+            target_type='resource',
+            target_id=resource_id,
+            correlation_id='trace-test-abc',
         )
         await session.commit()
 
     emitted = capturing_events.filter_by_type('inventory.artifact_binding.created')
     assert len(emitted) == 1
-    assert emitted[0].correlation_id == 'trace-binding-xyz'
+    assert emitted[0].correlation_id == 'trace-test-abc'
+
+    # Also verify actor/target shape
+    assert emitted[0].actor_kind == EventParticipantKind.CAPABILITY
+    assert emitted[0].actor_id == 'inventory.artifact_bindings'
+    assert emitted[0].target_kind == EventParticipantKind.SYSTEM
 
 
 @pytest.mark.asyncio
@@ -261,13 +419,17 @@ async def test_create_binding_generates_correlation_id_when_omitted(
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """create_binding generates a uuid4 hex correlation_id when caller omits it."""
+    """Omitted correlation_id generates a 32-char hex string."""
     async with session_factory() as session:
-        ids = await _make_prerequisites(session)
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+
         await service.create_binding(
             session,
-            artifact_id=ids['artifact_id'],
-            access_fact_id=ids['access_fact_id'],
+            artifact_id=artifact_id,
+            target_type='resource',
+            target_id=resource_id,
         )
         await session.commit()
 
@@ -275,5 +437,116 @@ async def test_create_binding_generates_correlation_id_when_omitted(
     assert len(emitted) == 1
     cid = emitted[0].correlation_id
     assert isinstance(cid, str)
-    assert len(cid) == 32  # uuid4().hex = 32 hex chars
+    assert len(cid) == 32
     assert cid.isalnum()
+
+
+# ---------------------------------------------------------------------------
+# Tests — list_bindings filters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_bindings_filter_by_target_type(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """list_bindings(target_type='resource') returns only resource bindings."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+        account_id = await _make_account(session, app_id)
+
+        await service.create_binding(session, artifact_id=artifact_id, target_type='resource', target_id=resource_id)
+        await service.create_binding(session, artifact_id=artifact_id, target_type='account', target_id=account_id)
+        await session.commit()
+
+    async with session_factory() as session:
+        results = await service.list_bindings(session, target_type='resource')
+
+    assert len(results) >= 1
+    assert all(b.target_type == 'resource' for b in results)
+
+
+@pytest.mark.asyncio
+async def test_list_bindings_filter_by_target_id(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """list_bindings(target_id=uuid) returns only rows with that target_id."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id = await _make_artifact(session, app_id)
+        resource_id1 = await _make_resource(session, app_id)
+        resource_id2 = await _make_resource(session, app_id)
+
+        await service.create_binding(session, artifact_id=artifact_id, target_type='resource', target_id=resource_id1)
+        await service.create_binding(session, artifact_id=artifact_id, target_type='resource', target_id=resource_id2)
+        await session.commit()
+
+    async with session_factory() as session:
+        results = await service.list_bindings(session, target_id=resource_id1)
+
+    assert len(results) >= 1
+    assert all(b.target_id == resource_id1 for b in results)
+
+
+@pytest.mark.asyncio
+async def test_list_bindings_filter_by_target_type_and_target_id(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """list_bindings(target_type, target_id) combined filter returns exact provenance set."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id1 = await _make_artifact(session, app_id)
+        artifact_id2 = await _make_artifact(session, app_id)
+        resource_id = await _make_resource(session, app_id)
+        account_id = await _make_account(session, app_id)
+
+        b1 = await service.create_binding(
+            session, artifact_id=artifact_id1, target_type='resource', target_id=resource_id
+        )
+        await service.create_binding(session, artifact_id=artifact_id2, target_type='account', target_id=account_id)
+        await service.create_binding(session, artifact_id=artifact_id2, target_type='resource', target_id=resource_id)
+        await session.commit()
+
+    async with session_factory() as session:
+        results = await service.list_bindings(session, target_type='resource', target_id=resource_id)
+
+    assert len(results) >= 2
+    assert all(b.target_type == 'resource' and b.target_id == resource_id for b in results)
+    ids = {b.id for b in results}
+    assert b1.id in ids
+
+
+@pytest.mark.asyncio
+async def test_list_bindings_filter_by_artifact_id(
+    service: ArtifactBindingService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """list_bindings(artifact_id=...) returns only bindings for that artifact."""
+    async with session_factory() as session:
+        app_id = await _make_application(session)
+        artifact_id1 = await _make_artifact(session, app_id)
+        artifact_id2 = await _make_artifact(session, app_id)
+        resource_id1 = await _make_resource(session, app_id)
+        resource_id2 = await _make_resource(session, app_id)
+
+        b1 = await service.create_binding(
+            session, artifact_id=artifact_id1, target_type='resource', target_id=resource_id1
+        )
+        await service.create_binding(session, artifact_id=artifact_id2, target_type='resource', target_id=resource_id2)
+        await session.commit()
+
+    async with session_factory() as session:
+        results = await service.list_bindings(session, artifact_id=artifact_id1)
+
+    assert len(results) >= 1
+    assert all(b.artifact_id == artifact_id1 for b in results)
+    assert any(b.id == b1.id for b in results)

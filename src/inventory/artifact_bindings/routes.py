@@ -23,21 +23,22 @@ DependsService = Depends(get_artifact_binding_service)
 @router.get('', response_model=list[ArtifactBindingRead])
 async def list_artifact_bindings(
     artifact_id: uuid.UUID | None = None,
-    access_fact_id: uuid.UUID | None = None,
-    resource_id: uuid.UUID | None = None,
-    account_id: uuid.UUID | None = None,
+    target_type: str | None = None,
+    target_id: uuid.UUID | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = DependsSession,
     service: ArtifactBindingService = DependsService,
 ) -> list[ArtifactBindingRead]:
-    """List artifact bindings with optional filters."""
+    """List artifact bindings with optional filters.
+
+    Unknown target_type values return an empty list (read-side permissiveness per Q7).
+    """
     bindings = await service.list_bindings(
         session,
         artifact_id=artifact_id,
-        access_fact_id=access_fact_id,
-        resource_id=resource_id,
-        account_id=account_id,
+        target_type=target_type,
+        target_id=target_id,
         limit=limit,
         offset=offset,
     )

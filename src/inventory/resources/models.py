@@ -65,6 +65,14 @@ class Resource(Base):
         String(255),
         nullable=False,
     )
+    resource_type: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    resource_key: Mapped[str] = mapped_column(
+        String(1024),
+        nullable=False,
+    )
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey('resources.id', ondelete='SET NULL'),
@@ -107,6 +115,12 @@ class Resource(Base):
             'application_id',
             'external_id',
             name='uq_resources_application_id_external_id',
+        ),
+        UniqueConstraint(
+            'application_id',
+            'resource_type',
+            'resource_key',
+            name='uq_resources_application_id_resource_type_resource_key',
         ),
         Index('ix_resources_application_id', 'application_id'),
         Index('ix_resources_kind', 'kind'),

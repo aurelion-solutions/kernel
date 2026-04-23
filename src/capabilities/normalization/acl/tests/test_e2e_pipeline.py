@@ -184,13 +184,20 @@ async def test_acl_pipeline_end_to_end(
         ResourcePrivilegeLevel.write,
     ), 'privilege_level should be one of the two ingested values'
 
+    from src.inventory.actions.models import Action as RefAction
+
     async with session_factory() as session:
+        read_action_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == Action.read.value))
+        read_action_id = read_action_id_result.scalar_one()
+        write_action_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == Action.write.value))
+        write_action_id = write_action_id_result.scalar_one()
+
         read_fact = (
             (
                 await session.execute(
                     select(AccessFact).where(
                         AccessFact.subject_id == subject_id,
-                        AccessFact.action == Action.read,
+                        AccessFact.action_id == read_action_id,
                     )
                 )
             )
@@ -202,7 +209,7 @@ async def test_acl_pipeline_end_to_end(
                 await session.execute(
                     select(AccessFact).where(
                         AccessFact.subject_id == subject_id,
-                        AccessFact.action == Action.write,
+                        AccessFact.action_id == write_action_id,
                     )
                 )
             )
@@ -216,11 +223,11 @@ async def test_acl_pipeline_end_to_end(
     # --- Event assertions ---
     event_types = [e.event_type for e in capturing_events.emitted]
 
-    assert event_types.count('inventory.access_artifact.created') == 6
+    assert event_types.count('inventory.access_artifact.ingested') == 6
     assert event_types.count('inventory.resource.created') == 2
     assert event_types.count('inventory.access_fact.created') == 3
     assert event_types.count('inventory.artifact_binding.created') == 6
-    assert event_types.count('inventory.access_fact.invalidated') == 0
+    assert event_types.count('inventory.access_fact.revoked') == 0
 
     # No events from the normalization orchestrator itself.
     normalization_event_type_events = sum(1 for et in event_types if et.startswith('normalization.'))
