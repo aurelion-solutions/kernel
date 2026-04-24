@@ -3,6 +3,20 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 from fastapi import APIRouter
+from src.capabilities.access_analysis.capabilities.routes import router as capabilities_router
+from src.capabilities.access_analysis.capability_grants.routes import router as capability_grants_router
+from src.capabilities.access_analysis.capability_mappings.routes import router as capability_mappings_router
+from src.capabilities.access_analysis.capability_scope_keys.routes import router as capability_scope_keys_router
+from src.capabilities.access_analysis.detectors.routes import router as orphan_detector_router
+from src.capabilities.access_analysis.evaluators.routes import router as sod_evaluator_router
+from src.capabilities.access_analysis.feedbacks.routes import router as feedbacks_router
+from src.capabilities.access_analysis.findings.routes import router as findings_router
+from src.capabilities.access_analysis.mitigation_controls.routes import router as mitigation_controls_router
+from src.capabilities.access_analysis.mitigations.routes import router as mitigations_router
+from src.capabilities.access_analysis.scan_runs.routes import router as scan_runs_router
+from src.capabilities.access_analysis.sod.routes import router as sod_router
+from src.capabilities.access_analysis.sod_rule_conditions.routes import router as sod_rule_conditions_router
+from src.capabilities.access_analysis.sod_rules.routes import router as sod_rules_router
 from src.capabilities.effective_access.routes import router as effective_grants_router
 from src.capabilities.ingest.routes import router as connector_results_router
 from src.capabilities.policy.routes import router as policy_router
@@ -39,6 +53,20 @@ router.include_router(applications_router)
 router.include_router(provisioning_router)
 router.include_router(reconciliation_router)
 router.include_router(effective_grants_router)
+router.include_router(capabilities_router)
+router.include_router(capability_scope_keys_router)
+router.include_router(capability_mappings_router)
+router.include_router(capability_grants_router)
+router.include_router(sod_rules_router)
+router.include_router(sod_rule_conditions_router)
+router.include_router(sod_router)
+router.include_router(sod_evaluator_router)
+router.include_router(orphan_detector_router)
+router.include_router(scan_runs_router)
+router.include_router(findings_router)
+router.include_router(mitigation_controls_router)
+router.include_router(mitigations_router)
+router.include_router(feedbacks_router)
 router.include_router(persons_router)
 router.include_router(accounts_router)
 router.include_router(actions_router)

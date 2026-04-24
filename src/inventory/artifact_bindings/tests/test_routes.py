@@ -46,10 +46,9 @@ def app_with_artifact_bindings(engine):
 async def _make_prerequisites(engine) -> dict:
     """Create required entities and return a dict with ids."""
     from src.inventory.access_artifacts.models import AccessArtifact
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    from src.inventory.access_facts.models import AccessFact
     from src.inventory.accounts.models import Account, AccountStatus
     from src.inventory.employees.repository import create_employee
-    from src.inventory.enums import Action
     from src.inventory.persons.repository import create_person
     from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
@@ -91,6 +90,8 @@ async def _make_prerequisites(engine) -> dict:
             external_id=str(uuid.uuid4()),
             application_id=app.id,
             kind='database',
+            resource_type='database',
+            resource_key=str(uuid.uuid4()),
         )
         session.add(resource)
         await session.flush()
@@ -104,20 +105,32 @@ async def _make_prerequisites(engine) -> dict:
         session.add(account)
         await session.flush()
 
+        from datetime import UTC, datetime
+
         artifact = AccessArtifact(
             application_id=app.id,
             artifact_type='acl_entry',
             external_id=str(uuid.uuid4()),
             payload={'raw': 'data'},
+            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         session.add(artifact)
         await session.flush()
 
+        from sqlalchemy import select as sa_select
+        from src.inventory.actions.models import Action as RefAction
+
+        action_id_row = await session.execute(sa_select(RefAction.id).where(RefAction.slug == 'read'))
+        action_id = action_id_row.scalar_one()
+
+        from src.inventory.access_facts.models import AccessFactEffect
+
         fact = AccessFact(
             subject_id=subj.id,
             resource_id=resource.id,
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         session.add(fact)
         await session.commit()

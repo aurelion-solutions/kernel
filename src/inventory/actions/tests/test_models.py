@@ -42,9 +42,9 @@ def test_slug_column_is_unique() -> None:
 @pytest.mark.asyncio
 async def test_slug_unique_constraint_enforced_at_db(session_factory) -> None:
     async with session_factory() as session:
-        session.add(Action(slug='read', description='first'))
+        session.add(Action(slug='test_unique_slug_xyz', description='first'))
         await session.flush()
 
-        session.add(Action(slug='read', description='duplicate'))
+        session.add(Action(slug='test_unique_slug_xyz', description='duplicate'))
         with pytest.raises(sqlalchemy.exc.IntegrityError):
             await session.flush()

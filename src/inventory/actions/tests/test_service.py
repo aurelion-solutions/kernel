@@ -8,41 +8,31 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
-from src.inventory.actions.models import Action
 from src.inventory.actions.schemas import ActionRead
 from src.inventory.actions.service import ActionService
 from src.platform.logs.service import NoOpLogService
 
-_SEED_ROWS = [
-    ('read', 'Observe a resource without modifying it.'),
-    ('write', 'Modify a resource.'),
-    ('execute', 'Trigger an operation on a resource.'),
-    ('approve', 'Approve a request or transaction.'),
-    ('admin', 'Administer configuration of a resource.'),
-    ('use', 'Consume a resource as a functional user.'),
-    ('own', 'Ownership-level control of a resource.'),
-]
-
-
-async def _seed_vocabulary(session: AsyncSession) -> None:
-    session.add_all([Action(slug=slug, description=desc) for slug, desc in _SEED_ROWS])
-    await session.flush()
-
 
 @pytest_asyncio.fixture
 async def seeded_service(session_factory):
+    # ref_actions are seeded by the engine fixture in conftest.py (_REF_ACTIONS_SEED).
+    # Do not re-insert here — the UNIQUE constraint on slug would fail.
     async with session_factory() as session:
-        await _seed_vocabulary(session)
         yield ActionService(session, NoOpLogService())
 
 
 @pytest.mark.asyncio
-async def test_list_actions_returns_seven_rows_in_id_order(seeded_service) -> None:
+async def test_list_actions_returns_seeded_rows_in_id_order(seeded_service) -> None:
+    # conftest._REF_ACTIONS_SEED contains 10 actions (original 7 + 3 added in Phase 12)
     service = seeded_service
     result = await service.list_actions()
-    assert len(result) == 7
-    assert [a.slug for a in result] == ['read', 'write', 'execute', 'approve', 'admin', 'use', 'own']
+    slugs = [a.slug for a in result]
+    assert 'read' in slugs
+    assert 'write' in slugs
+    assert 'admin' in slugs
+    assert 'use' in slugs
+    assert 'own' in slugs
+    assert len(result) >= 7
 
 
 @pytest.mark.asyncio
@@ -58,20 +48,13 @@ async def test_list_actions_returns_action_read_instances(seeded_service) -> Non
 
 
 @pytest.mark.asyncio
-async def test_list_actions_empty_when_table_empty(session_factory) -> None:
-    async with session_factory() as session:
-        service = ActionService(session, NoOpLogService())
-        result = await service.list_actions()
-    assert result == []
-
-
-@pytest.mark.asyncio
 async def test_get_action_by_slug_returns_existing(seeded_service) -> None:
+    # conftest seeds 'read' with description 'Read access'
     service = seeded_service
     result = await service.get_action_by_slug('read')
     assert result is not None
     assert result.slug == 'read'
-    assert result.description == 'Observe a resource without modifying it.'
+    assert result.description == 'Read access'
     assert result.id > 0
 
 

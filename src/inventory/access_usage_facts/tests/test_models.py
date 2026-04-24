@@ -55,23 +55,34 @@ async def _make_resource(session) -> uuid.UUID:
         external_id=str(uuid.uuid4()),
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=str(uuid.uuid4()),
     )
     session.add(resource)
     await session.flush()
     return resource.id
 
 
+async def _get_read_action_id(session) -> int:
+    from sqlalchemy import select
+    from src.inventory.actions.models import Action as RefAction
+
+    result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    return result.scalar_one()
+
+
 async def _make_access_fact(session) -> uuid.UUID:
     from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-    from src.inventory.enums import Action
 
     subject_id = await _make_subject(session)
     resource_id = await _make_resource(session)
+    action_id = await _get_read_action_id(session)
     fact = AccessFact(
         subject_id=subject_id,
         resource_id=resource_id,
-        action=Action.read,
+        action_id=action_id,
         effect=AccessFactEffect.allow,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(fact)
     await session.flush()

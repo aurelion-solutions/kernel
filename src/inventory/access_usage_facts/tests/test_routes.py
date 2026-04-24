@@ -48,7 +48,6 @@ async def _make_access_fact(engine) -> uuid.UUID:
     """Create minimal subject + resource + access_fact; return access_fact.id."""
     from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.employees.repository import create_employee
-    from src.inventory.enums import Action
     from src.inventory.persons.repository import create_person
     from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
@@ -82,15 +81,24 @@ async def _make_access_fact(engine) -> uuid.UUID:
             external_id=str(uuid.uuid4()),
             application_id=app.id,
             kind='database',
+            resource_type='database',
+            resource_key=str(uuid.uuid4()),
         )
         session.add(resource)
         await session.flush()
 
+        from sqlalchemy import select
+        from src.inventory.actions.models import Action as RefAction
+
+        action_id_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+        action_id = action_id_row.scalar_one()
+
         fact = AccessFact(
             subject_id=subj.id,
             resource_id=resource.id,
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         session.add(fact)
         await session.commit()
@@ -101,7 +109,6 @@ async def _make_access_fact_with_subject(engine) -> tuple[uuid.UUID, uuid.UUID]:
     """Return (subject_id, access_fact_id)."""
     from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.employees.repository import create_employee
-    from src.inventory.enums import Action
     from src.inventory.persons.repository import create_person
     from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
@@ -135,15 +142,24 @@ async def _make_access_fact_with_subject(engine) -> tuple[uuid.UUID, uuid.UUID]:
             external_id=str(uuid.uuid4()),
             application_id=app.id,
             kind='database',
+            resource_type='database',
+            resource_key=str(uuid.uuid4()),
         )
         session.add(resource)
         await session.flush()
 
+        from sqlalchemy import select
+        from src.inventory.actions.models import Action as RefAction
+
+        action_id_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+        action_id = action_id_row.scalar_one()
+
         fact = AccessFact(
             subject_id=subj.id,
             resource_id=resource.id,
-            action=Action.read,
+            action_id=action_id,
             effect=AccessFactEffect.allow,
+            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         session.add(fact)
         await session.commit()

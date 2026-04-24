@@ -61,6 +61,8 @@ async def _make_application(session) -> uuid.UUID:
 
 
 async def _make_artifact(session, app_id: uuid.UUID) -> uuid.UUID:
+    from datetime import UTC, datetime
+
     from src.inventory.access_artifacts.models import AccessArtifact
 
     artifact = AccessArtifact(
@@ -68,6 +70,7 @@ async def _make_artifact(session, app_id: uuid.UUID) -> uuid.UUID:
         artifact_type='acl_entry',
         external_id=str(uuid.uuid4()),
         payload={'raw': 'data'},
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(artifact)
     await session.flush()
@@ -81,6 +84,8 @@ async def _make_resource(session, app_id: uuid.UUID) -> uuid.UUID:
         external_id=str(uuid.uuid4()),
         application_id=app_id,
         kind='database',
+        resource_type='database',
+        resource_key=str(uuid.uuid4()),
     )
     session.add(resource)
     await session.flush()
@@ -122,14 +127,20 @@ async def _make_subject(session) -> uuid.UUID:
 
 
 async def _make_access_fact(session, subject_id: uuid.UUID, resource_id: uuid.UUID) -> uuid.UUID:
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-    from src.inventory.enums import Action
+    from datetime import UTC, datetime
 
+    from sqlalchemy import select
+    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    from src.inventory.actions.models import Action as RefAction
+
+    action_id_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    action_id = action_id_row.scalar_one()
     fact = AccessFact(
         subject_id=subject_id,
         resource_id=resource_id,
-        action=Action.read,
+        action_id=action_id,
         effect=AccessFactEffect.allow,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(fact)
     await session.flush()

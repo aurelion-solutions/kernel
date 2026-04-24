@@ -1,7 +1,7 @@
 """access_artifact: rename source_kind -> artifact_type + add lifecycle columns + UNIQUE.
 
 Revision ID: b3c4d5e6f7a8
-Revises: a1b2c3d4e5f6
+Revises: a1b2c4d5e6f7
 Create Date: 2026-04-24 02:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = 'b3c4d5e6f7a8'
-down_revision = 'a1b2c3d4e5f6'
+down_revision = 'a1b2c4d5e6f7'
 branch_labels = None
 depends_on = None
 

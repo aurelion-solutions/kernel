@@ -98,11 +98,12 @@ async def test_upsert_existing_returns_was_inserted_false_and_refreshes_row(sess
 
 
 @pytest.mark.asyncio
-async def test_upsert_preserves_tombstone_state(session_factory) -> None:
-    """Upsert does not reactivate a tombstoned row — is_active and tombstoned_at are preserved.
+async def test_upsert_reactivates_tombstoned_row(session_factory) -> None:
+    """Upsert reactivates a tombstoned row — Step 11 reactivation semantics.
 
-    This test locks Decision Q4 from TASK.md as a regression guard.
-    Lifecycle transitions (reactivation) are Step 11's responsibility.
+    When a tombstoned artifact is seen again in a new reconciliation batch,
+    upsert resets is_active=True and tombstoned_at=None (re-grant behaviour,
+    matching AccessFact reactivation semantics introduced in Phase 12 Step 11).
     """
     from src.inventory.access_artifacts.models import AccessArtifact
 
@@ -110,7 +111,6 @@ async def test_upsert_preserves_tombstone_state(session_factory) -> None:
 
     async with session_factory() as session:
         app_id = await _make_application_id(session)
-        # Manually seed a tombstoned row via ORM (no service layer to avoid coupling).
         row = AccessArtifact(
             application_id=app_id,
             artifact_type='acl_entry',
@@ -147,10 +147,9 @@ async def test_upsert_preserves_tombstone_state(session_factory) -> None:
     assert artifact.payload == {'v': 2}
     assert artifact.observed_at.replace(tzinfo=UTC) == ts2
 
-    # Lifecycle state untouched — tombstone is preserved.
-    assert artifact.is_active is False
-    assert artifact.tombstoned_at is not None
-    assert artifact.tombstoned_at.replace(tzinfo=UTC) == tombstone_ts
+    # Step 11 reactivation: tombstone cleared on re-upsert.
+    assert artifact.is_active is True
+    assert artifact.tombstoned_at is None
 
 
 @pytest.mark.asyncio

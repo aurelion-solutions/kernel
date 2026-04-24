@@ -13,6 +13,18 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+import src.capabilities.access_analysis.capabilities.models  # noqa: F401 — registers Capability for create_all
+import src.capabilities.access_analysis.capability_grants.models  # noqa: F401 — registers CapabilityGrant for create_all
+import src.capabilities.access_analysis.capability_mappings.models  # noqa: F401 — registers CapabilityMapping for create_all
+import src.capabilities.access_analysis.capability_scope_keys.models  # noqa: F401 — registers CapabilityScopeKey for create_all
+import src.capabilities.access_analysis.evaluators.sod  # noqa: F401 — keeps evaluator module discoverable for test collection
+import src.capabilities.access_analysis.feedbacks.models  # noqa: F401 — registers Feedback for create_all
+import src.capabilities.access_analysis.findings.models  # noqa: F401 — registers Finding for create_all
+import src.capabilities.access_analysis.mitigation_controls.models  # noqa: F401 — registers MitigationControl for create_all
+import src.capabilities.access_analysis.mitigations.models  # noqa: F401 — registers Mitigation for create_all
+import src.capabilities.access_analysis.scan_runs.models  # noqa: F401 — registers ScanRun for create_all
+import src.capabilities.access_analysis.sod_rule_conditions.models  # noqa: F401 — registers SodRuleCondition + M2M for create_all
+import src.capabilities.access_analysis.sod_rules.models  # noqa: F401 — registers SodRule for create_all
 import src.capabilities.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
 from src.core.db.base import Base
 from src.core.db.deps import get_db

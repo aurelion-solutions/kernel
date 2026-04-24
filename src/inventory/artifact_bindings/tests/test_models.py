@@ -33,6 +33,8 @@ async def _make_application(session) -> uuid.UUID:
 
 
 async def _make_access_artifact(session, application_id: uuid.UUID) -> uuid.UUID:
+    from datetime import UTC, datetime
+
     from src.inventory.access_artifacts.models import AccessArtifact
 
     artifact = AccessArtifact(
@@ -40,6 +42,7 @@ async def _make_access_artifact(session, application_id: uuid.UUID) -> uuid.UUID
         artifact_type='acl_entry',
         external_id=str(uuid.uuid4()),
         payload={'raw': 'data'},
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     session.add(artifact)
     await session.flush()

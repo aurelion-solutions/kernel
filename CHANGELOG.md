@@ -9,6 +9,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /sod-rules/apply` — idempotent config-as-code upsert for SoD rules; capabilities referenced by slug; full condition sync (create/replace/delete) in one transaction; returns diff summary (`rules_created`, `rules_updated`, `rules_unchanged`, `conditions_created`, `conditions_deleted`); 422 on unknown capability slugs
+- `apply_service.py` in `sod_rules/` slice — pure upsert logic keyed by rule `code` and condition `name`
+- `SodApplyPayload`, `SodConditionSpec`, `SodRuleSpec`, `SodApplyResult` schemas in `sod_rules/schemas.py`
+- Development seed script `scripts/seed_dev.py` — Meridian Fintech scenario (2 apps, 3 employees, 1 NHI, 6 accounts, 5 capabilities, 5 mappings, 2 SoD rules, 6 grants)
+
+### Fixed
+
+- `POST /scan-runs`, `PATCH /scan-runs/{id}/status`, `POST /scan-runs/{id}/run` routes missing `await session.commit()` — scan run rows were created in-memory but never persisted to the database
+- `GET /capability-grants` mandatory-filter requirement removed; without filters the response is capped at 100 rows to prevent full-table scans; filtered queries use the requested `limit`
+
+### Added
+
+- Phase 13 SoD & Access Analysis complete (19/19 milestones)
+- End-to-end integration test covering capability projection, scan, mitigation, feedback, and on-demand SoD evaluate / what-if
+
+- Phase 13 Step 17 — CLI coverage for the access-analysis REST surface: seven new `al` commands across four plugins (`al sod evaluate`, `al sod what-if`, `al sod resolve-capabilities`, `al scan run`, `al scan list`, `al findings list`, `al feedback post`). No server changes. See `aurelion-cli/CHANGELOG.md` for full command signatures.
+
+- Endpoint `POST /sod/what-if` for read-only SoD evaluation with synthetic capability overrides (`CapabilityGrantOverride`); never persists, never emits events; `at` defaults to now(UTC) at route boundary; five server-side validations (`WhatIfCapabilityNotFoundError`, `WhatIfScopeKeyNotFoundError`, `WhatIfApplicationNotFoundError`, `WhatIfScopeValueMismatchError`, `WhatIfScopeValueInvalidError`) each mapped to HTTP 422
+- `evaluators/exceptions.py` — new module with `WhatIfValidationError` base and five concrete what-if error types
+- Three new evaluator repository helpers: `load_capability_id_and_slug`, `scope_key_exists`, `application_exists` (one-shot SELECT each, no joins)
+- `SodEvaluatorService.what_if_subject` — read-only method loading DB grants + mitigations + rules, converting `CapabilityGrantOverride` list to synthetic `CapabilityGrantView` objects via `_override_to_view` (negative sentinel IDs, zero-UUID source grant), and calling the pure evaluator with `capability_overrides`
+- `FindingMitigationLinkageMissingError` and `FindingMitigationNotApplicableError` exceptions in `findings/exceptions.py`
+- `get_mitigation_for_linkage` cross-slice repository helper in `findings/repository.py` (reads `mitigations` table directly, no import of MitigationService)
+- Feedback slice for SoD findings, capability mappings, and rules; emits `feedback.posted` on `aurelion.events` — immutable append-only audit trail with `FeedbackKind` enum (`accepted_risk`, `false_positive`, `needs_mapping_fix`, `needs_rule_fix`, `needs_mitigation`); `POST /feedbacks`, `GET /feedbacks`, `GET /feedbacks/{id}`; no PATCH/DELETE
+- `feedback_kind` PG enum owned by the feedbacks slice; `feedbacks` table with FK RESTRICT to `sod_rules`, `capability_mappings`, `findings`, `subjects`; CHECK constraint enforcing at least one target FK set
+- ScanEngine orchestrator with bulk-loaded SoD inputs, deduplicated findings, and mitigation relinking
+- `POST /scan-runs/{id}/run` synchronous endpoint
+- `ScanRun` columns `findings_created_count` and `findings_reused_count`
+- Five scan/finding event types with strict `correlation_id` / `causation_id` chain
+- Phase 13 Step 13: unused access detector — pure `detect_unused(access_facts, threshold_days, at)` function in `detectors/unused.py`; default severity `low`; default threshold 90 days; emits one `UnusedFinding` per `AccessFact` (not per `EffectiveGrant`); no persistence, no events, no `at` API parameter
+- `UnusedDetectorService` with LEFT JOIN usage aggregate subquery + INNER JOIN resources for `application_id`; bounded single SELECT; never flushes, never emits
+- `POST /access-analysis/detect-unused` read-only endpoint; `threshold_days` range 1–3650 (default 90); `limit` range 1–5000 (default 1000); optional `application_id` filter
+- `AccessFactView` frozen strict Pydantic DTO and `UnusedFinding` frozen dataclass; `DetectUnusedRequest` / `UnusedFindingResponse` schemas
+- `get_unused_detector_service` dependency in `detectors/deps.py`
+- Terminated-subject access detector with `detect_terminated` pure function and `DEFAULT_TERMINATED_SEVERITY` constant
+- `TerminatedDetectorService` with INNER JOIN subjects and `TERMINAL_STATUSES_BY_KIND` vocabulary
+- `POST /access-analysis/detect-terminated` read-only endpoint; no persistence, no events
+- Orphan access detector with `detect_orphans` pure function and `DEFAULT_ORPHAN_SEVERITY` constant
+- `OrphanDetectorService` loading unlinked accounts via LEFT JOIN ownership assignments (no N+1)
+- `POST /access-analysis/detect-orphans` read-only endpoint; no persistence, no events
+- Pure SoD Evaluator (`evaluate`) in `src/capabilities/access_analysis/evaluators/sod.py` — deterministic, IO-free, DB-free; accepts `capability_overrides` for what-if analysis; evidence-hash contract frozen (SHA-256 over stable IDs: subject_id, access_fact_ids, initiative_ids, capability_mapping_ids, rule_id, scope_key_id, scope_value — EffectiveGrant.id deliberately excluded)
+- `Violation` frozen dataclass — 15 fields including `matched_capability_slugs` (sorted), `matched_effective_grant_ids` (list[UUID]), `is_mitigated`, `active_mitigation_id`, `proposed_mitigation_id`, `evidence_hash`, `evaluated_at`
+- Specific-overrides-generic mitigation resolution: exact-scope tier wins over generic (None/None); within tier active > proposed > most recent `created_at`; only `active` status flips `is_mitigated=True`
+- `POST /sod/evaluate` read-only endpoint — returns `list[SodViolationResponse]`; default `at=now(UTC)` resolved at route boundary; empty list for no-capabilities or nonexistent subject; emits no events; inserts no rows
+- `SodEvaluatorService` — reads SodRules + CapabilityGrants + Mitigations in two queries each (no N+1); passes to pure evaluator; never calls `session.flush()` or `session.commit()`
+- `SodEvaluateRequest` (extra='forbid'), `SodViolationResponse` schemas
+- `sod_evaluator_router` registered in `src/routers/v0.py` at `/sod/evaluate` (coexists with existing `/sod/resolve-capabilities`)
+- 31 tests across four files: pure-function matrix (18 cases), evidence-hash stability (5 cases), service-layer integration (3 DB-backed cases), HTTP route (5 cases)
+- `Mitigation` slice (`models.py`, `schemas.py`, `repository.py`, `service.py`, `routes.py`, `deps.py`, `exceptions.py`, `tests/`) — per-subject, per-rule, time-bound mitigation records with owner, status lifecycle (`proposed → active → revoked`; `expired` reserved for future sweep), and PROTECT FK into `mitigation_controls`
+- `mitigation_status` Postgres enum (`proposed`, `active`, `expired`, `revoked`) owned by this slice
+- Four lifecycle domain events on `aurelion.events`: `access_analysis.mitigation.created`, `access_analysis.mitigation.activated`, `access_analysis.mitigation.revoked`, `access_analysis.mitigation.expired` (event contract reserved; sweep scheduler out of scope)
+- Partial unique index `uq_mitigations_active_or_proposed` with `NULLS NOT DISTINCT` (PG17) on `(rule_id, subject_id, scope_key_id, scope_value) WHERE status IN ('active', 'proposed')`
+- Deferred FK constraints from `findings.active_mitigation_id` and `findings.proposed_mitigation_id` → `mitigations.id` (columns were plain BigInteger in Step 7; FK closure happens here)
+- `mitigation_allowed=false` enforcement: service rejects creation when the referenced `SodRule` has `mitigation_allowed=false`
+- Six REST endpoints: `POST /mitigations`, `GET /mitigations`, `GET /mitigations/{id}`, `POST /mitigations/{id}/activate`, `POST /mitigations/{id}/revoke`, `PATCH /mitigations/{id}/status`
+- Alembic migration `ops/db_versions/2026_04_24_1400_phase_13_step_09_mitigations.py` (revision `b2c3d4e5f6a8`, down_revision `a1b2c3d4e5f7`)
+- `MitigationControl` catalog slice with soft-delete, immutable code, and seeded default control types; 5 CRUD endpoints
+- `ScanRun` storage slice with status-transition guards (`pending→running→completed|failed`); `started_at`/`completed_at` set on transition; endpoints: `POST /scan-runs`, `GET /scan-runs`, `GET /scan-runs/{id}`, `PATCH /scan-runs/{id}/status`
+- `Finding` storage slice with status-transition guards (`open→acknowledged|mitigated`, `acknowledged→mitigated`, any non-terminal→`resolved` with required reason); no `FindingCreate` API (engine writes in Step 14); endpoints: `GET /findings`, `GET /findings/{id}`, `PATCH /findings/{id}/status`
+- `scan_run_status` Postgres enum (`pending`, `running`, `completed`, `failed`), `scan_run_trigger` Postgres enum (`manual`, `api`, `schedule`), `finding_kind` Postgres enum (`sod`, `orphan_access`, `terminated_access`, `unused_access`), `finding_status` Postgres enum (`open`, `acknowledged`, `resolved`, `mitigated`) — all four owned by this step; `sod_severity` reused via `create_type=False`
+- Alembic migration `ops/db_versions/2026_04_24_1200_phase_13_step_07_scan_runs_findings.py` (revision `f0a1b2c3d4e5`, down_revision `e8f9a0b1c2d3`) covering all four new enums, `scan_runs` table (3 CHECK constraints, 4 indexes, 2 UUID FKs), `findings` table (3 CHECK constraints, 1 UNIQUE constraint, 7 indexes, 5 FKs); `active_mitigation_id`/`proposed_mitigation_id` plain BigInteger (FK added by Step 9)
+- `SodRule` CRUD slice with immutable code, scope-mode invariants (service + Postgres CHECK), soft-delete via `POST /sod-rules/{id}/deactivate`; endpoints: `POST /sod-rules`, `GET /sod-rules`, `GET /sod-rules/{id}`, `PATCH /sod-rules/{id}`, `POST /sod-rules/{id}/deactivate`
+- `SodRuleCondition` slice with `sod_rule_condition_capabilities` M2M association; conditions immutable (DELETE + POST to replace); capability_ids resolved via explicit SQL; endpoints: `POST /sod-rules/{rule_id}/conditions`, `GET /sod-rules/{rule_id}/conditions`, `GET /sod-rules/{rule_id}/conditions/{id}`, `DELETE /sod-rules/{rule_id}/conditions/{id}`
+- `sod_severity` Postgres enum (`critical`, `high`, `medium`, `low`, `informational`) and `sod_rule_scope` Postgres enum (`global`, `per_application`, `by_scope_key`) — both owned by this step; downstream slices must use `create_type=False`
+- Alembic migration `ops/db_versions/2026_04_24_1100_phase_13_step_06_sod_rules.py` (revision `e8f9a0b1c2d3`) covering both enums, both tables, association table, all CHECK constraints, all indexes, all FKs
+- `CapabilityResolverService` with read-only `resolve_capabilities_for_sources` pre-flight slug resolver
+- `POST /api/v0/sod/resolve-capabilities` endpoint returning distinct sorted capability slugs, never persists
+- `load_active_mappings` extracted to `mapping_loader.py`; `matcher_applies` made public
+- `CapabilityGrant` projection table with read-only API (`GET /capability-grants`, `GET /capability-grants/{id}`)
+- Pure `capability_projector` with resource_id / resource_kind / resource_path_glob matching and four-kind scope_value source (subject_attribute, resource_attribute, application_id, constant)
+- `CapabilityProjectionService` writer with PG `ON CONFLICT` upsert; `application_id` immutable post-projection
+- `CapabilityGrantReadService` with mandatory-filter guard on list endpoint
+- `_count_dependent_capability_grants` in capability_mappings wired to real `COUNT(*)` query
+- `CapabilityMapping` CRUD slice with three-column XOR resource match (resource_id / resource_kind / resource_path_glob) and CHECK constraint
+- Discriminated-union `scope_value_source` (subject_attribute / resource_attribute / application_id / constant) validated at API boundary
+- `action_slug` validated against `ref_actions` vocabulary; FK violations translated to typed domain exceptions
+- In-use cascade check stub for `CapabilityGrant` (activated in Step 4)
+- `CapabilityScopeKey` vocabulary slice with immutable code, soft-delete, and default 17-code seed migration
+- `Capability` vocabulary slice with immutable slug and soft-delete via `POST /capabilities/{id}/deactivate`
 - Reconciliation handler registry (`capabilities/reconciliation/registry.py`) mapping `artifact_type → Handler`
 - `NormalizationResult` frozen dataclass and `Handler` Protocol in `contracts.py`
 - `pipeline.run_reconciliation` with per-application set-diff on normalized fact key (create / reactivate / update / revoke)
@@ -27,6 +106,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repo-wide `ent_roles` / `ent_privileges` / `role_id` / `privilege_id` grep-guard across `aurelion-kernel/src/`
 
 ### Changed
+
+- `PATCH /findings/{id}/status` now validates `active_mitigation_id` linkage when transitioning to `mitigated`: referenced Mitigation must exist, have `status=active`, have a valid time window covering now, match the finding's `(rule_id, subject_id)`, and match scope via specific-overrides-generic rule (exact scope or unscoped fallback)
+- `FindingStatusPatch` schema gains optional `active_mitigation_id: int | None = None` field (backward-compatible; `extra='forbid'` preserved)
+- `update_finding_status_fields` in `findings/repository.py` accepts optional `active_mitigation_id` parameter and stamps it on the row when transitioning to `mitigated`
 
 - `ReconciliationService` rewritten around artifact-first `pipeline.run_reconciliation`; legacy role/privilege/account-centric orchestration removed
 - `capabilities/reconciliation/handlers/__init__.py` imports four new handler modules (`acl_entry`, `db_grant`, `privilege`, `sap_role`) alongside the existing `role` — registration fires at kernel bootstrap for all five
