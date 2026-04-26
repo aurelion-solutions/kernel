@@ -5,10 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.6] - 2026-04-26
 
 ### Added
 
+- `CorrelationIdMiddleware` with `X-Correlation-ID` echo/generate on every HTTP request
+- `core.context` module with `correlation_id_var` ContextVar and `current_correlation_id()` accessor
+- `new_event_envelope` builder in `platform/events` with ContextVar `correlation_id` fallback
+- `new_root_log_event` ContextVar fallback before UUID generation
+- `LLMModel` entity with `LLMProvider` enum (`llama_cpp`, `openai`, `ollama`) and `llm_models` table
+- Alembic migration `phase_14_step_02_llm_models` — `llm_provider` PG enum + `llm_models` table
+- `LLMExecutionProfile` entity with `param_overrides` JSONB and FK to `LLMModel`
+- Alembic migration `phase_14_step_03_llm_execution_profiles` — `llm_execution_profiles` table
+- `AbstractLLMProvider` ABC with `LLMMessage`, `LLMChunk`, and `LLMRole` types in `platform/llm/providers/base.py`
+- `LlamaCppProvider` with async-generator `stream()`, cooperative `abort()`, and `LlamaCppProviderError` hierarchy
+- Optional dependency extra `llm-llama-cpp` pulling `llama-cpp-python>=0.3.0`; kernel imports cleanly without it
+- Phase 14 Step 6 — `LLMFactory` in `src/platform/llm/factory.py`: in-process LRU registry keyed by `LLMModel.id`, configurable `max_loaded_models` (default 2), per-`model_id` async load lock to coalesce concurrent loads, eviction awaits `provider.abort()`, `invalidate(model_id)` and `invalidate_all()` with race-safe in-flight-load discard; `LLMFactoryError` hierarchy (`LLMModelNotFoundError`, `LLMModelInactiveError`, `LLMProviderNotSupportedError`); `llama_cpp` branch only — `openai`/`ollama` deferred
+- `LLMSettings` (pydantic-settings v2) with `LLM_MAX_LOADED_MODELS`, `LLM_MAX_MESSAGES`, `LLM_MAX_CHARS_PER_MESSAGE`, `LLM_MAX_TOTAL_CHARS` operator knobs; `LLMFactory` resolves `max_loaded_models` from settings when not passed explicitly
+- `GET /api/v0/llm/models`, `POST /api/v0/llm/models`, `GET /api/v0/llm/models/{id}`, `PATCH /api/v0/llm/models/{id}`, `DELETE /api/v0/llm/models/{id}` — LLMModel CRUD; provider-wiring + token-limit + path-readability validation; `LLMFactory` cache invalidation post-flush on deactivate/path/url/ref changes; exception → HTTP mapping: `LLMModelNotFoundError` → 404, `LLMModelNameAlreadyExistsError` → 409, `LLMModelInvalidConfigError` → 422
+- `GET /api/v0/llm/execution-profiles`, `POST /api/v0/llm/execution-profiles`, `GET /api/v0/llm/execution-profiles/{id}`, `PATCH /api/v0/llm/execution-profiles/{id}`, `DELETE /api/v0/llm/execution-profiles/{id}` — LLMExecutionProfile CRUD; `model_id` immutable on PATCH (absent from `LLMExecutionProfileUpdate`); `param_overrides` replace semantics; exception → HTTP mapping: `LLMProfileNotFoundError` → 404, `LLMProfileNameAlreadyExistsError` → 409, `LLMProfileInvalidConfigError` → 422
+- `LLMExecutionProfileUpdate` schema (`extra='forbid'`, `model_id` excluded, both fields Optional)
+- `LLMProfileNotFoundError`, `LLMProfileNameAlreadyExistsError`, `LLMProfileInvalidConfigError` domain exceptions for profile CRUD
+- Repository helpers `get_profile_by_id`, `get_profile_by_name`, `list_profiles` in `src/platform/llm/repository.py`
+- `POST /api/v0/inference` — JSON inference endpoint: resolves `execution_profile_id`, validates messages against `LLMSettings`, drives `LLMFactory` provider, returns `InferenceResponse` with `output`, `tokens_used`, `latency_ms`, `ttft_ms`, `model_id`, `execution_profile_id`; logs every call (success / error / aborted) to `aurelion.logs`
+- `POST /api/v0/inference/stream` — SSE inference endpoint: streams token events (`{"token": ..., "done": false}`) then final event (`{"output": ..., "done": true}`); client disconnect triggers `provider.abort()` and an aborted log entry
+- `LLMInferenceValidationError` domain exception for message size limit violations; `LLMMessageIn`, `InferenceRequest`, `InferenceResponse` Pydantic schemas; `sse-starlette>=1.8.2` added as runtime dependency
 - `POST /sod-rules/apply` — idempotent config-as-code upsert for SoD rules; capabilities referenced by slug; full condition sync (create/replace/delete) in one transaction; returns diff summary (`rules_created`, `rules_updated`, `rules_unchanged`, `conditions_created`, `conditions_deleted`); 422 on unknown capability slugs
 - `apply_service.py` in `sod_rules/` slice — pure upsert logic keyed by rule `code` and condition `name`
 - `SodApplyPayload`, `SodConditionSpec`, `SodRuleSpec`, `SodApplyResult` schemas in `sod_rules/schemas.py`
@@ -17,10 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `POST /scan-runs`, `PATCH /scan-runs/{id}/status`, `POST /scan-runs/{id}/run` routes missing `await session.commit()` — scan run rows were created in-memory but never persisted to the database
-- `GET /capability-grants` mandatory-filter requirement removed; without filters the response is capped at 100 rows to prevent full-table scans; filtered queries use the requested `limit`
+- `GET /capability-grants` without any filter now returns `400 Bad Request` — at least one of `subject_id`, `capability_id`, `application_id`, `source_effective_grant_id`, or `source_capability_mapping_id` is required
+- `LLMModelUpdate` with `name=null` now returns 422 instead of 500 — NOT NULL guard in service before flush
+- `_translate_integrity_error` now distinguishes FK violations by `constraint_name`: dependent profiles vs bad `secret_id` vs unknown FK (re-raised)
+- `_translate_profile_integrity_error` constraint name corrected to match actual DB constraint for profile-model FK
 
 ### Added
 
+- Phase 14 LLM Platform Layer complete (13/13 milestones)
 - Phase 13 SoD & Access Analysis complete (19/19 milestones)
 - End-to-end integration test covering capability projection, scan, mitigation, feedback, and on-demand SoD evaluate / what-if
 

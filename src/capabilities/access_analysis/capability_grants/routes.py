@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from src.capabilities.access_analysis.capability_grants.deps import get_capability_grant_read_service
 from src.capabilities.access_analysis.capability_grants.exceptions import CapabilityGrantNotFoundError
 from src.capabilities.access_analysis.capability_grants.schemas import CapabilityGrantRead
@@ -56,7 +56,13 @@ async def list_capability_grants(
             source_capability_mapping_id,
         )
     )
-    effective_limit = min(limit, 100) if no_filter else limit
+    if no_filter:
+        raise HTTPException(
+            status_code=400,
+            detail='At least one filter is required (subject_id, capability_id, application_id, '
+            'source_effective_grant_id, or source_capability_mapping_id).',
+        )
+    effective_limit = limit
 
     grants = await service.list_grants(
         subject_id=subject_id,

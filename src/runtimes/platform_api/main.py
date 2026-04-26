@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import src.capabilities.reconciliation.handlers  # noqa: F401 — bootstrap handler registry
 from src.core.config import settings
 from src.core.db.session import engine
+from src.core.middleware.correlation import CorrelationIdMiddleware
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient
 from src.platform.connectors.client import ConnectorClient
@@ -103,13 +104,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title='Aurelion Platform API')
 
+# Middleware registration order: last-registered runs outermost (on the request path).
+# Pipeline: CORS (outermost) → CorrelationId → route
+app.add_middleware(CorrelationIdMiddleware)  # registered first → inner
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
-)
+)  # registered last → outermost
 
 
 @app.get('/health')

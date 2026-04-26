@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 import src.capabilities.access_analysis.capabilities.models  # noqa: F401 — registers Capability for create_all
@@ -30,6 +31,7 @@ from src.core.db.base import Base
 from src.core.db.deps import get_db
 import src.inventory.actions.models  # noqa: F401 — registers ref_actions for create_all
 from src.platform.events.buffer import InMemoryEventBuffer
+import src.platform.llm.models  # noqa: F401 — registers LLMModel for create_all
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all
 from src.platform.logs.service import NoOpLogService
 from src.routers.v0 import router
@@ -81,6 +83,9 @@ async def engine():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        # llm_provider PG enum is owned by the migration; create explicitly for tests.
+        await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
+        await conn.execute(sa.text("CREATE TYPE llm_provider AS ENUM ('llama_cpp', 'openai', 'ollama')"))
         await conn.run_sync(Base.metadata.create_all)
 
     # Seed reference data
@@ -96,6 +101,7 @@ async def engine():
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+            await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
         await engine.dispose()
 
 

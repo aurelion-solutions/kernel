@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Michael Abramovich
 #
 # SPDX-License-Identifier: BUSL-1.1
+# ruff: noqa: E402
 """
 Development seed script — Meridian Fintech, AP segregation of duties.
 
@@ -24,18 +25,20 @@ Grants       : Clara has create_vendor + approve_payment + release_payment
 
 Not idempotent — intended for a clean DB (right after `alembic upgrade head`).
 """
+
 from __future__ import annotations
 
 import asyncio
-import sys
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+import sys
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import all model modules so SQLAlchemy can resolve cross-slice FK references
 import importlib
+
 import src.capabilities
 import src.inventory
 import src.platform
@@ -48,7 +51,6 @@ for _pkg in (src.inventory, src.capabilities, src.platform):
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from src.capabilities.access_analysis.capabilities.models import Capability
 from src.capabilities.access_analysis.capability_grants.models import CapabilityGrant
 from src.capabilities.access_analysis.capability_mappings.models import CapabilityMapping
@@ -74,7 +76,6 @@ async def main() -> None:
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with factory() as session:
-
         # ── Applications ──────────────────────────────────────────────────────
         sap = Application(
             name='SAP S/4HANA',
@@ -116,16 +117,22 @@ async def main() -> None:
 
         # ── Subjects ──────────────────────────────────────────────────────────
         anna = Subject(
-            external_id='emp-001', kind=SubjectKind.employee,
-            principal_employee_id=emp_anna.id, status='active',
+            external_id='emp-001',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp_anna.id,
+            status='active',
         )
         boris = Subject(
-            external_id='emp-002', kind=SubjectKind.employee,
-            principal_employee_id=emp_boris.id, status='active',
+            external_id='emp-002',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp_boris.id,
+            status='active',
         )
         clara = Subject(
-            external_id='emp-003', kind=SubjectKind.employee,
-            principal_employee_id=emp_clara.id, status='active',
+            external_id='emp-003',
+            kind=SubjectKind.employee,
+            principal_employee_id=emp_clara.id,
+            status='active',
         )
         devops_bot = Subject(
             external_id='nhi-devops-001',
@@ -257,8 +264,7 @@ async def main() -> None:
             description='Full administrative access across all finance modules.',
         )
         session.add_all(
-            [cap_create_vendor, cap_approve_payment, cap_release_payment,
-             cap_view_vendors, cap_admin_finance]
+            [cap_create_vendor, cap_approve_payment, cap_release_payment, cap_view_vendors, cap_admin_finance]
         )
         await session.flush()
 
@@ -358,9 +364,7 @@ async def main() -> None:
         #                  + release_payment               SOD_AP_002 ← fires
         #   DevOps-Bot     (none)                          clean / no capabilities
 
-        def _grant(
-            subject_id: uuid.UUID, cap: Capability, mapping: CapabilityMapping
-        ) -> CapabilityGrant:
+        def _grant(subject_id: uuid.UUID, cap: Capability, mapping: CapabilityMapping) -> CapabilityGrant:
             return CapabilityGrant(
                 subject_id=subject_id,
                 capability_id=cap.id,
@@ -372,14 +376,16 @@ async def main() -> None:
                 observed_at=_NOW,
             )
 
-        session.add_all([
-            _grant(anna.id, cap_create_vendor, m_create_vendor),
-            _grant(anna.id, cap_view_vendors, m_view),
-            _grant(boris.id, cap_approve_payment, m_approve),
-            _grant(clara.id, cap_create_vendor, m_create_vendor),  # ← SOD_AP_001
-            _grant(clara.id, cap_approve_payment, m_approve),       # ← SOD_AP_001 + SOD_AP_002
-            _grant(clara.id, cap_release_payment, m_release),       # ← SOD_AP_002
-        ])
+        session.add_all(
+            [
+                _grant(anna.id, cap_create_vendor, m_create_vendor),
+                _grant(anna.id, cap_view_vendors, m_view),
+                _grant(boris.id, cap_approve_payment, m_approve),
+                _grant(clara.id, cap_create_vendor, m_create_vendor),  # ← SOD_AP_001
+                _grant(clara.id, cap_approve_payment, m_approve),  # ← SOD_AP_001 + SOD_AP_002
+                _grant(clara.id, cap_release_payment, m_release),  # ← SOD_AP_002
+            ]
+        )
         await session.flush()
 
         await session.commit()

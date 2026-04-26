@@ -43,6 +43,9 @@ from src.inventory.threat_facts.routes import router as threat_facts_router
 from src.platform.applications.routes import router as applications_router
 from src.platform.connectors.routes import router as connector_instances_router
 from src.platform.events.routes import router as platform_events_router
+from src.platform.llm.routes import inference_router as llm_inference_router
+from src.platform.llm.routes import models_router as llm_models_router
+from src.platform.llm.routes import profiles_router as llm_execution_profiles_router
 from src.platform.logs.buffer_recent_routes import router as platform_logs_router
 from src.platform.logs.buffer_routes import router as log_buffer_router
 from src.platform.logs.routes import router as logs_router
@@ -93,3 +96,6 @@ router.include_router(platform_logs_router)
 router.include_router(secrets_providers_router)
 router.include_router(secrets_router)
 router.include_router(policy_router)
+router.include_router(llm_models_router)
+router.include_router(llm_execution_profiles_router)
+router.include_router(llm_inference_router)

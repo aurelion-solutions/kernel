@@ -33,7 +33,7 @@ Four-way split (canonical in ``ARCH_CONTEXT.md``)
 from src.platform.events.factory import EventSinkFactory, UnsupportedProviderError, event_sink_factory
 from src.platform.events.interface import EventSink
 from src.platform.events.providers.mq import RabbitMQEventSink
-from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind, new_event_envelope
 from src.platform.events.service import EventService, NoOpEventService, noop_event_service
 from src.platform.events.testing import CapturingEventService
 
@@ -48,5 +48,6 @@ __all__ = [
     'RabbitMQEventSink',
     'UnsupportedProviderError',
     'event_sink_factory',
+    'new_event_envelope',
     'noop_event_service',
 ]

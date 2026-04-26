@@ -13,6 +13,7 @@ import uuid
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from src.core.context import current_correlation_id
 
 
 class LogLevel(str, Enum):
@@ -142,7 +143,11 @@ def new_root_log_event(
 ) -> LogEvent:
     """Create a trace **root** event (new ``event_id`` and ``correlation_id``; ``causation_id`` is ``None``)."""
     eid = event_id if event_id is not None else uuid.uuid4()
-    cid = correlation_id if correlation_id is not None else str(uuid.uuid4())
+    if correlation_id is not None:
+        cid = correlation_id
+    else:
+        ctx_cid = current_correlation_id()
+        cid = ctx_cid if ctx_cid is not None else str(uuid.uuid4())
     ts = timestamp if timestamp is not None else datetime.now(UTC)
     return LogEvent(
         event_id=eid,
