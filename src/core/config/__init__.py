@@ -2,78 +2,61 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-from pathlib import Path
+"""Bootstrap configuration package.
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+Public surface:
+    get_settings() -> Settings   (lru_cache singleton per process)
+    Settings, PostgresSettings, RabbitMQSettings, AppSettings, LakeStaticSettings
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+The old module-level ``settings = Settings()`` singleton is gone.
+Call ``get_settings()`` everywhere.
 
+Startup contract:
+    1. load_dotenv()  (in each entrypoint, before any src.* import that reads config)
+    2. get_settings() — reads AURELION_SECRET_PROVIDER + AURELION_SECRETS_FILE,
+       constructs the secret manager, calls load_settings().
+"""
 
-class Settings(BaseSettings):
-    app_name: str = 'FastAPI App'
-    debug: bool = False
-    database_url: str
+from __future__ import annotations
 
-    #: Max age of rows in ``log_event_buffer`` (by event ``timestamp``) before cleanup deletes them.
-    log_buffer_retention_seconds: int = Field(default=3600, ge=1)
+import os
+from functools import lru_cache
 
-    # --- RabbitMQ ---
-    rabbitmq_host: str = 'localhost'
-    rabbitmq_port: int = 5672
-    rabbitmq_username: str = 'guest'
-    rabbitmq_password: str = 'guest'
-    rabbitmq_events_exchange: str = 'aurelion.events'
-    rabbitmq_logs_exchange: str = 'aurelion.logs'
-    rabbitmq_connector_commands_exchange: str = 'aurelion.connectors.commands'
-    rabbitmq_connector_responses_exchange: str = 'aurelion.connectors.responses'
+from src.core.config.loader import load_settings
+from src.core.config.settings import (
+    AppSettings,
+    LakeStaticSettings,
+    PostgresSettings,
+    RabbitMQSettings,
+    Settings,
+)
+from src.core.secrets.factory import config_secret_manager_factory
 
-    @property
-    def rabbitmq_url(self) -> str:
-        """Build the AMQP connection URL from the four connection fields.
-
-        This is the single place that constructs the URL.  Callers (composition
-        roots) pass ``settings.rabbitmq_url`` into library code; library code
-        never reads environment variables itself.
-        """
-        return f'amqp://{self.rabbitmq_username}:{self.rabbitmq_password}@{self.rabbitmq_host}:{self.rabbitmq_port}/'
-
-    cors_allow_origins: list[str] = ['*']
-
-    @field_validator('cors_allow_origins', mode='before')
-    @classmethod
-    def _parse_cors_allow_origins(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return []
-            return [p.strip() for p in s.split(',') if p.strip()]
-        return []
-
-    model_config = SettingsConfigDict(
-        env_file=BASE_DIR / '.env',
-        extra='ignore',
-    )
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls,
-        init_settings,
-        env_settings,
-        dotenv_settings,
-        file_secret_settings,
-    ):
-        return (
-            env_settings,
-            dotenv_settings,
-            init_settings,
-            file_secret_settings,
-        )
+__all__ = [
+    'AppSettings',
+    'LakeStaticSettings',
+    'PostgresSettings',
+    'RabbitMQSettings',
+    'Settings',
+    'get_settings',
+]
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Return the process-scoped bootstrap configuration.
+
+    Reads ``AURELION_SECRET_PROVIDER`` (default ``file``) from the environment,
+    resolves the provider via ``config_secret_manager_factory``, and delegates
+    to :func:`src.core.config.loader.load_settings`.
+
+    Providers must be registered before the first call by calling
+    ``register_default_providers()`` from ``src.platform.secrets.factory``
+    in each entrypoint.
+
+    Results are cached for the lifetime of the process.  Call
+    ``get_settings.cache_clear()`` in tests that need a fresh instance.
+    """
+    provider_name = os.environ.get('AURELION_SECRET_PROVIDER', 'file')
+    sm = config_secret_manager_factory.get(provider_name)
+    return load_settings(sm)

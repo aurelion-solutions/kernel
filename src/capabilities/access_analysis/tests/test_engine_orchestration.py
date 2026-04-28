@@ -28,10 +28,11 @@ from src.capabilities.access_analysis.tests.conftest import (
     seed_sod_rule,
     seed_subject,
 )
+from src.platform.logs.service import NoOpLogService
 
 
 @pytest.mark.asyncio
-async def test_empty_scope_returns_completed_zero_findings(session_factory) -> None:
+async def test_empty_scope_returns_completed_zero_findings(session_factory, engine_test_lake_session) -> None:
     """Empty DB (no grants, no accounts, no access facts) → zero findings."""
     async with session_factory() as session:
         run = await seed_pending_scan_run(session)
@@ -41,7 +42,15 @@ async def test_empty_scope_returns_completed_zero_findings(session_factory) -> N
         run = await session.get(ScanRun, run.id)
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result = await engine.run(session, run, at=at, correlation_id='test-corr')
+        result = await engine.run(
+            session,
+            run,
+            at=at,
+            correlation_id='test-corr',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result.error is None
@@ -52,7 +61,7 @@ async def test_empty_scope_returns_completed_zero_findings(session_factory) -> N
 
 
 @pytest.mark.asyncio
-async def test_sod_run_produces_one_finding(session_factory) -> None:
+async def test_sod_run_produces_one_finding(session_factory, engine_test_lake_session) -> None:
     """SoD violation: subject with two capability grants matching a two-condition rule → 1 Finding."""
     async with session_factory() as session:
         app_id = await seed_application(session)
@@ -94,7 +103,15 @@ async def test_sod_run_produces_one_finding(session_factory) -> None:
         run = await session.get(ScanRun, run.id)
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result = await engine.run(session, run, at=at, correlation_id='sod-corr')
+        result = await engine.run(
+            session,
+            run,
+            at=at,
+            correlation_id='sod-corr',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result.error is None
@@ -105,7 +122,7 @@ async def test_sod_run_produces_one_finding(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_severity_rollup_aggregates_across_kinds(session_factory) -> None:
+async def test_severity_rollup_aggregates_across_kinds(session_factory, engine_test_lake_session) -> None:
     """When findings of multiple severities exist, rollup sums correctly."""
     # This test creates a terminated account (high severity) to verify rollup logic
     from src.inventory.accounts.models import Account
@@ -151,7 +168,15 @@ async def test_severity_rollup_aggregates_across_kinds(session_factory) -> None:
         run = await session.get(ScanRun, run.id)
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result = await engine.run(session, run, at=at, correlation_id='rollup-corr')
+        result = await engine.run(
+            session,
+            run,
+            at=at,
+            correlation_id='rollup-corr',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result.error is None

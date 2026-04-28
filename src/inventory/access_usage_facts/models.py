@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import CheckConstraint, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -28,7 +28,6 @@ class AccessUsageFact(Base):
     )
     access_fact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey('access_facts.id', ondelete='CASCADE'),
         nullable=False,
     )
     last_seen: Mapped[sa.DateTime] = mapped_column(

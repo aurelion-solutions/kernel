@@ -34,16 +34,24 @@ async def _make_application(session) -> uuid.UUID:
 
 
 def _make_artifact(application_id: uuid.UUID, payload: dict, artifact_type: str = 'role'):
-    from src.inventory.access_artifacts.models import AccessArtifact
+    from src.inventory.access_artifacts.schemas import AccessArtifactView
 
-    return AccessArtifact(
+    now = datetime.now(UTC)
+    return AccessArtifactView(
         id=uuid.uuid4(),
         application_id=application_id,
         artifact_type=artifact_type,
         external_id=str(uuid.uuid4()),
         payload=payload,
-        observed_at=datetime.now(UTC),
+        raw_name=None,
+        effect=None,
+        valid_from=None,
+        valid_until=None,
         is_active=True,
+        tombstoned_at=None,
+        observed_at=now,
+        ingested_at=now,
+        ingest_batch_id=None,
     )
 
 
@@ -89,9 +97,7 @@ async def test_role_handler_happy_path(session_factory):
             'effect': 'allow',
         }
         artifact = _make_artifact(app_id, payload)
-        session.add(artifact)
-        await session.flush()
-
+        # artifact is a DTO (not ORM), no need to add to session
         results = await handler.handle(artifact, session)
 
     assert len(results) == 1
@@ -116,9 +122,6 @@ async def test_role_handler_invalid_payload_returns_empty(session_factory):
     async with session_factory() as session:
         app_id = await _make_application(session)
         artifact = _make_artifact(app_id, {'some_key': 'some_value'})
-        session.add(artifact)
-        await session.flush()
-
         results = await handler.handle(artifact, session)
 
     assert results == []
@@ -146,14 +149,9 @@ async def test_role_handler_resource_reuse_no_duplicate(session_factory):
 
         artifact1 = _make_artifact(app_id, payload)
         artifact2 = _make_artifact(app_id, payload)
-        session.add(artifact1)
-        session.add(artifact2)
-        await session.flush()
-
+        # DTOs, not ORM — no session.add needed
         results1 = await handler.handle(artifact1, session)
         results2 = await handler.handle(artifact2, session)
-
-        await session.commit()
 
     assert len(results1) == 1
     assert len(results2) == 1

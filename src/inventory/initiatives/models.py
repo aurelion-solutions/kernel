@@ -10,7 +10,7 @@ import enum
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import ForeignKey, Index
+from sqlalchemy import Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -43,7 +43,6 @@ class Initiative(Base):
     )
     access_fact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey('access_facts.id', ondelete='CASCADE'),
         nullable=False,
     )
     type: Mapped[InitiativeType] = mapped_column(

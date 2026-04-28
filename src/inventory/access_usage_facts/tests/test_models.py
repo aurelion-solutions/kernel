@@ -72,21 +72,29 @@ async def _get_read_action_id(session) -> int:
 
 
 async def _make_access_fact(session) -> uuid.UUID:
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    import sqlalchemy as sa
 
     subject_id = await _make_subject(session)
     resource_id = await _make_resource(session)
     action_id = await _get_read_action_id(session)
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': action_id,
+            'effect': 'allow',
+            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +166,14 @@ async def test_cascade_delete_from_access_fact(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        from src.inventory.access_facts.models import AccessFact
+        import sqlalchemy as sa
 
-        af = await session.get(AccessFact, access_fact_id)
-        assert af is not None
-        await session.delete(af)
+        # Delete via raw SQL — AccessFact ORM model removed Phase 15 Step 16.
+        result = await session.execute(
+            sa.text('DELETE FROM access_facts WHERE id = :id RETURNING id'),
+            {'id': access_fact_id},
+        )
+        assert result.scalar_one_or_none() is not None
         await session.commit()
 
     async with session_factory() as session:

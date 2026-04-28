@@ -4,6 +4,7 @@
 
 """Lake batch service for coordinating data lake storage and PostgreSQL metadata."""
 
+import base64
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -11,7 +12,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.lake_batches.models import LakeBatch
-from src.inventory.lake_batches.repository import create_lake_batch, delete_by_id, get_by_id
+from src.inventory.lake_batches.repository import (
+    create_iceberg_lake_batch,
+    create_lake_batch,
+    delete_by_id,
+    get_by_id,
+    list_recent_batches,
+)
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
 from src.platform.logs.schemas import LogLevel
@@ -20,6 +27,30 @@ from src.platform.storage.factory import DataLakeStorageFactory, UnsupportedProv
 from src.platform.storage.interface import DataLakeStorage
 
 _COMPONENT = 'inventory.lake_batches'
+
+
+# ---------------------------------------------------------------------------
+# Cursor codec (module-private; shared between service and route layer)
+# ---------------------------------------------------------------------------
+
+
+def _encode_cursor(created_at: datetime, batch_id: uuid.UUID) -> str:
+    """Encode a keyset cursor as base64url ``iso_ts|uuid_hex``."""
+    raw = f'{created_at.isoformat()}|{batch_id.hex}'
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Decode a base64url cursor into ``(datetime, UUID)``.
+
+    Raises ``ValueError`` on any parse failure.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        ts_str, uuid_hex = raw.split('|', 1)
+        return datetime.fromisoformat(ts_str), uuid.UUID(uuid_hex)
+    except Exception as exc:
+        raise ValueError(f'Invalid cursor: {cursor!r}') from exc
 
 
 class BatchNotFoundError(Exception):
@@ -130,6 +161,63 @@ class LakeBatchService:
         )
         return batch
 
+    async def record_lake_write(
+        self,
+        session: AsyncSession,
+        *,
+        dataset_type: str,
+        iceberg_namespace: str,
+        iceberg_table: str,
+        snapshot_id: int,
+        row_count: int,
+        application_id: uuid.UUID | None = None,
+        task_id: uuid.UUID | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> LakeBatch:
+        """Persist an Iceberg-origin lake batch row and emit one operational log.
+
+        Does NOT commit — caller owns the transaction boundary.
+        Does NOT write to Iceberg — that is the caller's responsibility.
+        Does NOT emit a domain event — operational log only.
+        """
+        batch = await create_iceberg_lake_batch(
+            session,
+            dataset_type=dataset_type,
+            iceberg_namespace=iceberg_namespace,
+            iceberg_table=iceberg_table,
+            snapshot_id=snapshot_id,
+            row_count=row_count,
+            application_id=application_id,
+            task_id=task_id,
+            metadata_json=metadata_json,
+        )
+
+        log_payload: dict[str, Any] = {
+            'batch_id': str(batch.id),
+            'dataset_type': dataset_type,
+            'iceberg_namespace': iceberg_namespace,
+            'iceberg_table': iceberg_table,
+            'snapshot_id': snapshot_id,
+            'row_count': row_count,
+        }
+        if application_id is not None:
+            log_payload['application_id'] = str(application_id)
+        if task_id is not None:
+            log_payload['task_id'] = str(task_id)
+
+        self._log.emit_safe(
+            level=LogLevel.INFO,
+            message='Lake batch recorded for Iceberg write',
+            component='data-lake',
+            payload=merge_emit_log_participant_fields(
+                log_payload,
+                actor_component='data-lake',
+                target_id='batch',
+            ),
+        )
+
+        return batch
+
     async def get_batch(
         self,
         session: AsyncSession,
@@ -148,6 +236,9 @@ class LakeBatchService:
         if batch is None:
             raise BatchNotFoundError(batch_id)
 
+        if batch.storage_provider is None or batch.storage_key is None:
+            raise BatchNotFoundError(batch_id)
+
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='Lake batch read requested',
@@ -164,6 +255,40 @@ class LakeBatchService:
         )
         return storage.read_batch(batch.storage_key)
 
+    async def list_batches(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> tuple[list[LakeBatch], str | None]:
+        """Return a page of batches (newest first) and an opaque next-page cursor.
+
+        Read-only — no events emitted, no logs (mirrors ``get_batch`` behaviour).
+        Raises ``ValueError`` when ``cursor`` is provided but malformed.
+        """
+        before_created_at: datetime | None = None
+        before_id: uuid.UUID | None = None
+        if cursor is not None:
+            before_created_at, before_id = _decode_cursor(cursor)
+
+        rows = await list_recent_batches(
+            session,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_id=before_id,
+        )
+
+        has_more = len(rows) > limit
+        page = rows[:limit]
+
+        next_cursor: str | None = None
+        if has_more and page:
+            last = page[-1]
+            next_cursor = _encode_cursor(last.created_at, last.id)
+
+        return page, next_cursor
+
     async def delete_batch(
         self,
         session: AsyncSession,
@@ -176,7 +301,7 @@ class LakeBatchService:
         if batch is None:
             raise BatchNotFoundError(batch_id)
 
-        if delete_payload:
+        if delete_payload and batch.storage_provider is not None and batch.storage_key is not None:
             storage = self._get_storage(
                 batch.storage_provider,
                 batch_id=str(batch_id),

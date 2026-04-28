@@ -109,24 +109,34 @@ async def _make_app_and_resource(session) -> tuple[UUID, UUID]:  # type: ignore[
 
 
 async def _make_access_fact(session, subject_id: UUID, resource_id: UUID) -> UUID:  # type: ignore[no-untyped-def]
+    import uuid as _uuid  # noqa: PLC0415
+
+    import sqlalchemy as sa
     from sqlalchemy import select
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.actions.models import Action as RefAction
 
     read_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
     read_action_id = read_id_result.scalar_one()
 
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=_NOW,
-        valid_from=_NOW,
+    fact_id = _uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': _NOW,
+            'valid_from': _NOW,
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 async def _make_initiative(
@@ -262,7 +272,6 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
     """Seed 7 facts (each with unique resource); with batch_size=3 → 3 batches (3+3+1)."""
     async with session_factory() as session:
         subject_id = await _make_employee_subject(session)
-        from src.inventory.access_facts.models import AccessFact, AccessFactEffect
         from src.inventory.resources.models import Resource
         from src.platform.applications.models import Application
 
@@ -277,6 +286,7 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
         await session.flush()
         app_id = app.id
 
+        import sqlalchemy as _sa
         from sqlalchemy import select as sa_select
         from src.inventory.actions.models import Action as RefAction
 
@@ -294,15 +304,23 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
             )
             session.add(resource)
             await session.flush()
-            fact = AccessFact(
-                subject_id=subject_id,
-                resource_id=resource.id,
-                action_id=read_action_id,
-                effect=AccessFactEffect.allow,
-                observed_at=_NOW,
-                valid_from=_NOW,
+            fact_id = uuid.uuid4()
+            await session.execute(
+                _sa.text(
+                    'INSERT INTO access_facts '
+                    '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+                    'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+                ),
+                {
+                    'id': fact_id,
+                    'subject_id': subject_id,
+                    'resource_id': resource.id,
+                    'action_id': read_action_id,
+                    'effect': 'allow',
+                    'observed_at': _NOW,
+                    'valid_from': _NOW,
+                },
             )
-            session.add(fact)
         await session.commit()
 
     async with session_factory() as session:

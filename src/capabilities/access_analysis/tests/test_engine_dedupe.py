@@ -29,6 +29,7 @@ from src.capabilities.access_analysis.tests.conftest import (
     seed_sod_rule,
     seed_subject,
 )
+from src.platform.logs.service import NoOpLogService
 
 
 async def _setup_sod_violation_fixture(session_factory):
@@ -70,7 +71,7 @@ async def _setup_sod_violation_fixture(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_second_run_reuses_findings(session_factory) -> None:
+async def test_second_run_reuses_findings(session_factory, engine_test_lake_session) -> None:
     """Running the same scan twice: second run reuses all findings, no new rows in DB."""
     await _setup_sod_violation_fixture(session_factory)
 
@@ -83,7 +84,15 @@ async def test_second_run_reuses_findings(session_factory) -> None:
 
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result1 = await engine.run(session, run1, at=at, correlation_id='dedup-run1')
+        result1 = await engine.run(
+            session,
+            run1,
+            at=at,
+            correlation_id='dedup-run1',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result1.error is None
@@ -99,7 +108,15 @@ async def test_second_run_reuses_findings(session_factory) -> None:
 
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result2 = await engine.run(session, run2, at=at, correlation_id='dedup-run2')
+        result2 = await engine.run(
+            session,
+            run2,
+            at=at,
+            correlation_id='dedup-run2',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result2.error is None
@@ -116,7 +133,7 @@ async def test_second_run_reuses_findings(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dedup_counts_match_across_runs(session_factory) -> None:
+async def test_dedup_counts_match_across_runs(session_factory, engine_test_lake_session) -> None:
     """findings_total is consistent across deduplicated runs."""
     await _setup_sod_violation_fixture(session_factory)
 
@@ -126,7 +143,15 @@ async def test_dedup_counts_match_across_runs(session_factory) -> None:
         await session.flush()
         await session.refresh(run1)
         engine = ScanEngine()
-        result1 = await engine.run(session, run1, at=datetime.now(UTC), correlation_id='c1')
+        result1 = await engine.run(
+            session,
+            run1,
+            at=datetime.now(UTC),
+            correlation_id='c1',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     async with session_factory() as session:
@@ -135,7 +160,15 @@ async def test_dedup_counts_match_across_runs(session_factory) -> None:
         await session.flush()
         await session.refresh(run2)
         engine = ScanEngine()
-        result2 = await engine.run(session, run2, at=datetime.now(UTC), correlation_id='c2')
+        result2 = await engine.run(
+            session,
+            run2,
+            at=datetime.now(UTC),
+            correlation_id='c2',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     # Second run: total = reused (no new creations for sod findings)

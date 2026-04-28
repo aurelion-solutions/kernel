@@ -5,8 +5,10 @@
 """Ingest API schemas for connector results."""
 
 from typing import Any, Literal
+import uuid
 
 from pydantic import BaseModel, Field, model_validator
+from src.inventory.access_artifacts.schemas import AccessArtifactBulkItem
 
 
 class LakeRefLocation(BaseModel):
@@ -17,7 +19,15 @@ class LakeRefLocation(BaseModel):
     batch_id: str | None = Field(default=None, description='Optional lake batch ID')
 
 
-ResultType = Literal['inline', 'lake_ref']
+ResultType = Literal['inline', 'lake_ref', 'artifacts_bulk']
+
+
+class ArtifactsBulkPayload(BaseModel):
+    """Payload for result_type='artifacts_bulk' connector results."""
+
+    ingest_batch_id: uuid.UUID
+    application_id: uuid.UUID
+    items: list[AccessArtifactBulkItem] = Field(min_length=1, max_length=10_000)
 
 
 class ConnectorResultIngestRequest(BaseModel):
@@ -27,10 +37,10 @@ class ConnectorResultIngestRequest(BaseModel):
     application_id: str = Field(..., description='Application identifier')
     operation: str = Field(..., min_length=1, max_length=64, description='Operation name')
     status: str = Field(..., min_length=1, max_length=64, description='Result status')
-    result_type: ResultType = Field(..., description='inline (payload) or lake_ref (location)')
+    result_type: ResultType = Field(..., description='inline (payload), lake_ref (location), or artifacts_bulk')
     result_id: str = Field(..., description='Result identifier')
     code: str | None = Field(default=None, description='Optional status code')
-    payload: dict[str, Any] | None = Field(default=None, description='Result data (required for inline)')
+    payload: dict[str, Any] | None = Field(default=None, description='Result data (required for inline/artifacts_bulk)')
     location: LakeRefLocation | None = Field(default=None, description='Lake reference (required for lake_ref)')
 
     @model_validator(mode='after')
@@ -41,6 +51,9 @@ class ConnectorResultIngestRequest(BaseModel):
         elif self.result_type == 'lake_ref':
             if self.location is None:
                 raise ValueError('lake_ref result_type requires location')
+        elif self.result_type == 'artifacts_bulk':
+            if self.payload is None:
+                raise ValueError('artifacts_bulk result_type requires payload')
         return self
 
 

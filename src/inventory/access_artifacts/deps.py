@@ -2,21 +2,31 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessArtifact route dependencies."""
+"""AccessArtifact route dependencies.
 
-import os
+Phase 15 Step 16: event_service removed. lake_catalog is mandatory (iceberg-only).
+"""
 
-from src.inventory.access_artifacts.service import AccessArtifactService
-from src.platform.events.factory import event_sink_factory
-from src.platform.events.service import EventService
+from fastapi import Request
+from src.inventory.access_artifacts.service import (
+    AccessArtifactLakeNotConfiguredError,
+    AccessArtifactService,
+)
 
 
-def _get_events_provider() -> str:
-    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
+def get_access_artifact_service(request: Request) -> AccessArtifactService:
+    """Return AccessArtifactService with injected lake deps.
 
-
-def get_access_artifact_service() -> AccessArtifactService:
-    """Return AccessArtifactService with injected EventService."""
-    event_sink = event_sink_factory.get(_get_events_provider())
-    event_service = EventService(sink=event_sink)
-    return AccessArtifactService(event_service=event_service)
+    Raises RuntimeError if lake_catalog is not initialised — fails fast at
+    request time rather than silently corrupting state.
+    """
+    lake_catalog = getattr(request.app.state, 'lake_catalog', None)
+    if lake_catalog is None:
+        raise AccessArtifactLakeNotConfiguredError()
+    lake_settings = getattr(request.app.state, 'lake_settings', None)
+    log_service = getattr(request.app.state, 'log_service', None)
+    return AccessArtifactService(
+        log_service=log_service,
+        lake_catalog=lake_catalog,
+        lake_settings=lake_settings,
+    )

@@ -8,13 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
-if TYPE_CHECKING:
-    from src.inventory.access_artifacts.models import AccessArtifact
+from src.inventory.access_artifacts.schemas import AccessArtifactView
 
 
 @dataclass(frozen=True)
@@ -49,11 +47,14 @@ class Handler(Protocol):
     Handlers are stateless.  They may read from the DB (e.g. resolve
     ``Resource`` via ``ensure_resource_by_identity``).  They MUST NOT commit,
     flush ``AccessFact``, or emit events — those concerns belong to the engine.
+
+    Phase 15 Step 16: artifact parameter retyped from AccessArtifact ORM to
+    AccessArtifactView (frozen Pydantic v2 DTO).
     """
 
     async def handle(
         self,
-        artifact: AccessArtifact,
+        artifact: AccessArtifactView,
         session: AsyncSession,
     ) -> list[NormalizationResult]: ...
 

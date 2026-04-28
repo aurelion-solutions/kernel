@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `src/platform/runtime_settings/` slice with `GET /api/v0/runtime-settings`, `GET /api/v0/runtime-settings/{key}`, and `PUT /api/v0/runtime-settings/{key}` endpoints
+- `RuntimeSettingsConfig` typed snapshot with operational knobs for lake, LLM, and log buffer
+- `src/core/config/` bootstrap layer — `get_settings()` with `lru_cache`, `PostgresSettings`, `RabbitMQSettings`, `AppSettings`, `LakeStaticSettings`
+- `src/core/secrets/` — `ConfigSecretManager` Protocol for bootstrap config layer
+- `.secrets.json.example` template for `AURELION_SECRETS_FILE`
+- Alembic migration `2026_04_28_0553_add_runtime_settings` — additive `runtime_settings` table
+
+### Changed
+
+- `src/core/db/session.py` — lazy `get_engine()` / `get_session_factory()` replacing module-level singletons
+- `src/platform/lake/config.py` — `LakeSettings(BaseModel)` with `build_lake_settings()` factory
+- `.env` reduced to two bootstrap vars (`AURELION_SECRET_PROVIDER`, `AURELION_SECRETS_FILE`)
+- All runtime entrypoints migrated to `get_settings()`; `load_dotenv()` moved above all `src.*` imports
+- LLM knobs moved from `LLMSettings` singleton to `RuntimeSettingsConfig`
+
+### Removed
+
+- `Settings(BaseSettings)` singleton and `settings = Settings()` module-level instance
+- `LLMSettings(BaseSettings)` singleton from `src/platform/llm/`
+- Module-level `engine` and `SessionLocal` from `src/core/db/session.py`
+
+### Security
+
+- `PUT /api/v0/runtime-settings/{key}` has no AuthN/AuthZ in this release — gate at reverse proxy / service mesh in non-dev deployments
+
+## [0.1.7] - 2026-04-27
+
+### Added
+
+- Phase 15 Data Lake Migration complete (20/20 milestones)
+- `src/platform/lake/` slice — Iceberg catalog, DuckDB session factory, table schemas, provisioning, maintenance
+- `capabilities/sync_apply/` slice with `SyncApplyService`, `lake_writer`, crash-recovery preflight, and `SyncApplyRun`/`SyncApplyResult` ORM models
+- `capabilities/lake_migration/` slice — resumable PG → Iceberg migration with synthetic delta provenance
+- `capabilities/reconciliation/hashing.py` — `compute_natural_key_hash` shared helper
+- `GET /api/v0/lake/status` — catalog URI, warehouse URI, storage provider, per-table snapshot metadata
+- `POST /api/v0/lake/compaction` — `compact_table` + `expire_old_snapshots` + `clean_orphan_files` with active-write safety gate
+- `GET /api/v0/datalake/batches` — keyset-paginated lake batch listing, `snapshot_id` serialized as string
+- `POST /api/v0/lake-migrations` / `GET /api/v0/lake-migrations/{id}` / `GET /api/v0/lake-migrations` — migration run lifecycle
+- `POST /api/v0/reconciliation/runs/{run_id}/apply` — sync/apply with modes `auto_apply`, `manual_apply`, `selected_items`, `dry_run`
+- `GET /api/v0/reconciliation/runs/{id}` and `GET /api/v0/reconciliation/runs/{id}/delta-items` — delta inspection endpoints
+- `ReconciliationDeltaItem` and `ReconciliationRun` ORM models; `SyncApplyRun` and `SyncApplyResult` ORM models
+- `inventory.access_fact.{created,updated,revoked,reactivated}` events emitted exclusively from `sync_apply/service.py`
+- Four reconciliation domain events: `reconciliation.run.started`, `reconciliation.delta.created`, `reconciliation.run.completed`, `reconciliation.run.failed`
+- `AccessArtifactView` and `AccessFactView` frozen Pydantic v2 DTOs replacing deleted ORM models
+- E2e integration test suite (`test_phase15_e2e_lake_only_pipeline`) and env-gated parity test (`test_phase15_parity_matches_golden_fixture`)
+- `src/integration_tests/fixtures/phase15_dataset.json` — 50-artifact curated parity fixture
+
+### Changed
+
+- `access_artifacts` and `access_facts` PG tables dropped (Alembic `i3j4k5l6m7n8`); Iceberg is sole source of truth
+- FK `artifact_bindings.artifact_id → access_artifacts.id` dropped (Alembic `h2i3j4k5l6m7`); soft Iceberg references enforced at service layer
+- FK constraints from `effective_grants`, `access_usage_facts`, `initiatives` to `access_facts.id` dropped (Alembic `j4k5l6m7n8o9`)
+- `ReconciliationRun.application_id` nullable for cross-app migration runs
+- `AccessArtifactService` and `AccessFactService` rewritten to lake-only (DuckDB/Iceberg)
+- `unused` access-analysis detector migrated to DuckDB `iceberg_scan` on `normalized.access_facts`
+- `LakeSettings.artifacts_write_backend` default flipped to `'iceberg'`
+- Reconciliation pipeline reads from Iceberg; `_phase_apply_delta` replaced by `_phase_persist_delta`
+- PG advisory lock per `application_id` on reconciliation runs (HTTP 409 on contention)
+- Lake operational endpoints and `al lake` CLI commands documented in `docs/reference/data-lake.md`
+
+### Removed
+
+- `inventory/access_artifacts/models.py`, `repository.py` — lake-only DTOs replace ORM
+- `inventory/access_facts/models.py`, `repository.py` — lake-only DTOs replace ORM
+- `AccessArtifactNotFoundError`; ORM-backed service/repository/model tests
+
+### BREAKING
+
+- Reconciliation `Handler.handle` now takes `AccessArtifactView` DTO instead of `AccessArtifact` ORM class
+- `AccessFactService.create_fact / revoke_fact / refresh_fact_fields` now require mandatory `delta_item_id: UUID` argument
+- `AccessArtifactService.upsert_batch` and `tombstone_batch` no longer accept `session: AsyncSession`
+- `snapshot_id` on `LakeBatchRead` responses serialized as JSON string (was integer)
+
 ## [0.1.6] - 2026-04-26
 
 ### Added

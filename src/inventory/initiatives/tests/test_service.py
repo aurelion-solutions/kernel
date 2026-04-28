@@ -47,10 +47,11 @@ def service(event_service: EventService) -> InitiativeService:
 
 
 async def _make_access_fact(session) -> uuid.UUID:
-    """Create an access fact, return fact.id."""
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+    """Create an access fact via raw SQL — ORM model deleted Phase 15 Step 16."""
+    import sqlalchemy as sa
+    from sqlalchemy import select
+    from src.inventory.actions.models import Action as RefAction
     from src.inventory.employees.repository import create_employee
-    from src.inventory.enums import Action
     from src.inventory.persons.repository import create_person
     from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
@@ -84,15 +85,30 @@ async def _make_access_fact(session) -> uuid.UUID:
     )
     session.add(resource)
     await session.flush()
-    fact = AccessFact(
-        subject_id=subj.id,
-        resource_id=resource.id,
-        action=Action.read,
-        effect=AccessFactEffect.allow,
+
+    action_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    action_id = action_row.scalar_one()
+
+    from datetime import UTC, datetime
+
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subj.id,
+            'resource_id': resource.id,
+            'action_id': action_id,
+            'effect': 'allow',
+            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,6 @@ from src.platform.llm.schemas import (
     LLMModelRead,
     LLMModelUpdate,
 )
-from src.platform.llm.settings import LLMSettings, llm_settings
 
 __all__ = [
     'AbstractLLMProvider',
@@ -76,12 +75,10 @@ __all__ = [
     'LLMProviderNotSupportedError',
     'LLMProviderUnavailableError',
     'LLMRole',
-    'LLMSettings',
     'LlamaCppGenerationError',
     'LlamaCppLoadError',
     'LlamaCppProvider',
     'LlamaCppProviderError',
-    'llm_settings',
     'run_inference',
     'stream_inference',
 ]

@@ -46,12 +46,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
 from src.capabilities.effective_access.projector import EffectiveGrantDraft
 from src.capabilities.effective_access.schemas import AccessFactRow, InitiativeRow
-from src.inventory.access_facts.models import AccessFact
-from src.inventory.actions.models import Action as RefAction
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
-from src.inventory.resources.models import Resource
-from src.inventory.subjects.models import Subject, SubjectKind
+from src.inventory.subjects.models import SubjectKind
 
 _BATCH_SIZE = 500  # module-private; configurable via the ``batch_size`` parameter
 
@@ -89,7 +87,7 @@ def _fact_row_from_row(row: sa.engine.Row) -> AccessFactRow:  # type: ignore[typ
         application_id=row.application_id,
         resource_id=row.resource_id,
         action=Action(row.action_slug),
-        effect=row.effect,
+        effect=AccessFactEffect(row.effect) if isinstance(row.effect, str) else row.effect,
         valid_from=row.valid_from,
         valid_until=row.valid_until,
     )
@@ -103,32 +101,6 @@ def _initiative_row_from_orm(orm: Initiative) -> InitiativeRow:
         origin=orm.origin,
         valid_from=orm.valid_from,  # type: ignore[arg-type]
         valid_until=orm.valid_until,  # type: ignore[arg-type]
-    )
-
-
-def _build_fact_select() -> sa.Select:  # type: ignore[type-arg]
-    """Base SELECT joining access_facts → subjects → resources → ref_actions for denormalization.
-
-    ref_actions JOIN resolves action_id → slug so that the projector boundary
-    continues to use the Python Action enum (EAS writes effective_grants.action
-    as Enum(Action, name='action', create_type=False) — unchanged in Step 13).
-    """
-    return (
-        sa.select(
-            AccessFact.id,
-            AccessFact.subject_id,
-            Subject.kind.label('subject_kind'),
-            AccessFact.account_id,
-            Resource.application_id.label('application_id'),
-            AccessFact.resource_id,
-            RefAction.slug.label('action_slug'),
-            AccessFact.effect,
-            AccessFact.valid_from,
-            AccessFact.valid_until,
-        )
-        .join(Subject, Subject.id == AccessFact.subject_id)
-        .join(Resource, Resource.id == AccessFact.resource_id)
-        .join(RefAction, RefAction.id == AccessFact.action_id)
     )
 
 
@@ -160,8 +132,27 @@ async def fetch_access_fact_with_initiatives(
 
     Returns ``None`` if no fact with the given id exists.
     """
-    stmt = _build_fact_select().where(AccessFact.id == access_fact_id)
-    result = await session.execute(stmt)
+    stmt = sa.text(
+        """
+        SELECT
+            f.id,
+            f.subject_id,
+            s.kind AS subject_kind,
+            f.account_id,
+            r.application_id,
+            f.resource_id,
+            ra.slug AS action_slug,
+            f.effect,
+            f.valid_from,
+            f.valid_until
+        FROM access_facts f
+        JOIN subjects s ON s.id = f.subject_id
+        JOIN resources r ON r.id = f.resource_id
+        JOIN ref_actions ra ON ra.id = f.action_id
+        WHERE f.id = :fact_id
+        """
+    )
+    result = await session.execute(stmt, {'fact_id': access_fact_id})
     row = result.one_or_none()
     if row is None:
         return None
@@ -186,17 +177,61 @@ async def fetch_application_facts_with_initiatives(
     Keyset pagination (``WHERE id > :last_id ORDER BY id LIMIT N``) is used
     instead of OFFSET for stability under concurrent writes.
     """
-    base = _build_fact_select().where(Resource.application_id == application_id)
-
     last_id: UUID | None = None
 
     while True:
         if last_id is None:
-            batch_stmt = base.order_by(AccessFact.id).limit(batch_size)
+            stmt = sa.text(
+                """
+                SELECT
+                    f.id,
+                    f.subject_id,
+                    s.kind AS subject_kind,
+                    f.account_id,
+                    r.application_id,
+                    f.resource_id,
+                    ra.slug AS action_slug,
+                    f.effect,
+                    f.valid_from,
+                    f.valid_until
+                FROM access_facts f
+                JOIN subjects s ON s.id = f.subject_id
+                JOIN resources r ON r.id = f.resource_id
+                JOIN ref_actions ra ON ra.id = f.action_id
+                WHERE r.application_id = :application_id
+                ORDER BY f.id
+                LIMIT :batch_size
+                """
+            )
+            result = await session.execute(stmt, {'application_id': application_id, 'batch_size': batch_size})
         else:
-            batch_stmt = base.where(AccessFact.id > last_id).order_by(AccessFact.id).limit(batch_size)
+            stmt = sa.text(
+                """
+                SELECT
+                    f.id,
+                    f.subject_id,
+                    s.kind AS subject_kind,
+                    f.account_id,
+                    r.application_id,
+                    f.resource_id,
+                    ra.slug AS action_slug,
+                    f.effect,
+                    f.valid_from,
+                    f.valid_until
+                FROM access_facts f
+                JOIN subjects s ON s.id = f.subject_id
+                JOIN resources r ON r.id = f.resource_id
+                JOIN ref_actions ra ON ra.id = f.action_id
+                WHERE r.application_id = :application_id
+                  AND f.id > :last_id
+                ORDER BY f.id
+                LIMIT :batch_size
+                """
+            )
+            result = await session.execute(
+                stmt, {'application_id': application_id, 'last_id': last_id, 'batch_size': batch_size}
+            )
 
-        result = await session.execute(batch_stmt)
         rows = result.all()
         if not rows:
             break

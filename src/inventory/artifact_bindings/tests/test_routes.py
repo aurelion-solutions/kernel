@@ -44,9 +44,8 @@ def app_with_artifact_bindings(engine):
 
 
 async def _make_prerequisites(engine) -> dict:
-    """Create required entities and return a dict with ids."""
-    from src.inventory.access_artifacts.models import AccessArtifact
-    from src.inventory.access_facts.models import AccessFact
+    """Create required entities and return a dict with ids — raw SQL for ORM-deleted tables."""
+    import sqlalchemy as sa
     from src.inventory.accounts.models import Account, AccountStatus
     from src.inventory.employees.repository import create_employee
     from src.inventory.persons.repository import create_person
@@ -107,14 +106,22 @@ async def _make_prerequisites(engine) -> dict:
 
         from datetime import UTC, datetime
 
-        artifact = AccessArtifact(
-            application_id=app.id,
-            artifact_type='acl_entry',
-            external_id=str(uuid.uuid4()),
-            payload={'raw': 'data'},
-            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        artifact_id = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                'INSERT INTO access_artifacts '
+                '(id, application_id, artifact_type, external_id, payload, observed_at) '
+                'VALUES (:id, :application_id, :artifact_type, :external_id, :payload::jsonb, :observed_at)'
+            ),
+            {
+                'id': artifact_id,
+                'application_id': app.id,
+                'artifact_type': 'acl_entry',
+                'external_id': str(uuid.uuid4()),
+                'payload': '{"raw": "data"}',
+                'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+            },
         )
-        session.add(artifact)
         await session.flush()
 
         from sqlalchemy import select as sa_select
@@ -123,21 +130,27 @@ async def _make_prerequisites(engine) -> dict:
         action_id_row = await session.execute(sa_select(RefAction.id).where(RefAction.slug == 'read'))
         action_id = action_id_row.scalar_one()
 
-        from src.inventory.access_facts.models import AccessFactEffect
-
-        fact = AccessFact(
-            subject_id=subj.id,
-            resource_id=resource.id,
-            action_id=action_id,
-            effect=AccessFactEffect.allow,
-            observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        fact_id = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                'INSERT INTO access_facts '
+                '(id, subject_id, resource_id, action_id, effect, observed_at) '
+                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
+            ),
+            {
+                'id': fact_id,
+                'subject_id': subj.id,
+                'resource_id': resource.id,
+                'action_id': action_id,
+                'effect': 'allow',
+                'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+            },
         )
-        session.add(fact)
         await session.commit()
 
         return {
-            'artifact_id': artifact.id,
-            'access_fact_id': fact.id,
+            'artifact_id': artifact_id,
+            'access_fact_id': fact_id,
             'resource_id': resource.id,
             'account_id': account.id,
         }

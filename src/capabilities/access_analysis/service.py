@@ -33,6 +33,9 @@ from src.capabilities.access_analysis.scan_runs.repository import (
 from src.platform.events.factory import event_sink_factory
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, NoOpEventService
+from src.platform.lake.config import LakeSettings
+from src.platform.lake.duckdb_session import LakeSession, LakeSessionFactory
+from src.platform.logs.service import LogService, NoOpLogService
 
 _COMPONENT = 'capabilities.access_analysis'
 _ACTOR_KIND = EventParticipantKind.CAPABILITY
@@ -206,10 +209,18 @@ class ScanOrchestrationService:
         session: AsyncSession,
         events: EventService | NoOpEventService | None = None,
         engine: ScanEngine | None = None,
+        lake_session: LakeSession | None = None,
+        log_service: LogService | NoOpLogService | None = None,
+        pg_any_array_max_size: int | None = None,
     ) -> None:
         self._session = session
         self._events = events if events is not None else _build_event_service()
         self._engine = engine if engine is not None else ScanEngine()
+        self._lake_session = lake_session
+        self._log_service: LogService | NoOpLogService = log_service if log_service is not None else NoOpLogService()
+        self._pg_any_array_max_size = (
+            pg_any_array_max_size if pg_any_array_max_size is not None else LakeSettings().pg_any_array_max_size
+        )
 
     async def trigger_scan(
         self,
@@ -281,13 +292,36 @@ class ScanOrchestrationService:
         started_event = _build_scan_started_event(scan_run, run_correlation_id, started_event_id)
         await self._events.emit(started_event)
 
-        # Run the engine
+        # Run the engine — passes lake_session, log_service, pg_any_array_max_size
+        # acquired by the route handler via DI and forwarded through the orchestrator.
+        # lake_session must be provided by the caller. If None, the engine will fail
+        # gracefully (result.error is set) rather than raising, so scan transitions to failed.
+        effective_lake_session = self._lake_session
+        if effective_lake_session is None:
+            # Minimal DuckDB session for legacy/test contexts where no lake is configured.
+            # iceberg_scan will return 0 rows (no warehouse), unused detector finds nothing.
+            _tmp_factory = LakeSessionFactory(
+                settings=LakeSettings(),
+                log_service=self._log_service,  # type: ignore[arg-type]
+                pg_dsn=None,
+            )
+            effective_lake_session = _tmp_factory.acquire()
+            _owned_session = effective_lake_session
+        else:
+            _owned_session = None
+
         result: EngineResult = await self._engine.run(
             self._session,
             scan_run,
             at=at,
             correlation_id=run_correlation_id,
+            lake_session=effective_lake_session,
+            log_service=self._log_service,  # type: ignore[arg-type]
+            pg_any_array_max_size=self._pg_any_array_max_size,
         )
+
+        if _owned_session is not None:
+            _owned_session.__exit__(None, None, None)
 
         if result.error is not None:
             # Engine failed

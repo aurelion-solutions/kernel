@@ -19,9 +19,11 @@ from src.capabilities.access_analysis.sod_rule_conditions.routes import router a
 from src.capabilities.access_analysis.sod_rules.routes import router as sod_rules_router
 from src.capabilities.effective_access.routes import router as effective_grants_router
 from src.capabilities.ingest.routes import router as connector_results_router
+from src.capabilities.lake_migration.routes import router as lake_migration_router
 from src.capabilities.policy.routes import router as policy_router
 from src.capabilities.provisioning.routes import router as provisioning_router
 from src.capabilities.reconciliation.routes import router as reconciliation_router
+from src.capabilities.sync_apply.routes import router as sync_apply_router
 from src.inventory.access_artifacts.routes import router as access_artifacts_router
 from src.inventory.access_facts.routes import router as access_facts_router
 from src.inventory.access_usage_facts.routes import router as access_usage_facts_router
@@ -43,18 +45,22 @@ from src.inventory.threat_facts.routes import router as threat_facts_router
 from src.platform.applications.routes import router as applications_router
 from src.platform.connectors.routes import router as connector_instances_router
 from src.platform.events.routes import router as platform_events_router
+from src.platform.lake.routes import router as lake_router
 from src.platform.llm.routes import inference_router as llm_inference_router
 from src.platform.llm.routes import models_router as llm_models_router
 from src.platform.llm.routes import profiles_router as llm_execution_profiles_router
 from src.platform.logs.buffer_recent_routes import router as platform_logs_router
 from src.platform.logs.buffer_routes import router as log_buffer_router
 from src.platform.logs.routes import router as logs_router
+from src.platform.runtime_settings.routes import router as runtime_settings_router
 from src.platform.secrets.provider_config.routes import router as secrets_providers_router
 
 router = APIRouter()
 router.include_router(applications_router)
 router.include_router(provisioning_router)
+router.include_router(lake_migration_router)
 router.include_router(reconciliation_router)
+router.include_router(sync_apply_router)
 router.include_router(effective_grants_router)
 router.include_router(capabilities_router)
 router.include_router(capability_scope_keys_router)
@@ -88,11 +94,13 @@ router.include_router(employee_records_router)
 router.include_router(nhi_router)
 router.include_router(connector_results_router)
 router.include_router(lake_batches_router)
+router.include_router(lake_router)
 router.include_router(connector_instances_router)
 router.include_router(logs_router)
 router.include_router(log_buffer_router)
 router.include_router(platform_events_router)
 router.include_router(platform_logs_router)
+router.include_router(runtime_settings_router)
 router.include_router(secrets_providers_router)
 router.include_router(secrets_router)
 router.include_router(policy_router)

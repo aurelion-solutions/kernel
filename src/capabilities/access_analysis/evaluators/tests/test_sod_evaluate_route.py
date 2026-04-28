@@ -30,7 +30,6 @@ async def test_evaluate_valid_body_returns_violations(client, session_factory) -
     )
     from src.capabilities.access_analysis.sod_rules.models import SodRule, SodRuleScope, SodSeverity
     from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.actions.models import Action as RefAction
     from src.inventory.enums import Action
     from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -90,31 +89,47 @@ async def test_evaluate_valid_body_returns_violations(client, session_factory) -
 
         read_id = (await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read'))).scalar_one()
 
-        fact1 = AccessFact(
-            subject_id=subject.id,
-            resource_id=resource.id,
-            action_id=read_id,
-            effect=AccessFactEffect.allow,
-            observed_at=_NOW,
-            valid_from=_NOW,
+        fact1_id = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                'INSERT INTO access_facts '
+                '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+            ),
+            {
+                'id': fact1_id,
+                'subject_id': subject.id,
+                'resource_id': resource.id,
+                'action_id': read_id,
+                'effect': 'allow',
+                'observed_at': _NOW,
+                'valid_from': _NOW,
+            },
         )
-        fact2 = AccessFact(
-            subject_id=subject.id,
-            resource_id=resource.id,
-            action_id=read_id,
-            effect=AccessFactEffect.allow,
-            observed_at=_NOW,
-            valid_from=_NOW,
+        fact2_id = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                'INSERT INTO access_facts '
+                '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+            ),
+            {
+                'id': fact2_id,
+                'subject_id': subject.id,
+                'resource_id': resource.id,
+                'action_id': read_id,
+                'effect': 'allow',
+                'observed_at': _NOW,
+                'valid_from': _NOW,
+            },
         )
-        session.add(fact1)
-        session.add(fact2)
         await session.flush()
 
         init1 = Initiative(
-            access_fact_id=fact1.id, type=InitiativeType.birthright, origin='o1', valid_from=_NOW, valid_until=None
+            access_fact_id=fact1_id, type=InitiativeType.birthright, origin='o1', valid_from=_NOW, valid_until=None
         )
         init2 = Initiative(
-            access_fact_id=fact2.id, type=InitiativeType.birthright, origin='o2', valid_from=_NOW, valid_until=None
+            access_fact_id=fact2_id, type=InitiativeType.birthright, origin='o2', valid_from=_NOW, valid_until=None
         )
         session.add(init1)
         session.add(init2)
@@ -132,7 +147,7 @@ async def test_evaluate_valid_body_returns_violations(client, session_factory) -
             initiative_origin='o1',
             valid_from=_NOW,
             valid_until=None,
-            source_access_fact_id=fact1.id,
+            source_access_fact_id=fact1_id,
             source_initiative_id=init1.id,
             observed_at=_NOW,
             tombstoned_at=None,
@@ -149,7 +164,7 @@ async def test_evaluate_valid_body_returns_violations(client, session_factory) -
             initiative_origin='o2',
             valid_from=_NOW,
             valid_until=None,
-            source_access_fact_id=fact2.id,
+            source_access_fact_id=fact2_id,
             source_initiative_id=init2.id,
             observed_at=_NOW,
             tombstoned_at=None,

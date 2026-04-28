@@ -24,8 +24,8 @@ from src.platform.llm.inference_service import _validate_messages, run_inference
 from src.platform.llm.models import LLMExecutionProfile, LLMModel, LLMProvider
 from src.platform.llm.providers.base import LLMChunk, LLMMessage
 from src.platform.llm.schemas import InferenceRequest, LLMMessageIn
-from src.platform.llm.settings import LLMSettings
 from src.platform.logs.service import NoOpLogService
+from src.platform.runtime_settings.schemas import RuntimeSettingsConfig
 
 # ---------------------------------------------------------------------------
 # FakeLLMProvider
@@ -77,13 +77,13 @@ class FakeLLMProvider:
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(**overrides: Any) -> LLMSettings:
-    """Create an LLMSettings with test-friendly defaults."""
-    return LLMSettings(
-        max_loaded_models=2,
-        max_messages=overrides.get('max_messages', 32),
-        max_chars_per_message=overrides.get('max_chars_per_message', 32_000),
-        max_total_chars=overrides.get('max_total_chars', 128_000),
+def _make_settings(**overrides: Any) -> RuntimeSettingsConfig:
+    """Create a RuntimeSettingsConfig with test-friendly defaults."""
+    return RuntimeSettingsConfig(
+        llm_max_loaded_models=2,
+        llm_max_messages=overrides.get('max_messages', 32),
+        llm_max_chars_per_message=overrides.get('max_chars_per_message', 32_000),
+        llm_max_total_chars=overrides.get('max_total_chars', 128_000),
     )
 
 

@@ -9,6 +9,13 @@ from src.capabilities.reconciliation.contracts import (
     HandlerAlreadyRegisteredError,
     NormalizationResult,
 )
+from src.capabilities.reconciliation.models import (
+    ReconciliationDeltaItem,
+    ReconciliationDeltaItemStatus,
+    ReconciliationDeltaOperation,
+    ReconciliationRun,
+    ReconciliationRunStatus,
+)
 from src.capabilities.reconciliation.registry import (
     get_handler,
     list_registered_types,
@@ -21,6 +28,11 @@ __all__ = [
     'Handler',
     'HandlerAlreadyRegisteredError',
     'NormalizationResult',
+    'ReconciliationDeltaItem',
+    'ReconciliationDeltaItemStatus',
+    'ReconciliationDeltaOperation',
+    'ReconciliationRun',
+    'ReconciliationRunStatus',
     'ReconciliationRunSummary',
     'ReconciliationService',
     'get_handler',

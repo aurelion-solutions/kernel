@@ -61,6 +61,8 @@ from src.capabilities.access_analysis.evaluators.sod import MitigationView, eval
 from src.capabilities.access_analysis.findings.models import FindingKind
 from src.capabilities.access_analysis.scan_runs.models import ScanRun
 from src.capabilities.access_analysis.sod_rules.models import SodSeverity
+from src.platform.lake.duckdb_session import LakeSession
+from src.platform.logs.service import LogService
 
 # ---------------------------------------------------------------------------
 # EngineResult contract
@@ -147,6 +149,9 @@ class ScanEngine:
         *,
         at: datetime,
         correlation_id: str,
+        lake_session: LakeSession,
+        log_service: LogService,
+        pg_any_array_max_size: int,
     ) -> EngineResult:
         """Execute one scan run end-to-end.
 
@@ -303,8 +308,12 @@ class ScanEngine:
             # ----------------------------------------------------------------
             unused_facts = await load_unused_inputs(
                 session,
+                lake_session,
+                log_service,
                 scope_subject_id=scope_subject_id,
                 scope_application_id=scope_application_id,
+                batch_size=1000,
+                pg_any_array_max_size=pg_any_array_max_size,
             )
             unused_findings = detect_unused(
                 access_facts=unused_facts,

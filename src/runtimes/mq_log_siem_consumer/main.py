@@ -7,12 +7,15 @@ Standalone service: consume MQ log events and emit them into the final sink.
 """
 
 import os
-import sys
 from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from src.platform.secrets.factory import register_default_providers  # noqa: E402
+
+register_default_providers()
 
 
 def _str_env(name: str, default: str) -> str:
@@ -26,23 +29,24 @@ def _parse_binding_keys(raw: str | None) -> list[str]:
 
 
 def main() -> None:
-    from src.core.config import settings
+    from src.core.config import get_settings  # noqa: PLC0415
+    from src.platform.logs.consumer import run_rabbitmq_consumer  # noqa: PLC0415
+    from src.platform.logs.factory import log_sink_factory  # noqa: PLC0415
+    from src.platform.logs.schemas import LogLevel  # noqa: PLC0415
+    from src.platform.logs.service import LogService  # noqa: PLC0415
 
-    host = settings.rabbitmq_host
-    port = settings.rabbitmq_port
-    username: str | None = settings.rabbitmq_username
-    password: str | None = settings.rabbitmq_password
+    settings = get_settings()
+    mq = settings.rabbitmq
+    host = mq.host
+    port = mq.port
+    username: str = mq.username
+    password: str = mq.password.get_secret_value()
 
-    exchange = settings.rabbitmq_logs_exchange
+    exchange = mq.logs_exchange
     queue_name = _str_env('AURELION_LOGS_QUEUE', 'aurelion.logs.siem')
     buffer_queue = _str_env('AURELION_LOGS_BUFFER_QUEUE', 'aurelion.logs.buffer')
     binding_keys = _parse_binding_keys(os.environ.get('AURELION_LOGS_BINDINGS'))
     sink_provider = _str_env('AURELION_LOG_SINK_PROVIDER', 'file')
-
-    from src.platform.logs.consumer import run_rabbitmq_consumer
-    from src.platform.logs.factory import log_sink_factory
-    from src.platform.logs.schemas import LogLevel
-    from src.platform.logs.service import LogService
 
     log_service = LogService(sink=log_sink_factory.get(sink_provider))
 
@@ -57,10 +61,19 @@ def main() -> None:
 
     companion = (buffer_queue,) if buffer_queue != queue_name else ()
 
-    print(
-        f'Starting MQ SIEM log consumer: {host}:{port} exchange={exchange} queue={queue_name}'
+    log_service.emit_safe(
+        level=LogLevel.INFO,
+        message=f'Starting MQ SIEM log consumer: {host}:{port} exchange={exchange} queue={queue_name}'
         + (f' companion_queues={companion}' if companion else ''),
-        file=sys.stderr,
+        component='mq.log.siem.consumer',
+        payload={
+            'initiator_type': 'system',
+            'initiator_id': 'platform',
+            'actor_type': 'system',
+            'actor_id': 'mq.log.siem.consumer',
+            'target_type': 'system',
+            'target_id': 'siem',
+        },
     )
 
     run_rabbitmq_consumer(

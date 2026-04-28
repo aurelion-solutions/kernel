@@ -12,7 +12,7 @@ Two public coroutine functions:
 
 Both share the private async generator ``_drive_inference`` which handles:
 - profile/model resolution (404 / inactive errors)
-- message validation via ``LLMSettings``
+- message validation via ``RuntimeSettingsConfig``
 - provider acquisition via ``LLMFactory``
 - timing (latency_ms, ttft_ms)
 - CancelledError + GeneratorExit → provider.abort() + abort log
@@ -35,9 +35,9 @@ from src.platform.llm.providers.base import LLMChunk, LLMMessage
 from src.platform.llm.repository import get_by_id as _get_model_by_id
 from src.platform.llm.repository import get_profile_by_id
 from src.platform.llm.schemas import InferenceRequest, InferenceResponse
-from src.platform.llm.settings import LLMSettings
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import LogService, NoOpLogService, merge_emit_log_participant_fields
+from src.platform.runtime_settings.schemas import RuntimeSettingsConfig
 
 if TYPE_CHECKING:
     from src.platform.llm.factory import LLMFactory
@@ -52,19 +52,19 @@ _AnyLogService = LogService | NoOpLogService
 
 def _validate_messages(
     messages: list[LLMMessage],
-    settings: LLMSettings,
+    settings: RuntimeSettingsConfig,
 ) -> None:
     """Raise ``LLMInferenceValidationError`` if any size limit is exceeded."""
-    if len(messages) > settings.max_messages:
-        raise LLMInferenceValidationError(f'Too many messages: {len(messages)} > {settings.max_messages}')
+    if len(messages) > settings.llm_max_messages:
+        raise LLMInferenceValidationError(f'Too many messages: {len(messages)} > {settings.llm_max_messages}')
     for msg in messages:
-        if len(msg.content) > settings.max_chars_per_message:
+        if len(msg.content) > settings.llm_max_chars_per_message:
             raise LLMInferenceValidationError(
-                f'Message content too long: {len(msg.content)} > {settings.max_chars_per_message}'
+                f'Message content too long: {len(msg.content)} > {settings.llm_max_chars_per_message}'
             )
     total = sum(len(msg.content) for msg in messages)
-    if total > settings.max_total_chars:
-        raise LLMInferenceValidationError(f'Total message chars too long: {total} > {settings.max_total_chars}')
+    if total > settings.llm_max_total_chars:
+        raise LLMInferenceValidationError(f'Total message chars too long: {total} > {settings.llm_max_total_chars}')
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ async def _drive_inference(
     factory: LLMFactory,
     *,
     request: InferenceRequest,
-    settings: LLMSettings,
+    settings: RuntimeSettingsConfig,
     log_service: _AnyLogService,
     correlation_id: str | None,
     causation_id: str | None,
@@ -262,7 +262,7 @@ async def run_inference(
     factory: LLMFactory,
     *,
     request: InferenceRequest,
-    settings: LLMSettings,
+    settings: RuntimeSettingsConfig,
     log_service: _AnyLogService,
     correlation_id: str | None = None,
     causation_id: str | None = None,
@@ -320,7 +320,7 @@ async def stream_inference(
     factory: LLMFactory,
     *,
     request: InferenceRequest,
-    settings: LLMSettings,
+    settings: RuntimeSettingsConfig,
     log_service: _AnyLogService,
     correlation_id: str | None = None,
     causation_id: str | None = None,

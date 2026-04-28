@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 import uuid
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.access_usage_facts.models import AccessUsageFact
@@ -60,13 +61,21 @@ async def list_access_usage_facts(
     query = select(AccessUsageFact).order_by(AccessUsageFact.last_seen.desc())
 
     if subject_id is not None or resource_id is not None:
-        from src.inventory.access_facts.models import AccessFact
-
-        query = query.join(AccessFact, AccessUsageFact.access_fact_id == AccessFact.id)
+        # JOIN against access_facts without ORM dependency (model deleted Phase 15 Step 16).
+        # Build a subquery that returns matching access_fact_ids.
+        inner_predicates = []
+        inner_params: dict = {}
         if subject_id is not None:
-            query = query.where(AccessFact.subject_id == subject_id)
+            inner_predicates.append('af.subject_id = :subject_id_join')
+            inner_params['subject_id_join'] = subject_id
         if resource_id is not None:
-            query = query.where(AccessFact.resource_id == resource_id)
+            inner_predicates.append('af.resource_id = :resource_id_join')
+            inner_params['resource_id_join'] = resource_id
+        where_clause = ' AND '.join(inner_predicates)
+        subq_sql = sa.text(
+            f'SELECT af.id FROM access_facts af WHERE {where_clause}'  # noqa: S608
+        ).bindparams(**inner_params)
+        query = query.where(AccessUsageFact.access_fact_id.in_(subq_sql))
 
     if access_fact_id is not None:
         query = query.where(AccessUsageFact.access_fact_id == access_fact_id)

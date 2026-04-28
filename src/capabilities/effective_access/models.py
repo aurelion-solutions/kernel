@@ -99,7 +99,6 @@ class EffectiveGrant(Base):
     )
     source_access_fact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey('access_facts.id', ondelete='CASCADE'),
         nullable=False,
     )
     source_initiative_id: Mapped[uuid.UUID] = mapped_column(

@@ -23,7 +23,6 @@ from src.capabilities.access_analysis.sod_rule_conditions.models import (
 )
 from src.capabilities.access_analysis.sod_rules.models import SodRule, SodRuleScope, SodSeverity
 from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
 from src.inventory.actions.models import Action as RefAction
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -106,22 +105,30 @@ async def _seed_eg_chain(
     now: datetime,
     tombstoned_at: datetime | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:  # type: ignore[no-untyped-def]
-    """Seed AccessFact → Initiative → EffectiveGrant. Returns (eg_id, fact_id, initiative_id)."""
+    """Seed access_fact → Initiative → EffectiveGrant. Returns (eg_id, fact_id, initiative_id)."""
     read_action_id = (await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read'))).scalar_one()
 
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=now,
-        valid_from=now,
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': now,
+            'valid_from': now,
+        },
     )
-    session.add(fact)
     await session.flush()
 
     initiative = Initiative(
-        access_fact_id=fact.id,
+        access_fact_id=fact_id,
         type=InitiativeType.birthright,
         origin='test-origin',
         valid_from=now,
@@ -142,14 +149,14 @@ async def _seed_eg_chain(
         initiative_origin='test-origin',
         valid_from=now,
         valid_until=None,
-        source_access_fact_id=fact.id,
+        source_access_fact_id=fact_id,
         source_initiative_id=initiative.id,
         observed_at=now,
         tombstoned_at=tombstoned_at,
     )
     session.add(eg)
     await session.flush()
-    return eg.id, fact.id, initiative.id
+    return eg.id, fact_id, initiative.id
 
 
 async def _seed_capability_grant(

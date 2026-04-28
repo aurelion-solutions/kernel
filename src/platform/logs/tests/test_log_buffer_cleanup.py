@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
-from src.core.config import Settings, settings
 from src.platform.logs.buffer_cleanup import (
     cutoff_before_retention,
     run_log_buffer_cleanup_once,
@@ -40,10 +39,11 @@ def test_cutoff_before_retention_uses_ttl_seconds() -> None:
     assert cutoff == now - timedelta(seconds=90)
 
 
-def test_settings_default_log_buffer_retention_is_one_hour(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv('LOG_BUFFER_RETENTION_SECONDS', raising=False)
-    s = Settings.model_validate({'database_url': settings.database_url})
-    assert s.log_buffer_retention_seconds == 3600
+def test_runtime_settings_default_log_buffer_retention_is_one_hour() -> None:
+    from src.platform.runtime_settings.schemas import RuntimeSettingsConfig
+
+    config = RuntimeSettingsConfig()
+    assert config.log_buffer_retention_seconds == 3600
 
 
 @pytest.mark.asyncio

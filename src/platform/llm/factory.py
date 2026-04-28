@@ -36,7 +36,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.platform.llm.models import LLMModel, LLMProvider
 from src.platform.llm.providers import AbstractLLMProvider, LlamaCppProvider
-from src.platform.llm.settings import LLMSettings
+from src.platform.runtime_settings.schemas import RuntimeSettingsConfig
 
 # ---------------------------------------------------------------------------
 # Exception hierarchy
@@ -79,12 +79,13 @@ class LLMFactory:
         self,
         *,
         max_loaded_models: int | None = None,
-        settings: LLMSettings | None = None,
+        settings: RuntimeSettingsConfig | None = None,
     ) -> None:
         if max_loaded_models is None:
-            if settings is None:
-                settings = LLMSettings()
-            max_loaded_models = settings.max_loaded_models
+            if settings is not None:
+                max_loaded_models = settings.llm_max_loaded_models
+            else:
+                max_loaded_models = 2
         if max_loaded_models < 1:
             raise ValueError('max_loaded_models must be >= 1')
         self._max_loaded_models: int = max_loaded_models

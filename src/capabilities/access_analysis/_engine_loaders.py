@@ -22,6 +22,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.access_analysis.capabilities.models import Capability
 from src.capabilities.access_analysis.capability_grants.models import CapabilityGrant
+from src.capabilities.access_analysis.data_access import iter_unused_access_fact_views
 from src.capabilities.access_analysis.detectors.orphan import AccountView
 from src.capabilities.access_analysis.detectors.terminated import (
     TERMINAL_STATUSES_BY_KIND,
@@ -36,12 +37,11 @@ from src.capabilities.access_analysis.evaluators.sod import (
 )
 from src.capabilities.access_analysis.mitigations.models import Mitigation, MitigationStatus
 from src.capabilities.effective_access.models import EffectiveGrant
-from src.inventory.access_facts.models import AccessFact
-from src.inventory.access_usage_facts.models import AccessUsageFact
 from src.inventory.accounts.models import Account
 from src.inventory.ownership_assignments.models import OwnershipAssignment
-from src.inventory.resources.models import Resource
 from src.inventory.subjects.models import Subject
+from src.platform.lake.duckdb_session import LakeSession
+from src.platform.logs.service import LogService
 
 # ---------------------------------------------------------------------------
 # SoD inputs
@@ -314,55 +314,29 @@ async def load_terminated_inputs(
 
 async def load_unused_inputs(
     session: AsyncSession,
+    lake_session: LakeSession,
+    log_service: LogService,
+    *,
     scope_subject_id: UUID | None = None,
     scope_application_id: UUID | None = None,
+    batch_size: int = 1000,
+    pg_any_array_max_size: int,
 ) -> list[AccessFactView]:
-    """Load active AccessFact rows joined to MAX(last_seen) usage aggregate.
+    """Load active access facts via DuckDB iceberg_scan + per-batch PG usage telemetry.
 
-    Reuses the Step 13 UnusedDetectorService query pattern.
-    Single round-trip (one SELECT with subquery).
+    Thin materialisation wrapper around ``iter_unused_access_fact_views``.
+    ``ScanEngine`` passes the result list to ``detect_unused``; streaming is
+    deferred to Step 16+ when ScanEngine itself becomes stream-aware.
     """
-    usage_subq = (
-        sa.select(
-            AccessUsageFact.access_fact_id,
-            sa.func.max(AccessUsageFact.last_seen).label('last_seen'),
-        )
-        .group_by(AccessUsageFact.access_fact_id)
-        .subquery('usage_agg')
-    )
-
-    query = (
-        sa.select(
-            AccessFact.id,
-            AccessFact.subject_id,
-            AccessFact.account_id,
-            AccessFact.resource_id,
-            AccessFact.valid_from,
-            Resource.application_id,
-            usage_subq.c.last_seen,
-        )
-        .join(Resource, AccessFact.resource_id == Resource.id)
-        .outerjoin(usage_subq, usage_subq.c.access_fact_id == AccessFact.id)
-        .where(AccessFact.is_active.is_(True))
-    )
-
-    if scope_subject_id is not None:
-        query = query.where(AccessFact.subject_id == scope_subject_id)
-    if scope_application_id is not None:
-        query = query.where(Resource.application_id == scope_application_id)
-
-    result = await session.execute(query)
-    rows = result.all()
-
-    return [
-        AccessFactView(
-            id=row.id,
-            subject_id=row.subject_id,
-            account_id=row.account_id,
-            resource_id=row.resource_id,
-            application_id=row.application_id,
-            valid_from=row.valid_from,
-            last_seen=row.last_seen,
-        )
-        for row in rows
-    ]
+    views: list[AccessFactView] = []
+    async for view in iter_unused_access_fact_views(
+        lake_session=lake_session,
+        pg_session=session,
+        log_service=log_service,
+        scope_application_id=scope_application_id,
+        scope_subject_id=scope_subject_id,
+        batch_size=batch_size,
+        pg_any_array_max_size=pg_any_array_max_size,
+    ):
+        views.append(view)
+    return views

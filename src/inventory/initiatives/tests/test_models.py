@@ -63,21 +63,37 @@ async def _make_resource(session) -> uuid.UUID:
 
 
 async def _make_access_fact(session) -> uuid.UUID:
-    """Create an access fact, return fact.id."""
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-    from src.inventory.enums import Action
+    """Create an access fact via raw SQL — ORM model deleted Phase 15 Step 16."""
+    import sqlalchemy as sa
+    from sqlalchemy import select
+    from src.inventory.actions.models import Action as RefAction
 
     subject_id = await _make_employee_subject(session)
     resource_id = await _make_resource(session)
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action=Action.read,
-        effect=AccessFactEffect.allow,
+
+    action_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
+    action_id = action_row.scalar_one()
+
+    from datetime import UTC, datetime
+
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': action_id,
+            'effect': 'allow',
+            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +130,7 @@ async def test_initiative_creation_stores_all_fields(session_factory) -> None:
 @pytest.mark.asyncio
 async def test_initiative_fk_cascade_on_access_fact_delete(session_factory) -> None:
     """Deleting an AccessFact cascades and removes its initiatives."""
-    from src.inventory.access_facts.models import AccessFact
+    import sqlalchemy as sa
 
     async with session_factory() as session:
         fact_id = await _make_access_fact(session)
@@ -128,17 +144,19 @@ async def test_initiative_fk_cascade_on_access_fact_delete(session_factory) -> N
         await session.flush()
         initiative_id = initiative.id
 
-        # Delete the access fact
-        fact = await session.get(AccessFact, fact_id)
-        assert fact is not None
-        await session.delete(fact)
+        # Delete the access fact via raw SQL — ORM model deleted Phase 15 Step 16.
+        result = await session.execute(
+            sa.text('DELETE FROM access_facts WHERE id = :id RETURNING id'),
+            {'id': fact_id},
+        )
+        assert result.scalar_one_or_none() is not None
         await session.flush()
 
         # Initiative should be gone via CASCADE
         from sqlalchemy import select
 
-        result = await session.execute(select(Initiative).where(Initiative.id == initiative_id))
-        assert result.scalar_one_or_none() is None
+        result2 = await session.execute(select(Initiative).where(Initiative.id == initiative_id))
+        assert result2.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio

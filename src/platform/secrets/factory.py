@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 
+from src.core.secrets.factory import config_secret_manager_factory
 from src.platform.secrets.interface import SecretManager
 from src.platform.secrets.providers.akeyless import AkeylessSecretManager
 from src.platform.secrets.providers.conjur import ConjurSecretManager
@@ -52,3 +53,16 @@ class SecretManagerFactory:
 
 
 secret_manager_factory = SecretManagerFactory()
+
+
+def register_default_providers() -> None:
+    """Register all platform secret providers into the core config factory.
+
+    Must be called in every entrypoint before the first get_settings() call.
+    Safe to call multiple times — register() is idempotent (overwrites same key).
+    """
+    config_secret_manager_factory.register('file', FileSecretManager)
+    config_secret_manager_factory.register('vault', VaultSecretManager)
+    config_secret_manager_factory.register('akeyless', AkeylessSecretManager)
+    config_secret_manager_factory.register('conjur', ConjurSecretManager)
+    config_secret_manager_factory.register('openbao', OpenBaoSecretManager)

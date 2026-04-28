@@ -2,21 +2,16 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessFact route dependencies."""
+"""AccessFact route dependencies.
 
-import os
+Phase 15 Step 16: event_service removed. Service is lake-read-only.
+"""
 
+from fastapi import Request
 from src.inventory.access_facts.service import AccessFactService
-from src.platform.events.factory import event_sink_factory
-from src.platform.events.service import EventService
 
 
-def _get_events_provider() -> str:
-    return os.environ.get('AURELION_EVENTS_PROVIDER', 'mq')
-
-
-def get_access_fact_service() -> AccessFactService:
-    """Return AccessFactService with injected EventService."""
-    event_sink = event_sink_factory.get(_get_events_provider())
-    event_service = EventService(sink=event_sink)
-    return AccessFactService(event_service=event_service)
+def get_access_fact_service(request: Request) -> AccessFactService:
+    """Return AccessFactService with injected LogService."""
+    log_service = getattr(request.app.state, 'log_service', None)
+    return AccessFactService(log_service=log_service)

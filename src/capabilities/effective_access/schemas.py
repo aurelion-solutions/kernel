@@ -35,7 +35,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 from src.capabilities.effective_access.models import EffectiveGrantEffect
-from src.inventory.access_facts.models import AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import InitiativeType
 from src.inventory.subjects.models import SubjectKind

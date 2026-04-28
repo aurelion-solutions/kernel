@@ -33,7 +33,6 @@ async def _seed_minimal_refs(session) -> Refs:  # type: ignore[no-untyped-def]
     from src.capabilities.access_analysis.capability_mappings.models import CapabilityMapping
     from src.capabilities.access_analysis.capability_scope_keys.models import CapabilityScopeKey
     from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.actions.models import Action as RefAction
     from src.inventory.enums import Action
     from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -101,22 +100,13 @@ async def _seed_minimal_refs(session) -> Refs:  # type: ignore[no-untyped-def]
     session.add(mapping)
     await session.flush()
 
-    # Fetch ref_action for 'read'
-    read_action_id = (await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read'))).scalar_one()
+    # Verify ref_action 'read' exists (FK guard for EffectiveGrant.action).
+    await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read'))
 
-    fact = AccessFact(
-        subject_id=subject.id,
-        resource_id=resource.id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=now,
-        valid_from=now,
-    )
-    session.add(fact)
-    await session.flush()
+    fact_id = uuid.uuid4()
 
     initiative = Initiative(
-        access_fact_id=fact.id,
+        access_fact_id=fact_id,
         type=InitiativeType.birthright,
         origin='test-origin',
         valid_from=now,
@@ -137,7 +127,7 @@ async def _seed_minimal_refs(session) -> Refs:  # type: ignore[no-untyped-def]
         initiative_origin='test-origin',
         valid_from=now,
         valid_until=None,
-        source_access_fact_id=fact.id,
+        source_access_fact_id=fact_id,
         source_initiative_id=initiative.id,
         observed_at=now,
         tombstoned_at=None,

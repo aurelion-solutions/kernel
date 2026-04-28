@@ -149,7 +149,7 @@ async def test_ingest_and_normalize_creates_artifact_resource_fact_binding(
     event_types = [e.event_type for e in capturing_events.emitted]
     assert event_types.count('inventory.access_artifact.ingested') == 1
     assert event_types.count('inventory.resource.created') == 1
-    assert event_types.count('inventory.access_fact.created') == 1
+    assert event_types.count('inventory.access_fact.created') == 0  # Step 12: events moved to SyncApplyService
     assert event_types.count('inventory.artifact_binding.created') == 1
 
 
@@ -189,7 +189,7 @@ async def test_second_ingest_on_same_resource_reuses_resource(
 
     event_types = [e.event_type for e in capturing_events.emitted]
     assert event_types.count('inventory.resource.created') == 1
-    assert event_types.count('inventory.access_fact.created') == 2
+    assert event_types.count('inventory.access_fact.created') == 0  # Step 12: events moved to SyncApplyService
 
 
 @pytest.mark.asyncio
@@ -228,7 +228,7 @@ async def test_replay_does_not_duplicate_access_fact(
     assert result2.artifact_id != result1.artifact_id
 
     event_types = [e.event_type for e in capturing_events.emitted]
-    assert event_types.count('inventory.access_fact.created') == 1
+    assert event_types.count('inventory.access_fact.created') == 0  # Step 12: events moved to SyncApplyService
     assert event_types.count('inventory.access_artifact.ingested') == 2
     assert event_types.count('inventory.artifact_binding.created') == 2
 
@@ -295,11 +295,16 @@ async def test_savepoint_protects_artifact_and_resource_on_duplicate_fact(
         # All assertions from the SAME live session (no commit between calls).
         assert result2.created_fact is False
 
-        # Artifact written in pass-2 must still be visible.
-        from src.inventory.access_artifacts.models import AccessArtifact
+        # Artifact written in pass-2 must still be visible (raw SQL — ORM deleted Phase 15 Step 16).
+        import sqlalchemy as _sa
 
-        artifact2 = await session.get(AccessArtifact, result2.artifact_id)
-        assert artifact2 is not None, 'pass-2 artifact was rolled back — SAVEPOINT missing'
+        artifact2_row = (
+            await session.execute(
+                _sa.text('SELECT id FROM access_artifacts WHERE id = :id'),
+                {'id': result2.artifact_id},
+            )
+        ).one_or_none()
+        assert artifact2_row is not None, 'pass-2 artifact was rolled back — SAVEPOINT missing'
 
         # Resource must survive.
         resource2 = await session.get(Resource, result2.resource_id)

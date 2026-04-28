@@ -361,8 +361,40 @@ async def test_eas_pipeline_end_to_end(
     # ==================================================================
 
     async with session_factory() as session:
-        await fact_svc.revoke_fact(session, fact_id_2, observed_at=datetime.now(UTC))
+        from uuid import uuid4 as _uuid4
+
+        revoke_at = datetime.now(UTC)
+        await fact_svc.revoke_fact(session, fact_id_2, delta_item_id=_uuid4(), observed_at=revoke_at)
         await session.commit()
+
+    # Step 12: AccessFactService no longer emits inventory.access_fact.revoked events.
+    # SyncApplyService would emit them after an Iceberg write. For the EAS e2e test,
+    # we manually emit the event to simulate what SyncApplyService would do.
+    from src.platform.events.schemas import EventParticipantKind
+    from src.platform.events.schemas import new_event_envelope as _new_ev
+
+    revoke_event = _new_ev(
+        event_type='inventory.access_fact.revoked',
+        occurred_at=revoke_at,
+        correlation_id=uuid.uuid4().hex,
+        payload={
+            'fact_id': str(fact_id_2),
+            'delta_item_id': str(uuid.uuid4()),
+            'reconciliation_run_id': str(uuid.uuid4()),
+            'snapshot_id': None,
+            'subject_id': str(subject_id),
+            'resource_id': str(uuid.uuid4()),
+            'action_id': 1,
+            'effect': 'allow',
+            'natural_key_hash': 'a' * 64,
+            'revoked_at': revoke_at.isoformat(),
+        },
+        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_id='capabilities.sync_apply',
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(fact_id_2),
+    )
+    await producer_event_service.emit(revoke_event)
 
     cursor = await _drive_consumer(cursor)
 

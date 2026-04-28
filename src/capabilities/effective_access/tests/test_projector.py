@@ -15,7 +15,7 @@ from src.capabilities.effective_access.projector import (
     InitiativeView,
     project,
 )
-from src.inventory.access_facts.models import AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import InitiativeType
 from src.inventory.subjects.models import SubjectKind

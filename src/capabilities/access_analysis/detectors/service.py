@@ -15,6 +15,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.capabilities.access_analysis.data_access import iter_unused_access_fact_views
 from src.capabilities.access_analysis.detectors.orphan import AccountView, OrphanFinding, detect_orphans
 from src.capabilities.access_analysis.detectors.terminated import (
     TERMINAL_STATUSES_BY_KIND,
@@ -22,13 +23,12 @@ from src.capabilities.access_analysis.detectors.terminated import (
     TerminatedFinding,
     detect_terminated,
 )
-from src.capabilities.access_analysis.detectors.unused import AccessFactView, UnusedFinding, detect_unused
-from src.inventory.access_facts.models import AccessFact
-from src.inventory.access_usage_facts.models import AccessUsageFact
+from src.capabilities.access_analysis.detectors.unused import UnusedFinding, detect_unused
 from src.inventory.accounts.models import Account
 from src.inventory.ownership_assignments.models import OwnershipAssignment
-from src.inventory.resources.models import Resource
 from src.inventory.subjects.models import Subject
+from src.platform.lake.duckdb_session import LakeSession
+from src.platform.logs.service import LogService
 
 
 class OrphanDetectorService:
@@ -188,13 +188,23 @@ class TerminatedDetectorService:
 
 
 class UnusedDetectorService:
-    """Read-only service: loads active AccessFact rows joined to usage telemetry, calls pure detector.
+    """Read-only service: loads active access facts via DuckDB iceberg_scan, calls pure detector.
 
-    No LogService, no EventService — this is a read-only detection path.
+    Reads ``normalized.access_facts`` via DuckDB + per-batch PG usage telemetry.
+    No EventService — this is a read-only detection path.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        lake_session: LakeSession,
+        log_service: LogService,
+        pg_any_array_max_size: int,
+    ) -> None:
         self._session = session
+        self._lake_session = lake_session
+        self._log_service = log_service
+        self._pg_any_array_max_size = pg_any_array_max_size
 
     async def run(
         self,
@@ -204,15 +214,9 @@ class UnusedDetectorService:
     ) -> list[UnusedFinding]:
         """Detect active access facts with no recent (or no) usage telemetry.
 
-        Steps:
-          1. Build a GROUP BY subquery over access_usage_facts returning
-             (access_fact_id, MAX(last_seen) AS last_seen) — the usage aggregate.
-          2. LEFT JOIN access_facts to the aggregate subquery.
-          3. INNER JOIN access_facts to resources to obtain application_id.
-          4. Filter access_facts.is_active = true.
-          5. Apply optional application_id filter on resources.application_id and LIMIT.
-          6. Construct AccessFactView DTOs and call detect_unused() with at=datetime.now(UTC).
-          7. Return the list of UnusedFinding drafts. Never persists. Never emits.
+        Reads from Iceberg ``normalized.access_facts`` via DuckDB. Per-batch PG
+        query fetches MAX(last_seen) from ``access_usage_facts``. Stops collecting
+        as soon as ``limit`` views are accumulated (early-break to reduce PG round-trips).
 
         Args:
             application_id: Optional filter to a single application's access facts.
@@ -222,54 +226,24 @@ class UnusedDetectorService:
         Returns:
             Sorted list of UnusedFinding drafts (sorted by detect_unused internal key).
         """
-        # Subquery: MAX(last_seen) per access_fact_id
-        usage_subq = (
-            sa.select(
-                AccessUsageFact.access_fact_id,
-                sa.func.max(AccessUsageFact.last_seen).label('last_seen'),
-            )
-            .group_by(AccessUsageFact.access_fact_id)
-            .subquery('usage_agg')
-        )
+        effective_batch = min(limit, 1000)
 
-        # Main query: active access facts LEFT JOIN usage aggregate, INNER JOIN resource
-        query = (
-            sa.select(
-                AccessFact.id,
-                AccessFact.subject_id,
-                AccessFact.account_id,
-                AccessFact.resource_id,
-                AccessFact.valid_from,
-                Resource.application_id,
-                usage_subq.c.last_seen,
-            )
-            .join(Resource, AccessFact.resource_id == Resource.id)
-            .outerjoin(usage_subq, usage_subq.c.access_fact_id == AccessFact.id)
-            .where(AccessFact.is_active.is_(True))
-            .limit(limit)
-        )
-
-        if application_id is not None:
-            query = query.where(Resource.application_id == application_id)
-
-        result = await self._session.execute(query)
-        rows = result.all()
-
-        access_fact_views = [
-            AccessFactView(
-                id=row.id,
-                subject_id=row.subject_id,
-                account_id=row.account_id,
-                resource_id=row.resource_id,
-                application_id=row.application_id,
-                valid_from=row.valid_from,
-                last_seen=row.last_seen,
-            )
-            for row in rows
-        ]
+        views = []
+        async for view in iter_unused_access_fact_views(
+            lake_session=self._lake_session,
+            pg_session=self._session,
+            log_service=self._log_service,
+            scope_application_id=application_id,
+            scope_subject_id=None,
+            batch_size=effective_batch,
+            pg_any_array_max_size=self._pg_any_array_max_size,
+        ):
+            views.append(view)
+            if len(views) >= limit:
+                break
 
         return detect_unused(
-            access_facts=access_fact_views,
+            access_facts=views,
             threshold_days=threshold_days,
             at=datetime.now(tz=UTC),
         )

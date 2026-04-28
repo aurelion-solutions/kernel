@@ -22,7 +22,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.reconciliation.contracts import NormalizationResult
 from src.capabilities.reconciliation.registry import register_handler
-from src.inventory.access_artifacts.models import AccessArtifact
+from src.inventory.access_artifacts.schemas import AccessArtifactView
 from src.inventory.resources.service import ResourceService
 
 logger = logging.getLogger('reconciliation.handlers.sap_role')
@@ -53,7 +53,7 @@ class SapRoleHandler:
 
     async def handle(
         self,
-        artifact: AccessArtifact,
+        artifact: AccessArtifactView,
         session: AsyncSession,
     ) -> list[NormalizationResult]:
         """Parse payload, resolve resource, return single-element list or []."""

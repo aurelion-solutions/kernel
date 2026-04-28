@@ -134,7 +134,6 @@ async def test_project_for_application_processes_all_grants(session_factory) -> 
         import uuid as _uuid
 
         from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-        from src.inventory.access_facts.models import AccessFact, AccessFactEffect
         from src.inventory.actions.models import Action as RefAction
         from src.inventory.enums import Action
         from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -156,19 +155,27 @@ async def test_project_for_application_processes_all_grants(session_factory) -> 
             session.add(extra_resource)
             await session.flush()
 
-            fact = AccessFact(
-                subject_id=refs.subject_id,
-                resource_id=extra_resource.id,
-                action_id=read_action_id,
-                effect=AccessFactEffect.allow,
-                observed_at=now,
-                valid_from=now,
+            fact_id = _uuid.uuid4()
+            await session.execute(
+                sa.text(
+                    'INSERT INTO access_facts '
+                    '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from) '
+                    'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from)'
+                ),
+                {
+                    'id': fact_id,
+                    'subject_id': refs.subject_id,
+                    'resource_id': extra_resource.id,
+                    'action_id': read_action_id,
+                    'effect': 'allow',
+                    'observed_at': now,
+                    'valid_from': now,
+                },
             )
-            session.add(fact)
             await session.flush()
 
             initiative = Initiative(
-                access_fact_id=fact.id,
+                access_fact_id=fact_id,
                 type=InitiativeType.birthright,
                 origin='test',
                 valid_from=now,
@@ -189,7 +196,7 @@ async def test_project_for_application_processes_all_grants(session_factory) -> 
                 initiative_origin='test',
                 valid_from=now,
                 valid_until=None,
-                source_access_fact_id=fact.id,
+                source_access_fact_id=fact_id,
                 source_initiative_id=initiative.id,
                 observed_at=now,
                 tombstoned_at=None,

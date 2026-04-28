@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from src.capabilities.normalization.acl.normalizer import ACLPayloadError, normalize_acl_entry
 from src.capabilities.normalization.acl.schemas import ACLEntryPayload
-from src.inventory.access_facts.models import AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.resources.models import ResourceDataSensitivity, ResourceEnvironment, ResourcePrivilegeLevel
 

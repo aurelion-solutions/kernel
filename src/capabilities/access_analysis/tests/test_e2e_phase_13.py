@@ -27,7 +27,6 @@ import pytest
 import sqlalchemy as sa
 from src.capabilities.access_analysis.capability_grants.service import CapabilityProjectionService
 from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
 from src.inventory.actions.models import Action as RefAction
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -124,35 +123,51 @@ async def _seed_inventory(session) -> dict:  # type: ignore[no-untyped-def]
     # Ref action (read — exists in both ref_actions seed and Action enum)
     read_action_id = (await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read'))).scalar_one()
 
-    # AccessFact 1 — actor, resource_1, read
-    fact_1 = AccessFact(
-        subject_id=actor_id,
-        resource_id=resource_1.id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=valid_from,
-        valid_from=valid_from,
-        is_active=True,
+    # AccessFact 1 — actor, resource_1, read (raw SQL)
+    fact_1_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from, is_active) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from, :is_active)'
+        ),
+        {
+            'id': fact_1_id,
+            'subject_id': actor_id,
+            'resource_id': resource_1.id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': valid_from,
+            'valid_from': valid_from,
+            'is_active': True,
+        },
     )
-    session.add(fact_1)
     await session.flush()
 
-    # AccessFact 2 — actor, resource_2, read
-    fact_2 = AccessFact(
-        subject_id=actor_id,
-        resource_id=resource_2.id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=valid_from,
-        valid_from=valid_from,
-        is_active=True,
+    # AccessFact 2 — actor, resource_2, read (raw SQL)
+    fact_2_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from, is_active) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from, :is_active)'
+        ),
+        {
+            'id': fact_2_id,
+            'subject_id': actor_id,
+            'resource_id': resource_2.id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': valid_from,
+            'valid_from': valid_from,
+            'is_active': True,
+        },
     )
-    session.add(fact_2)
     await session.flush()
 
     # Initiative (shared by both facts / EGs)
     initiative = Initiative(
-        access_fact_id=fact_1.id,
+        access_fact_id=fact_1_id,
         type=InitiativeType.birthright,
         origin='e2e:phase_13',
         valid_from=valid_from,
@@ -175,7 +190,7 @@ async def _seed_inventory(session) -> dict:  # type: ignore[no-untyped-def]
         initiative_origin='e2e:phase_13',
         valid_from=valid_from,
         valid_until=None,
-        source_access_fact_id=fact_1.id,
+        source_access_fact_id=fact_1_id,
         source_initiative_id=initiative.id,
         tombstoned_at=None,
     )
@@ -196,7 +211,7 @@ async def _seed_inventory(session) -> dict:  # type: ignore[no-untyped-def]
         initiative_origin='e2e:phase_13',
         valid_from=valid_from,
         valid_until=None,
-        source_access_fact_id=fact_2.id,
+        source_access_fact_id=fact_2_id,
         source_initiative_id=initiative.id,
         tombstoned_at=None,
     )

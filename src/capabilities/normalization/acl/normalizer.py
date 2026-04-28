@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from src.capabilities.normalization.acl.schemas import ACLEntryPayload, NormalizedAccess
-from src.inventory.access_facts.models import AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.resources.models import ResourceDataSensitivity, ResourceEnvironment, ResourcePrivilegeLevel
 

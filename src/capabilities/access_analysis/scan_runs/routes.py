@@ -36,6 +36,11 @@ from src.capabilities.access_analysis.scan_runs.schemas import (
 from src.capabilities.access_analysis.scan_runs.service import ScanRunService
 from src.core.db.deps import get_db
 from src.core.http.errors import translate_service_errors
+from src.platform.lake.config import LakeSettings
+from src.platform.lake.deps import get_lake_session
+from src.platform.lake.duckdb_session import LakeSession
+from src.platform.logs.deps import get_log_service
+from src.platform.logs.service import LogService
 
 router = APIRouter(prefix='/scan-runs', tags=['scan-runs'])
 DependsService = Depends(get_scan_run_service)
@@ -120,6 +125,8 @@ async def patch_scan_run_status(
 async def run_scan_run(
     scan_run_id: int,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    lake_session: LakeSession = Depends(get_lake_session),  # noqa: B008
+    log_service: LogService = Depends(get_log_service),  # noqa: B008
 ) -> ScanRunRead:
     """Execute a pending ScanRun synchronously.
 
@@ -128,7 +135,13 @@ async def run_scan_run(
     """
     from src.capabilities.access_analysis.service import ScanOrchestrationService
 
-    orch = ScanOrchestrationService(session=session)
+    settings = LakeSettings()
+    orch = ScanOrchestrationService(
+        session=session,
+        lake_session=lake_session,
+        log_service=log_service,
+        pg_any_array_max_size=settings.pg_any_array_max_size,
+    )
     with translate_service_errors(
         {
             ScanRunNotFoundError: (404, 'ScanRun not found'),

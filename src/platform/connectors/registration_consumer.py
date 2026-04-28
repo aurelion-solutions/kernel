@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from src.core.db.session import SessionLocal
+from src.core.db.session import get_session_factory as _get_session_factory
 from src.core.mq.rabbitmq import run_rabbitmq_consumer
 from src.platform.connectors.registration_schemas import ConnectorRegistrationMessage
 from src.platform.connectors.service import ConnectorInstanceService
@@ -73,7 +73,7 @@ def run_connector_registration_consumer(
 
     def on_event(raw: dict[str, Any], _routing_key: str, _props: Any) -> None:
         fut = asyncio.run_coroutine_threadsafe(
-            handle_connector_registration(SessionLocal, raw),
+            handle_connector_registration(_get_session_factory(), raw),
             main_loop,
         )
         fut.result()

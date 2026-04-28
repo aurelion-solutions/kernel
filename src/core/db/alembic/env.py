@@ -8,15 +8,22 @@ from logging.config import fileConfig
 from pathlib import Path
 import sys
 
-from alembic import context
-from sqlalchemy import pool
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
-from src.core.config import settings
-from src.core.db.base import Base
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+load_dotenv()
+
+from src.platform.secrets.factory import register_default_providers  # noqa: E402
+
+register_default_providers()
+from alembic import context  # noqa: E402
+from sqlalchemy import pool  # noqa: E402
+from sqlalchemy.engine import Connection  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
+from src.core.config import get_settings  # noqa: E402
+from src.core.db.base import Base  # noqa: E402
 
 
 def import_all_model_modules() -> None:
@@ -41,11 +48,19 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-config.set_main_option('sqlalchemy.url', settings.database_url)
+
+def _resolve_db_url() -> str:
+    """Resolve the database URL from config or bootstrap settings."""
+    url = config.get_main_option('sqlalchemy.url') or ''
+    # alembic.ini may store a placeholder `""` — strip surrounding quotes.
+    url = url.strip('"').strip("'").strip()
+    if not url:
+        url = get_settings().postgres.dsn
+    return url
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option('sqlalchemy.url')
+    url = _resolve_db_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -65,11 +80,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix='sqlalchemy.',
-        poolclass=pool.NullPool,
-    )
+    url = _resolve_db_url()
+    connectable = create_async_engine(url, poolclass=pool.NullPool)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

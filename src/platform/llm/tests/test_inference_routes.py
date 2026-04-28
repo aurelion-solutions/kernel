@@ -18,9 +18,11 @@ from unittest.mock import AsyncMock
 import uuid
 
 import pytest
-from src.platform.llm.deps import get_llm_factory
+from src.platform.llm.deps import get_llm_factory, get_runtime_settings
 from src.platform.llm.models import LLMExecutionProfile, LLMModel, LLMProvider
 from src.platform.llm.providers.base import LLMChunk, LLMMessage
+from src.platform.logs.service import NoOpLogService
+from src.platform.runtime_settings.service import RuntimeSettingsService
 
 # ---------------------------------------------------------------------------
 # FakeLLMProvider (local copy to keep tests independent)
@@ -279,6 +281,52 @@ async def test_post_inference_stream_yields_sse_events(app: Any, client: Any, se
 # ---------------------------------------------------------------------------
 # Test 8 — SSE stream: provider error → error event
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — PUT /runtime-settings/llm_max_messages is observed by inference
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_runtime_settings_llm_max_messages_enforced_by_inference(
+    app: Any, client: Any, session_factory: Any
+) -> None:
+    """After reducing llm_max_messages via PUT /runtime-settings, inference rejects
+    requests that would have been accepted under the default limit.
+
+    This test verifies F-1: inference reads settings from DB (not hard-coded defaults).
+    """
+    async with session_factory() as session:
+        # Seed runtime settings defaults so the key exists in DB
+        svc = RuntimeSettingsService(session, NoOpLogService())
+        await svc.ensure_defaults()
+        await session.commit()
+
+    # Set llm_max_messages to 1 via the API
+    put_resp = await client.put(
+        '/api/v0/runtime-settings/llm_max_messages',
+        json={'value': '1'},
+    )
+    assert put_resp.status_code == 200
+
+    async with session_factory() as session:
+        _, profile = await _create_model_and_profile(session)
+        await session.commit()
+
+    provider = FakeLLMProvider()
+    app.dependency_overrides[get_llm_factory] = lambda: _make_fake_factory(provider)
+
+    try:
+        # 2 messages — exceeds the new limit of 1; should return 422
+        messages = [{'role': 'user', 'content': 'msg1'}, {'role': 'user', 'content': 'msg2'}]
+        resp = await client.post('/api/v0/inference', json=_inference_body(profile.id, messages))
+        assert resp.status_code == 422, (
+            f'Expected 422 (llm_max_messages=1 enforced), got {resp.status_code}: {resp.text}'
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_factory, None)
+        app.dependency_overrides.pop(get_runtime_settings, None)
 
 
 @pytest.mark.asyncio

@@ -87,10 +87,13 @@ class AccessUsageFactService:
         if window_to is not None and window_to <= window_from:
             raise AccessUsageFactWindowOrderError('window_to must be strictly greater than window_from')
 
-        from src.inventory.access_facts.models import AccessFact
+        from sqlalchemy import text as sa_text
 
-        fact = await session.get(AccessFact, access_fact_id)
-        if fact is None:
+        fact_row = await session.execute(
+            sa_text('SELECT id FROM access_facts WHERE id = :id'),
+            {'id': access_fact_id},
+        )
+        if fact_row.one_or_none() is None:
             raise AccessUsageFactForeignKeyError(f'AccessFact not found: {access_fact_id}')
 
         try:

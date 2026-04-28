@@ -30,10 +30,11 @@ from src.capabilities.access_analysis.tests.conftest import (
     seed_subject,
 )
 from src.platform.events.testing import CapturingEventService
+from src.platform.logs.service import NoOpLogService
 
 
 @pytest.mark.asyncio
-async def test_event_chain_correlation_id_shared(session_factory) -> None:
+async def test_event_chain_correlation_id_shared(session_factory, engine_test_lake_session) -> None:
     """All events in a scan share the same correlation_id."""
     async with session_factory() as session:
         app_id = await seed_application(session)
@@ -70,7 +71,12 @@ async def test_event_chain_correlation_id_shared(session_factory) -> None:
     capturing = CapturingEventService()
     async with session_factory() as session:
         run = await session.get(ScanRun, run.id)
-        orch = ScanOrchestrationService(session=session, events=capturing)
+        orch = ScanOrchestrationService(
+            session=session,
+            events=capturing,
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+        )
         await orch.run_scan(run.id, correlation_id='fixed-corr')
         await session.commit()
 
@@ -82,7 +88,7 @@ async def test_event_chain_correlation_id_shared(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_chain_causation_ids(session_factory) -> None:
+async def test_event_chain_causation_ids(session_factory, engine_test_lake_session) -> None:
     """finding.created and scan.completed causation_id == scan.started event_id."""
     async with session_factory() as session:
         app_id = await seed_application(session)
@@ -119,7 +125,12 @@ async def test_event_chain_causation_ids(session_factory) -> None:
     capturing = CapturingEventService()
     async with session_factory() as session:
         run = await session.get(ScanRun, run.id)
-        orch = ScanOrchestrationService(session=session, events=capturing)
+        orch = ScanOrchestrationService(
+            session=session,
+            events=capturing,
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+        )
         await orch.run_scan(run.id)
         await session.commit()
 
@@ -142,7 +153,7 @@ async def test_event_chain_causation_ids(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_payload_contains_scan_run_id(session_factory) -> None:
+async def test_event_payload_contains_scan_run_id(session_factory, engine_test_lake_session) -> None:
     """scan_run_id must be present in event payloads, never in correlation_id."""
     async with session_factory() as session:
         run = await seed_pending_scan_run(session)
@@ -151,7 +162,12 @@ async def test_event_payload_contains_scan_run_id(session_factory) -> None:
     capturing = CapturingEventService()
     async with session_factory() as session:
         run = await session.get(ScanRun, run.id)
-        orch = ScanOrchestrationService(session=session, events=capturing)
+        orch = ScanOrchestrationService(
+            session=session,
+            events=capturing,
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+        )
         await orch.run_scan(run.id)
         await session.commit()
 

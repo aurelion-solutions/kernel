@@ -101,26 +101,34 @@ async def _make_access_fact(
     subject_id: uuid.UUID,
     resource_id: uuid.UUID,
 ) -> uuid.UUID:
-    """Create AccessFact, return fact.id."""
+    """Create access_fact via raw SQL — ORM model deleted Phase 15 Step 16."""
     from datetime import UTC, datetime
 
+    import sqlalchemy as sa
     from sqlalchemy import select
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.actions.models import Action as RefAction
 
     read_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
     read_action_id = read_id_result.scalar_one()
 
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 async def _make_initiative(

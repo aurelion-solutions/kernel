@@ -126,19 +126,19 @@ class ACLNormalizerService:
         # only the savepoint is rolled back; the outer transaction (AccessArtifact + Resource
         # written in steps 1–3) remains intact.
         from datetime import UTC, datetime
-
-        from src.inventory.access_facts.models import AccessFact  # local import to avoid cycles
+        from typing import Any
 
         # normalized.action is the Python Action StrEnum — its .value is the slug
         action_slug: str = normalized.action.value
         observed_now = datetime.now(UTC)
 
-        fact: AccessFact
+        fact: Any
         created_fact: bool
         try:
             async with session.begin_nested():  # SAVEPOINT
                 fact = await self._access_fact_service.create_fact(
                     session,
+                    delta_item_id=uuid.uuid4(),  # synthetic id; normalization pre-dates delta pipeline
                     subject_id=subject_id,
                     account_id=account_id,
                     resource_id=resource_id,

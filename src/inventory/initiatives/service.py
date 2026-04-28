@@ -70,10 +70,13 @@ class InitiativeService:
         correlation_id: str | None = None,
     ) -> Initiative:
         """Create an initiative. Validates FK existence before insert. Emits inventory.initiative.created."""
-        from src.inventory.access_facts.models import AccessFact
+        import sqlalchemy as sa
 
-        fact = await session.get(AccessFact, access_fact_id)
-        if fact is None:
+        result = await session.execute(
+            sa.text('SELECT id FROM access_facts WHERE id = :id'),
+            {'id': access_fact_id},
+        )
+        if result.one_or_none() is None:
             raise InitiativeForeignKeyError(f'Access fact not found: {access_fact_id}')
 
         try:

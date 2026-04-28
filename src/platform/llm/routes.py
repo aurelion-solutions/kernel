@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 from src.core.context import current_correlation_id
 from src.core.db.deps import get_db
-from src.platform.llm.deps import get_llm_factory
+from src.platform.llm.deps import get_llm_factory, get_runtime_settings
 from src.platform.llm.exceptions import (
     LLMInferenceValidationError,
     LLMModelInvalidConfigError,
@@ -73,9 +73,9 @@ from src.platform.llm.service import (
     update_llm_model,
     update_llm_profile,
 )
-from src.platform.llm.settings import LLMSettings, llm_settings
 from src.platform.logs.deps import get_log_service
 from src.platform.logs.service import LogService
+from src.platform.runtime_settings.schemas import RuntimeSettingsConfig
 
 models_router = APIRouter(prefix='/llm/models', tags=['llm-models'])
 profiles_router = APIRouter(prefix='/llm/execution-profiles', tags=['llm-execution-profiles'])
@@ -84,6 +84,7 @@ inference_router = APIRouter(prefix='/inference', tags=['llm-inference'])
 DependsSession = Depends(get_db)
 DependsFactory = Depends(get_llm_factory)
 DependsLogService = Depends(get_log_service)
+DependsRuntimeSettings = Depends(get_runtime_settings)
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +251,6 @@ async def delete_profile(
 # ---------------------------------------------------------------------------
 
 
-def _get_settings() -> LLMSettings:
-    return llm_settings
-
-
 @inference_router.post('', response_model=InferenceResponse)
 async def post_inference(
     request_body: InferenceRequest,
@@ -261,11 +258,11 @@ async def post_inference(
     session: AsyncSession = DependsSession,
     factory: LLMFactory = DependsFactory,
     log_service: LogService = DependsLogService,
+    settings: RuntimeSettingsConfig = DependsRuntimeSettings,
     x_causation_id: str | None = Header(default=None, alias='X-Causation-ID'),
 ) -> InferenceResponse:
     """Run inference and return the full assembled response as JSON."""
     correlation_id = current_correlation_id()
-    settings = _get_settings()
     try:
         return await run_inference(
             session,
@@ -293,11 +290,11 @@ async def post_inference_stream(
     session: AsyncSession = DependsSession,
     factory: LLMFactory = DependsFactory,
     log_service: LogService = DependsLogService,
+    settings: RuntimeSettingsConfig = DependsRuntimeSettings,
     x_causation_id: str | None = Header(default=None, alias='X-Causation-ID'),
 ) -> EventSourceResponse:
     """Stream inference tokens as Server-Sent Events."""
     correlation_id = current_correlation_id()
-    settings = _get_settings()
 
     try:
         generator = stream_inference(

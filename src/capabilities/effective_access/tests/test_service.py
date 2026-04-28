@@ -134,25 +134,35 @@ async def _make_access_fact(  # type: ignore[no-untyped-def]
     valid_from: datetime = _NOW,
     valid_until: datetime | None = None,
 ) -> UUID:
+    import uuid as _uuid  # noqa: PLC0415
+
+    import sqlalchemy as sa
     from sqlalchemy import select
-    from src.inventory.access_facts.models import AccessFact, AccessFactEffect
     from src.inventory.actions.models import Action as RefAction
 
     read_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
     read_action_id = read_id_result.scalar_one()
 
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=read_action_id,
-        effect=AccessFactEffect(effect),
-        observed_at=valid_from,
-        valid_from=valid_from,
-        valid_until=valid_until,
+    fact_id = _uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from, valid_until) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from, :valid_until)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': read_action_id,
+            'effect': effect,
+            'observed_at': valid_from,
+            'valid_from': valid_from,
+            'valid_until': valid_until,
+        },
     )
-    session.add(fact)
     await session.flush()
-    return fact.id
+    return fact_id
 
 
 async def _make_initiative(  # type: ignore[no-untyped-def]

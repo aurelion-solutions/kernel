@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import tempfile
+from typing import Any
 import uuid
 
+import pytest
 import sqlalchemy as sa
 from src.capabilities.access_analysis.capabilities.models import Capability
 from src.capabilities.access_analysis.capability_grants.models import CapabilityGrant
@@ -17,7 +20,6 @@ from src.capabilities.access_analysis.capability_scope_keys.models import Capabi
 from src.capabilities.access_analysis.scan_runs.models import ScanRun, ScanRunTrigger
 from src.capabilities.access_analysis.sod_rules.models import SodRule, SodRuleScope, SodSeverity
 from src.capabilities.effective_access.models import EffectiveGrant, EffectiveGrantEffect
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
 from src.inventory.actions.models import Action as RefAction
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
@@ -25,6 +27,9 @@ from src.inventory.nhi.models import NHI
 from src.inventory.resources.models import Resource
 from src.inventory.subjects.models import Subject, SubjectKind, SubjectNHIKind
 from src.platform.applications.models import Application
+from src.platform.lake.config import LakeSettings
+from src.platform.lake.duckdb_session import LakeSessionFactory
+from src.platform.logs.service import NoOpLogService
 
 # ---------------------------------------------------------------------------
 # Seeding helpers
@@ -130,17 +135,32 @@ async def seed_effective_grant(session, subject_id: uuid.UUID, app_id: uuid.UUID
     read_action_result = await session.execute(sa.select(RefAction.id).where(RefAction.slug == 'read').limit(1))
     read_action_id = read_action_result.scalar_one()
 
-    fact = AccessFact(
-        subject_id=subject_id,
-        resource_id=resource_id,
-        action_id=read_action_id,
-        effect=AccessFactEffect.allow,
-        observed_at=now,
-        valid_from=now,
-        is_active=True,
+    fact_id = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, observed_at, valid_from, is_active) '
+            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at, :valid_from, :is_active)'
+        ),
+        {
+            'id': fact_id,
+            'subject_id': subject_id,
+            'resource_id': resource_id,
+            'action_id': read_action_id,
+            'effect': 'allow',
+            'observed_at': now,
+            'valid_from': now,
+            'is_active': True,
+        },
     )
-    session.add(fact)
     await session.flush()
+
+    # Wrap in proxy for use below
+    class _FactProxy:
+        def __init__(self, fid: uuid.UUID) -> None:
+            self.id = fid
+
+    fact = _FactProxy(fact_id)
 
     initiative = Initiative(
         access_fact_id=fact.id,
@@ -215,3 +235,39 @@ async def seed_mapping(session, capability_id: int, app_id: uuid.UUID, scope_key
     session.add(m)
     await session.flush()
     return m.id
+
+
+# ---------------------------------------------------------------------------
+# Lake session fixture for engine tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def engine_test_lake_session() -> Any:  # noqa: ANN401
+    """Return a LakeSession backed by a tmp-dir Iceberg warehouse.
+
+    The warehouse has normalized.access_facts provisioned so iceberg_scan
+    returns 0 rows (empty) instead of raising — engine tests that don't seed
+    Iceberg data expect 0 unused findings and should complete successfully.
+    """
+    from src.platform.lake.catalog import get_catalog, reset_catalog_cache_for_tests
+    from src.platform.lake.provisioning import ensure_tables
+
+    tmp_dir = tempfile.mkdtemp(prefix='aurelion_engine_test_lake_')
+    settings = LakeSettings(
+        catalog_url=f'sqlite:///{tmp_dir}/catalog.db',
+        warehouse_uri=f'file://{tmp_dir}/warehouse',
+        storage_provider='file',
+    )
+    log = NoOpLogService()
+
+    reset_catalog_cache_for_tests()
+    catalog = get_catalog(settings, log_service=log)  # type: ignore[arg-type]
+    ensure_tables(catalog, log_service=log)  # type: ignore[arg-type]
+    reset_catalog_cache_for_tests()
+
+    factory = LakeSessionFactory(settings=settings, log_service=log, pg_dsn=None)  # type: ignore[arg-type]
+    session = factory.acquire()
+    yield session
+    session.__exit__(None, None, None)
+    factory.close_all()

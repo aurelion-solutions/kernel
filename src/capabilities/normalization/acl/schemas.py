@@ -10,7 +10,7 @@ from typing import Literal
 import uuid
 
 from pydantic import BaseModel, field_validator
-from src.inventory.access_facts.models import AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
 from src.inventory.resources.models import ResourceDataSensitivity, ResourceEnvironment, ResourcePrivilegeLevel
 

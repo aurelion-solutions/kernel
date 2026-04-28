@@ -86,14 +86,16 @@ async def _seed_artifact(engine, app_id: uuid.UUID, **kwargs) -> uuid.UUID:
 
 @pytest.mark.asyncio
 async def test_get_access_artifacts_200_empty(app_with_access_artifacts) -> None:
-    """GET /access-artifacts returns 200 with empty list."""
+    """GET /access-artifacts returns 200 with empty items list."""
     async with AsyncClient(
         transport=ASGITransport(app=app_with_access_artifacts),
         base_url='http://testserver',
     ) as client:
         response = await client.get('/api/v0/access-artifacts')
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+    assert data['items'] == []
+    assert data['next_cursor'] is None
 
 
 @pytest.mark.asyncio
@@ -110,7 +112,7 @@ async def test_get_access_artifacts_filter_by_artifact_type(app_with_access_arti
         response = await client.get('/api/v0/access-artifacts', params={'artifact_type': 'sap_role'})
 
     assert response.status_code == 200
-    data = response.json()
+    data = response.json()['items']
     assert all(r['artifact_type'] == 'sap_role' for r in data)
     assert len(data) >= 1
 
@@ -130,7 +132,7 @@ async def test_get_access_artifacts_old_source_kind_param_ignored(app_with_acces
 
     assert response.status_code == 200
     # Old param is unknown — FastAPI ignores it, both artifacts returned
-    data = response.json()
+    data = response.json()['items']
     assert len(data) >= 2
 
 
@@ -171,7 +173,7 @@ async def test_get_access_artifacts_list_carries_new_fields(app_with_access_arti
         response = await client.get('/api/v0/access-artifacts', params={'artifact_type': 'sap_role'})
 
     assert response.status_code == 200
-    data = response.json()
+    data = response.json()['items']
     assert len(data) >= 1
     item = data[0]
     assert 'artifact_type' in item
@@ -272,7 +274,7 @@ async def test_get_access_artifacts_list_returns_permitted_fields_set(app_with_a
         response = await client.get('/api/v0/access-artifacts', params={'artifact_type': 'db_grant'})
 
     assert response.status_code == 200
-    items = [i for i in response.json() if i['external_id'] == 'grant-permitted-list-set']
+    items = [i for i in response.json()['items'] if i['external_id'] == 'grant-permitted-list-set']
     assert len(items) == 1
     item = items[0]
     assert item['raw_name'] == 'DB SELECT Grant'
@@ -299,7 +301,7 @@ async def test_get_access_artifacts_list_returns_permitted_fields_null(app_with_
         response = await client.get('/api/v0/access-artifacts', params={'artifact_type': 'sap_role'})
 
     assert response.status_code == 200
-    items = [i for i in response.json() if i['external_id'] == 'role-permitted-list-null']
+    items = [i for i in response.json()['items'] if i['external_id'] == 'role-permitted-list-null']
     assert len(items) == 1
     item = items[0]
     assert item['raw_name'] is None
@@ -347,7 +349,7 @@ async def test_list_access_artifacts_is_active_filter(app_with_access_artifacts,
             params={'artifact_type': 'acl_entry', 'is_active': 'true'},
         )
         assert resp_true.status_code == 200
-        ids_active = {r['id'] for r in resp_true.json()}
+        ids_active = {r['id'] for r in resp_true.json()['items']}
         assert str(active_id) in ids_active
         assert str(inactive_id) not in ids_active
 
@@ -357,7 +359,7 @@ async def test_list_access_artifacts_is_active_filter(app_with_access_artifacts,
             params={'artifact_type': 'acl_entry', 'is_active': 'false'},
         )
         assert resp_false.status_code == 200
-        ids_inactive = {r['id'] for r in resp_false.json()}
+        ids_inactive = {r['id'] for r in resp_false.json()['items']}
         assert str(inactive_id) in ids_inactive
         assert str(active_id) not in ids_inactive
 
@@ -367,6 +369,6 @@ async def test_list_access_artifacts_is_active_filter(app_with_access_artifacts,
             params={'artifact_type': 'acl_entry'},
         )
         assert resp_all.status_code == 200
-        ids_all = {r['id'] for r in resp_all.json()}
+        ids_all = {r['id'] for r in resp_all.json()['items']}
         assert str(active_id) in ids_all
         assert str(inactive_id) in ids_all

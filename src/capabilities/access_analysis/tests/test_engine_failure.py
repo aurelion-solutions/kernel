@@ -15,10 +15,11 @@ from src.capabilities.access_analysis.scan_runs.models import ScanRun, ScanRunSt
 from src.capabilities.access_analysis.service import ScanOrchestrationService
 from src.capabilities.access_analysis.tests.conftest import seed_pending_scan_run
 from src.platform.events.testing import CapturingEventService
+from src.platform.logs.service import NoOpLogService
 
 
 @pytest.mark.asyncio
-async def test_engine_failure_sets_status_failed(session_factory) -> None:
+async def test_engine_failure_sets_status_failed(session_factory, engine_test_lake_session) -> None:
     """When the engine's bulk-loader raises, ScanRun.status becomes failed."""
     async with session_factory() as session:
         run = await seed_pending_scan_run(session)
@@ -33,7 +34,12 @@ async def test_engine_failure_sets_status_failed(session_factory) -> None:
     ):
         async with session_factory() as session:
             run = await session.get(ScanRun, run.id)
-            orch = ScanOrchestrationService(session=session, events=capturing)
+            orch = ScanOrchestrationService(
+                session=session,
+                events=capturing,
+                lake_session=engine_test_lake_session,
+                log_service=NoOpLogService(),
+            )
             updated = await orch.run_scan(run.id)
             await session.commit()
 
@@ -43,7 +49,7 @@ async def test_engine_failure_sets_status_failed(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_failure_emits_scan_failed_event(session_factory) -> None:
+async def test_engine_failure_emits_scan_failed_event(session_factory, engine_test_lake_session) -> None:
     """scan.failed is emitted with error_class and error_message on failure."""
     async with session_factory() as session:
         run = await seed_pending_scan_run(session)
@@ -58,7 +64,12 @@ async def test_engine_failure_emits_scan_failed_event(session_factory) -> None:
     ):
         async with session_factory() as session:
             run = await session.get(ScanRun, run.id)
-            orch = ScanOrchestrationService(session=session, events=capturing)
+            orch = ScanOrchestrationService(
+                session=session,
+                events=capturing,
+                lake_session=engine_test_lake_session,
+                log_service=NoOpLogService(),
+            )
             await orch.run_scan(run.id)
             await session.commit()
 
@@ -74,7 +85,7 @@ async def test_engine_failure_emits_scan_failed_event(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_failure_no_half_written_findings(session_factory) -> None:
+async def test_engine_failure_no_half_written_findings(session_factory, engine_test_lake_session) -> None:
     """On failure, no Finding rows are written to the database."""
     async with session_factory() as session:
         run = await seed_pending_scan_run(session)
@@ -89,7 +100,12 @@ async def test_engine_failure_no_half_written_findings(session_factory) -> None:
     ):
         async with session_factory() as session:
             run = await session.get(ScanRun, run.id)
-            orch = ScanOrchestrationService(session=session, events=CapturingEventService())
+            orch = ScanOrchestrationService(
+                session=session,
+                events=CapturingEventService(),
+                lake_session=engine_test_lake_session,
+                log_service=NoOpLogService(),
+            )
             await orch.run_scan(run.id)
             await session.commit()
 

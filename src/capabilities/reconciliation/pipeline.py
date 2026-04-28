@@ -2,42 +2,134 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Artifact-first reconciliation pipeline.
+"""Artifact-first reconciliation pipeline — Phase 15 Step 8 rewrite.
 
-Entry point: ``run_reconciliation(session, *, application_id, correlation_id)``.
-Six private ``_phase_*`` helpers implement the algorithm.
+Entry point: ``run_reconciliation(session, lake_session, catalog, *, application_id)``.
+
+Pipeline phases:
+  1. ``_phase_load_artifacts``      — DuckDB iceberg_scan raw.access_artifacts
+  2. ``_phase_dispatch``            — handler dispatch → NormalizationResult candidates
+  3. ``_phase_load_current_state``  — DuckDB iceberg_scan normalized.access_facts
+  4. ``_phase_resolve_action_ids``  — DuckDB ref_actions_local TEMP TABLE lookup
+  5. ``_phase_persist_delta``       — compute set-diff + write ReconciliationDeltaItems
+
+Deleted phases (Step 8):
+  - ``_phase_apply_delta`` — replaced by ``_phase_persist_delta``; no fact mutation here.
+  - ``_write_binding``, ``_require_subject_or_fail`` — belonged to apply phase.
+
+Design decisions:
+  - NO writes to ``normalized.access_facts`` in this step (Steps 11–12 own that).
+  - NO calls to ``AccessFactService.*`` in this module.
+  - NO logging here — Step 9 adds LogService call sites.
+  - NO events here — Step 9 adds event emission.
+  - Caller (route or CLI) commits the transaction; this module only flushes.
+
+Known race (documented):
+  Snapshot ids are captured via ``catalog.load_table(...).current_snapshot()``
+  BEFORE running DuckDB queries.  If a writer commits a new snapshot between the
+  capture and the scan, DuckDB may read a newer snapshot than the recorded id.
+  Mitigated by the single-writer kernel invariant and Step 9 advisory lock.
+  Revisit if concurrent writes are ever allowed.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.capabilities.reconciliation.contracts import NormalizationResult
+from src.capabilities.reconciliation.hashing import compute_natural_key_hash
+from src.capabilities.reconciliation.models import (
+    ReconciliationDeltaItem,
+    ReconciliationDeltaOperation,
+    ReconciliationRunStatus,
+)
 from src.capabilities.reconciliation.registry import get_handler
-from src.inventory.access_artifacts.models import AccessArtifact
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-from src.inventory.artifact_bindings.service import ArtifactBindingDuplicateError, ArtifactBindingService
-from src.inventory.resources.models import Resource
+from src.capabilities.reconciliation.repository import (
+    RunCounts,
+    bulk_insert_delta_items,
+    create_run,
+    update_run_status,
+)
+from src.capabilities.reconciliation.views import AccessArtifactRowView, AccessFactRowView
+from src.inventory.access_artifacts.schemas import AccessArtifactView
+from src.platform.lake.duckdb_session import LakeSession
 
 if TYPE_CHECKING:
+    from pyiceberg.catalog import Catalog
     from src.capabilities.reconciliation.schemas import ReconciliationRunSummary
-    from src.inventory.access_facts.service import AccessFactService
-
-logger = logging.getLogger('reconciliation.pipeline')
 
 # (subject_id | None, account_id | None, resource_id, action_id)
 FactKey = tuple[UUID | None, UUID | None, UUID, int]
 
-# Artifact + result pair — keeps artifact reference for binding write
-_NormalizedCandidate = tuple[AccessArtifact, NormalizationResult]
+# Artifact row DTO + NormalizationResult pair.
+# The result may be None when a handler raised an exception (None sentinel).
+# _phase_dispatch adapts AccessArtifactRowView → AccessArtifactView before handler call.
+_NormalizedCandidate = tuple[AccessArtifactRowView, NormalizationResult | None]
 
-# Resolved candidate: artifact, result, action_id (already resolved), fact_key
-_ResolvedCandidate = tuple[AccessArtifact, NormalizationResult, int, FactKey]
+# Resolved candidate: DTO, result, action_id (resolved), fact_key
+_ResolvedCandidate = tuple[AccessArtifactRowView, NormalizationResult, int, FactKey]
+
+# Batch size for DuckDB fetchmany iterations.
+# TODO: move to LakeSettings in a later step.
+_FETCH_BATCH_SIZE = 5000
+
+
+# ---------------------------------------------------------------------------
+# Natural key hash — delegated to shared helper (Phase 15 Step 14 D5 refactor).
+# compute_natural_key_hash is imported from src.capabilities.reconciliation.hashing.
+# The private alias below allows existing call sites in this module to remain unchanged
+# without a sweeping rename refactor.
+_compute_natural_key_hash = compute_natural_key_hash
+
+
+# ---------------------------------------------------------------------------
+# DTO adapter
+# ---------------------------------------------------------------------------
+
+
+def _to_view(row: AccessArtifactRowView) -> AccessArtifactView:
+    """Adapt AccessArtifactRowView (pipeline-local) to AccessArtifactView (handler contract).
+
+    Key difference: AccessArtifactRowView.payload is str | None (JSON-encoded from lake);
+    AccessArtifactView.payload is dict[str, Any]. json.loads is required here.
+    ingest_batch_id is cast UUID | None → str | None.
+    tombstoned_at and ingested_at are absent in AccessArtifactRowView (not read by
+    reconciliation); they are defaulted to None / sentinel datetime respectively.
+    """
+    import json
+
+    payload_dict: dict[str, Any]
+    if row.payload is None:
+        payload_dict = {}
+    else:
+        # row.payload is str (JSON-encoded from lake column)
+        try:
+            loaded = json.loads(row.payload)
+            payload_dict = loaded if isinstance(loaded, dict) else {}
+        except (ValueError, TypeError):
+            payload_dict = {}
+
+    ingest_batch_id_str: str | None = str(row.ingest_batch_id) if row.ingest_batch_id is not None else None
+
+    return AccessArtifactView(
+        id=row.id,
+        application_id=row.application_id,
+        artifact_type=row.artifact_type,
+        external_id=row.external_id,
+        payload=payload_dict,
+        raw_name=row.raw_name,
+        effect=row.effect,
+        valid_from=row.valid_from,
+        valid_until=row.valid_until,
+        is_active=row.is_active,
+        tombstoned_at=None,
+        observed_at=row.observed_at,
+        ingested_at=row.observed_at,  # reconciliation doesn't read ingested_at; use observed_at as sentinel
+        ingest_batch_id=ingest_batch_id_str,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -45,27 +137,80 @@ _ResolvedCandidate = tuple[AccessArtifact, NormalizationResult, int, FactKey]
 # ---------------------------------------------------------------------------
 
 
-async def _phase_load_artifacts(
-    session: AsyncSession,
+def _phase_load_artifacts(
+    lake_session: LakeSession,
+    *,
     application_id: UUID,
-) -> list[AccessArtifact]:
-    """Load all active AccessArtifact rows for the application."""
-    result = await session.execute(
-        select(AccessArtifact).where(
-            AccessArtifact.application_id == application_id,
-            AccessArtifact.is_active.is_(True),
-        )
+    batch_size: int = _FETCH_BATCH_SIZE,
+) -> list[AccessArtifactRowView]:
+    """Load active artifacts for the application via DuckDB iceberg_scan.
+
+    SQL reads ``raw.access_artifacts`` filtered by ``application_id`` and
+    ``is_active=true``.  Rows are streamed via ``fetchmany(batch_size)`` to
+    avoid materialising the full result set into Python heap.
+    """
+    table_path = lake_session.iceberg_table_path('raw', 'access_artifacts')
+    sql = (
+        'SELECT id, application_id, artifact_type, external_id, payload, raw_name, '
+        '       effect, valid_from, valid_until, is_active, observed_at, ingest_batch_id '
+        f"FROM iceberg_scan('{table_path}') "
+        'WHERE application_id = ?::uuid AND is_active = true'
     )
-    return list(result.scalars().all())
+    lake_session.execute(sql, [str(application_id)])
+
+    rows: list[AccessArtifactRowView] = []
+    while True:
+        batch = lake_session._conn.fetchmany(batch_size)
+        if not batch:
+            break
+        for row in batch:
+            (
+                r_id,
+                r_application_id,
+                r_artifact_type,
+                r_external_id,
+                r_payload,
+                r_raw_name,
+                r_effect,
+                r_valid_from,
+                r_valid_until,
+                r_is_active,
+                r_observed_at,
+                r_ingest_batch_id,
+            ) = row
+            rows.append(
+                AccessArtifactRowView(
+                    id=UUID(str(r_id)) if not isinstance(r_id, UUID) else r_id,
+                    application_id=UUID(str(r_application_id))
+                    if not isinstance(r_application_id, UUID)
+                    else r_application_id,
+                    artifact_type=r_artifact_type,
+                    external_id=r_external_id,
+                    payload=r_payload,
+                    raw_name=r_raw_name,
+                    effect=r_effect,
+                    valid_from=r_valid_from,
+                    valid_until=r_valid_until,
+                    is_active=r_is_active,
+                    observed_at=r_observed_at,
+                    ingest_batch_id=UUID(str(r_ingest_batch_id)) if r_ingest_batch_id is not None else None,
+                )
+            )
+    return rows
 
 
 async def _phase_dispatch(
     session: AsyncSession,
-    artifacts: list[AccessArtifact],
+    artifacts: list[AccessArtifactRowView],
 ) -> tuple[list[_NormalizedCandidate], int]:
-    """Dispatch each artifact to its registered handler.
+    """Dispatch each artifact DTO to its registered handler.
 
-    Returns (candidates, unhandled_count).
+    AccessArtifactRowView is adapted to AccessArtifactView (handler contract) via
+    _to_view before each handler call. The handler Protocol expects AccessArtifactView
+    (Phase 15 Step 16).
+
+    Returns ``(candidates, unhandled_count)``.
+    Errored artifacts (handler raised) are appended as ``(artifact, None)`` sentinel.
     """
     candidates: list[_NormalizedCandidate] = []
     unhandled = 0
@@ -76,17 +221,12 @@ async def _phase_dispatch(
             unhandled += 1
             continue
         try:
-            results = await handler.handle(artifact, session)
+            view = _to_view(artifact)
+            results = await handler.handle(view, session)
         except Exception:
-            # Per-artifact exception → log + skip; counted in facts_errored by caller
-            logger.exception(
-                'Handler error for artifact %s (type=%s)',
-                artifact.id,
-                artifact.artifact_type,
-            )
-            # We signal "errored" by yielding a sentinel: None result.
-            # Caller tracks facts_errored separately; we use an explicit flag.
-            candidates.append((artifact, None))  # type: ignore[arg-type]
+            # Per-artifact exception — signal errored via None sentinel.
+            # Caller tracks facts_errored; no logging here (Step 9 adds LogService).
+            candidates.append((artifact, None))
             continue
         for result in results:
             candidates.append((artifact, result))
@@ -94,69 +234,110 @@ async def _phase_dispatch(
     return candidates, unhandled
 
 
-async def _phase_load_current_state(
-    session: AsyncSession,
+def _phase_load_current_state(
+    lake_session: LakeSession,
+    *,
     application_id: UUID,
-) -> tuple[set[FactKey], dict[FactKey, AccessFact]]:
-    """Load all ACTIVE AccessFact rows whose resource belongs to the application."""
-    result = await session.execute(
-        select(AccessFact)
-        .join(Resource, AccessFact.resource_id == Resource.id)
-        .where(
-            Resource.application_id == application_id,
-            AccessFact.is_active.is_(True),
-        )
+    batch_size: int = _FETCH_BATCH_SIZE,
+) -> tuple[set[FactKey], dict[FactKey, AccessFactRowView]]:
+    """Load active facts for the application via DuckDB iceberg_scan.
+
+    SQL reads ``normalized.access_facts`` filtered by ``application_id_denorm``
+    (the partition column) and ``is_active=true``.  No PG join required.
+
+    ``action_id`` is stored as ``StringType`` in the Iceberg schema — coerced to
+    ``int`` here so ``FactKey`` stays ``int``-typed.
+    """
+    table_path = lake_session.iceberg_table_path('normalized', 'access_facts')
+    sql = (
+        'SELECT id, subject_id, account_id, resource_id, action_id, effect, '
+        '       valid_from, valid_until, is_active, observed_at, natural_key_hash '
+        f"FROM iceberg_scan('{table_path}') "
+        'WHERE application_id_denorm = ?::uuid AND is_active = true'
     )
-    rows = list(result.scalars().all())
+    lake_session.execute(sql, [str(application_id)])
+
     current_keys: set[FactKey] = set()
-    current_rows: dict[FactKey, AccessFact] = {}
-    for row in rows:
-        key: FactKey = (row.subject_id, row.account_id, row.resource_id, row.action_id)
-        current_keys.add(key)
-        current_rows[key] = row
+    current_rows: dict[FactKey, AccessFactRowView] = {}
+
+    while True:
+        batch = lake_session._conn.fetchmany(batch_size)
+        if not batch:
+            break
+        for row in batch:
+            (
+                r_id,
+                r_subject_id,
+                r_account_id,
+                r_resource_id,
+                r_action_id,
+                r_effect,
+                r_valid_from,
+                r_valid_until,
+                r_is_active,
+                r_observed_at,
+                r_natural_key_hash,
+            ) = row
+            view = AccessFactRowView(
+                id=UUID(str(r_id)) if not isinstance(r_id, UUID) else r_id,
+                subject_id=UUID(str(r_subject_id)) if not isinstance(r_subject_id, UUID) else r_subject_id,
+                account_id=(
+                    UUID(str(r_account_id))
+                    if r_account_id is not None and not isinstance(r_account_id, UUID)
+                    else r_account_id
+                ),
+                resource_id=UUID(str(r_resource_id)) if not isinstance(r_resource_id, UUID) else r_resource_id,
+                action_id=int(r_action_id),
+                effect=r_effect,
+                valid_from=r_valid_from,
+                valid_until=r_valid_until,
+                is_active=r_is_active,
+                observed_at=r_observed_at,
+                natural_key_hash=r_natural_key_hash,
+            )
+            key: FactKey = (view.subject_id, view.account_id, view.resource_id, view.action_id)
+            current_keys.add(key)
+            current_rows[key] = view
+
     return current_keys, current_rows
 
 
 async def _phase_resolve_action_ids(
-    session: AsyncSession,
+    lake_session: LakeSession,
     candidates: list[_NormalizedCandidate],
 ) -> tuple[list[_ResolvedCandidate], int]:
-    """Bulk-resolve action_slug → action_id.
+    """Resolve action slugs → action ids via ``ref_actions_local`` TEMP TABLE.
 
-    Returns (resolved_candidates, errored_count).
+    Pattern-3 (phase_15 Step 1 Key decisions): ``ref_actions_local`` is a DuckDB
+    TEMP TABLE materialised once per session from PG ``ref_actions`` at open time.
     Unknown slugs → errored_count incremented, candidate skipped.
     Errored candidates (handler exception, None result) → skipped + counted.
     """
-    from src.inventory.actions.models import Action as RefAction
-
     # Collect unique slugs (skip errored / None results)
     slugs: set[str] = set()
     for _artifact, result in candidates:
         if result is not None:
             slugs.add(result.action_slug)
 
-    # Bulk fetch
     slug_to_id: dict[str, int] = {}
     if slugs:
-        rows = await session.execute(select(RefAction.id, RefAction.slug).where(RefAction.slug.in_(slugs)))
-        for action_id, slug in rows:
-            slug_to_id[slug] = action_id
+        placeholders = ', '.join('?' for _ in slugs)
+        sql = f'SELECT slug, id FROM ref_actions_local WHERE slug IN ({placeholders})'
+        lake_session.execute(sql, list(slugs))
+        for slug_val, action_id_val in lake_session.fetchall():
+            slug_to_id[slug_val] = int(action_id_val)
 
     resolved: list[_ResolvedCandidate] = []
     errored = 0
 
     for artifact, result in candidates:
         if result is None:
-            # Handler raised an exception — already logged; count as errored
+            # Handler raised an exception — signalled via None sentinel in _phase_dispatch.
             errored += 1
             continue
         action_id = slug_to_id.get(result.action_slug)
         if action_id is None:
-            logger.warning(
-                'Unknown action_slug %r for artifact %s — skipping',
-                result.action_slug,
-                artifact.id,
-            )
+            # Unknown slug — skip without logging (Step 9 adds LogService)
             errored += 1
             continue
         key: FactKey = (result.subject_id, result.account_id, result.resource_id, action_id)
@@ -165,23 +346,62 @@ async def _phase_resolve_action_ids(
     return resolved, errored
 
 
-async def _phase_apply_delta(
+def _build_snapshot_json(view: AccessFactRowView) -> dict[str, Any]:
+    """Build a plain-dict snapshot from an AccessFactRowView for before/after JSON."""
+    return {
+        'subject_id': str(view.subject_id),
+        'account_id': str(view.account_id) if view.account_id is not None else None,
+        'resource_id': str(view.resource_id),
+        'action_id': view.action_id,
+        'effect': view.effect,
+        'valid_from': view.valid_from.isoformat() if view.valid_from is not None else None,
+        'valid_until': view.valid_until.isoformat() if view.valid_until is not None else None,
+        'is_active': view.is_active,
+    }
+
+
+def _build_candidate_json(result: NormalizationResult, action_id: int, is_active: bool) -> dict[str, Any]:
+    """Build a plain-dict snapshot from a resolved NormalizationResult for after JSON."""
+    return {
+        'subject_id': str(result.subject_id) if result.subject_id is not None else None,
+        'account_id': str(result.account_id) if result.account_id is not None else None,
+        'resource_id': str(result.resource_id),
+        'action_id': action_id,
+        'effect': result.effect,
+        'valid_from': result.valid_from.isoformat() if result.valid_from is not None else None,
+        'valid_until': result.valid_until.isoformat() if result.valid_until is not None else None,
+        'is_active': is_active,
+    }
+
+
+async def _phase_persist_delta(
     session: AsyncSession,
+    *,
+    run_id: UUID,
     resolved_candidates: list[_ResolvedCandidate],
     current_keys: set[FactKey],
-    current_rows: dict[FactKey, AccessFact],
-    access_fact_service: AccessFactService,
-    artifact_binding_service: ArtifactBindingService,
+    current_rows: dict[FactKey, AccessFactRowView],
+    application_id: UUID,
     run_started_at: datetime,
-    correlation_id: str | None,
-) -> tuple[int, int, int]:
-    """Apply the set-diff and write facts + bindings.
+) -> tuple[int, int, int, int]:
+    """Compute set-diff and persist ``ReconciliationDeltaItem`` rows to PG.
 
-    Returns (facts_created, facts_updated, facts_revoked).
+    Never calls ``AccessFactService.*`` — this is comparison-only.
+    Never writes to ``normalized.access_facts``.
+
+    Write-amplification guard: unchanged keys (key in both sets, no field drift)
+    are NOT inserted as rows.  ``unchanged_count`` is returned for the run summary
+    but no delta item row is created.  This prevents the delta_items table from
+    accumulating rows for every reconciliation cycle even when nothing changed.
+
+    ``noop`` operation is never emitted in this step (only makes sense if we
+    materialised unchanged rows, which we don't).
+
+    Returns ``(created, updated, revoked, unchanged)``.
     """
-    # Build new key set and map key → (artifact, result)
+    # Build new key set and key → (artifact, result, action_id) map
     new_keys: set[FactKey] = set()
-    key_to_candidate: dict[FactKey, tuple[AccessArtifact, NormalizationResult, int]] = {}
+    key_to_candidate: dict[FactKey, tuple[AccessArtifactRowView, NormalizationResult, int]] = {}
 
     for artifact, result, action_id, key in resolved_candidates:
         new_keys.add(key)
@@ -191,118 +411,111 @@ async def _phase_apply_delta(
     revoked_keys = current_keys - new_keys
     common_keys = new_keys & current_keys
 
-    facts_created = 0
-    facts_updated = 0
-    facts_revoked = 0
+    items: list[ReconciliationDeltaItem] = []
+    created_count = 0
+    updated_count = 0
+    revoked_count = 0
+    unchanged_count = 0
 
-    # CREATE (or reactivate) facts
+    # CREATE
     for key in created_keys:
-        artifact, result, _action_id = key_to_candidate[key]
-        try:
-            fact = await access_fact_service.create_fact(
-                session,
-                subject_id=result.subject_id or _require_subject_or_fail(result),
+        artifact, result, action_id = key_to_candidate[key]
+        subject_id = result.subject_id or key[0]
+        if subject_id is None:
+            # Both subject_id and account_id are None — skip (guard against bad handler output)
+            continue
+        natural_key_hash = _compute_natural_key_hash(
+            application_id, subject_id, result.account_id, result.resource_id, action_id, result.effect
+        )
+        items.append(
+            ReconciliationDeltaItem(
+                reconciliation_run_id=run_id,
+                operation=ReconciliationDeltaOperation.create,
+                natural_key_hash=natural_key_hash,
+                subject_id=subject_id,
                 account_id=result.account_id,
                 resource_id=result.resource_id,
-                action_slug=result.action_slug,
-                effect=AccessFactEffect(result.effect),
-                observed_at=run_started_at,
-                valid_from=result.valid_from,
-                valid_until=result.valid_until,
-                correlation_id=correlation_id,
+                action_id=action_id,
+                effect=result.effect,
+                source_artifact_id=artifact.id,
+                before_json=None,
+                after_json=_build_candidate_json(result, action_id, is_active=True),
             )
-        except Exception:
-            logger.exception('Failed to create fact for artifact %s', artifact.id)
-            continue
+        )
+        created_count += 1
 
-        facts_created += 1
-        await _write_binding(session, artifact, fact.id, artifact_binding_service, correlation_id)
-
-    # UPDATE (field drift)
+    # UPDATE (field drift on common keys)
     for key in common_keys:
-        artifact, result, _action_id = key_to_candidate[key]
+        artifact, result, action_id = key_to_candidate[key]
         current_fact = current_rows[key]
 
-        # Compare mutable fields
-        if isinstance(current_fact.effect, AccessFactEffect):
-            current_effect_str = current_fact.effect.value
-        else:
-            current_effect_str = str(current_fact.effect)
-        # valid_from is NOT NULL in schema; None from handler means "use existing"
         vf_differs = result.valid_from is not None and current_fact.valid_from != result.valid_from
         fields_differ = (
-            current_effect_str != result.effect or vf_differs or current_fact.valid_until != result.valid_until
+            current_fact.effect != result.effect or vf_differs or current_fact.valid_until != result.valid_until
         )
 
         if not fields_differ:
+            unchanged_count += 1
             continue
 
-        try:
-            await access_fact_service.refresh_fact_fields(
-                session,
-                current_fact.id,
-                effect=AccessFactEffect(result.effect),
-                valid_from=result.valid_from,
-                valid_until=result.valid_until,
-                observed_at=run_started_at,
-                correlation_id=correlation_id,
+        subject_id = result.subject_id or key[0]
+        if subject_id is None:
+            unchanged_count += 1
+            continue
+
+        natural_key_hash = _compute_natural_key_hash(
+            application_id, subject_id, result.account_id, result.resource_id, action_id, result.effect
+        )
+        items.append(
+            ReconciliationDeltaItem(
+                reconciliation_run_id=run_id,
+                operation=ReconciliationDeltaOperation.update,
+                natural_key_hash=natural_key_hash,
+                subject_id=subject_id,
+                account_id=result.account_id,
+                resource_id=result.resource_id,
+                action_id=action_id,
+                effect=result.effect,
+                existing_fact_id=current_fact.id,
+                source_artifact_id=artifact.id,
+                before_json=_build_snapshot_json(current_fact),
+                after_json=_build_candidate_json(result, action_id, is_active=True),
             )
-        except Exception:
-            logger.exception('Failed to refresh fact fields for artifact %s', artifact.id)
-            continue
-
-        facts_updated += 1
-        await _write_binding(session, artifact, current_fact.id, artifact_binding_service, correlation_id)
+        )
+        updated_count += 1
 
     # REVOKE
     for key in revoked_keys:
-        fact = current_rows[key]
-        try:
-            await access_fact_service.revoke_fact(
-                session,
-                fact.id,
-                observed_at=run_started_at,
-                correlation_id=correlation_id,
+        current_fact = current_rows[key]
+        natural_key_hash = _compute_natural_key_hash(
+            application_id,
+            current_fact.subject_id,
+            current_fact.account_id,
+            current_fact.resource_id,
+            current_fact.action_id,
+            current_fact.effect,
+        )
+        items.append(
+            ReconciliationDeltaItem(
+                reconciliation_run_id=run_id,
+                operation=ReconciliationDeltaOperation.revoke,
+                natural_key_hash=natural_key_hash,
+                subject_id=current_fact.subject_id,
+                account_id=current_fact.account_id,
+                resource_id=current_fact.resource_id,
+                action_id=current_fact.action_id,
+                effect=current_fact.effect,
+                existing_fact_id=current_fact.id,
+                before_json=_build_snapshot_json(current_fact),
+                after_json=None,
             )
-        except Exception:
-            logger.exception('Failed to revoke fact %s', fact.id)
-            continue
-        facts_revoked += 1
-
-    return facts_created, facts_updated, facts_revoked
-
-
-def _require_subject_or_fail(result: NormalizationResult) -> UUID:
-    """Return subject_id; raise if None (both subject_id and account_id are None)."""
-    if result.subject_id is None:
-        raise ValueError('NormalizationResult must set at least one of subject_id or account_id')
-    return result.subject_id
-
-
-async def _write_binding(
-    session: AsyncSession,
-    artifact: AccessArtifact,
-    fact_id: UUID,
-    service: ArtifactBindingService,
-    correlation_id: str | None,
-) -> None:
-    """Write ArtifactBinding; silently skip on duplicate."""
-    try:
-        await service.create_binding(
-            session,
-            artifact_id=artifact.id,
-            target_type='access_fact',
-            target_id=fact_id,
-            correlation_id=correlation_id,
         )
-    except ArtifactBindingDuplicateError:
-        pass
-    except Exception:
-        logger.exception(
-            'Failed to create ArtifactBinding for artifact %s → fact %s',
-            artifact.id,
-            fact_id,
-        )
+        revoked_count += 1
+
+    if items:
+        await bulk_insert_delta_items(session, items)
+
+    return created_count, updated_count, revoked_count, unchanged_count
 
 
 # ---------------------------------------------------------------------------
@@ -312,41 +525,109 @@ async def _write_binding(
 
 async def run_reconciliation(
     session: AsyncSession,
+    lake_session: LakeSession,
+    catalog: Catalog,
     *,
     application_id: UUID,
-    access_fact_service: AccessFactService,
-    artifact_binding_service: ArtifactBindingService,
     correlation_id: str | None = None,
 ) -> ReconciliationRunSummary:
     """Run the artifact-first reconciliation pipeline for one application.
 
+    Orchestrates five phases:
+      1. Capture Iceberg snapshot ids BEFORE running queries.
+      2. Create a ``ReconciliationRun`` row (status=running).
+      3. Load artifacts, dispatch handlers, load current state,
+         resolve action ids, persist delta.
+      4. On success: update run to ``pending_apply`` with counts.
+      5. On failure: update run to ``failed`` with error string; re-raise.
+
     Does NOT commit — caller (route or CLI) owns the transaction boundary.
+
+    Known race: snapshot ids captured here may lag if a writer commits a new
+    snapshot between capture and the DuckDB scan.  Mitigated by single-writer
+    kernel invariant + Step 9 advisory lock.  Documented here; revisit if
+    concurrent lake writes are introduced.
     """
     from src.capabilities.reconciliation.schemas import ReconciliationRunSummary
+    from src.platform.lake.schemas import (
+        NORMALIZED_ACCESS_FACTS_TABLE,
+        RAW_ACCESS_ARTIFACTS_TABLE,
+    )
 
     run_started_at = datetime.now(UTC)
 
-    artifacts = await _phase_load_artifacts(session, application_id)
-    artifacts_ingested = len(artifacts)
+    # 1. Capture snapshot ids (before queries to document what was read)
+    observed_snapshot_id: int | None = None
+    current_snapshot_id: int | None = None
+    try:
+        artifacts_tbl = catalog.load_table(RAW_ACCESS_ARTIFACTS_TABLE)
+        snap = artifacts_tbl.current_snapshot()
+        observed_snapshot_id = snap.snapshot_id if snap is not None else None
+    except Exception:
+        observed_snapshot_id = None
 
-    raw_candidates, artifacts_unhandled = await _phase_dispatch(session, artifacts)
-    current_keys, current_rows = await _phase_load_current_state(session, application_id)
-    resolved_candidates, facts_errored = await _phase_resolve_action_ids(session, raw_candidates)
+    try:
+        facts_tbl = catalog.load_table(NORMALIZED_ACCESS_FACTS_TABLE)
+        snap = facts_tbl.current_snapshot()
+        current_snapshot_id = snap.snapshot_id if snap is not None else None
+    except Exception:
+        current_snapshot_id = None
 
-    facts_created, facts_updated, facts_revoked = await _phase_apply_delta(
+    # 2. Create run row
+    run = await create_run(
         session,
-        resolved_candidates,
-        current_keys,
-        current_rows,
-        access_fact_service,
-        artifact_binding_service,
-        run_started_at,
-        correlation_id,
+        application_id=application_id,
+        observed_snapshot_id=observed_snapshot_id,
+        current_snapshot_id=current_snapshot_id,
     )
+    run_id = run.id
+
+    try:
+        # 3. Pipeline phases
+        artifacts = _phase_load_artifacts(lake_session, application_id=application_id)
+        artifacts_ingested = len(artifacts)
+
+        raw_candidates, artifacts_unhandled = await _phase_dispatch(session, artifacts)
+        current_keys, current_rows = _phase_load_current_state(lake_session, application_id=application_id)
+        resolved_candidates, facts_errored = await _phase_resolve_action_ids(lake_session, raw_candidates)
+
+        facts_created, facts_updated, facts_revoked, unchanged_count = await _phase_persist_delta(
+            session,
+            run_id=run_id,
+            resolved_candidates=resolved_candidates,
+            current_keys=current_keys,
+            current_rows=current_rows,
+            application_id=application_id,
+            run_started_at=run_started_at,
+        )
+
+        # 4. Update run to pending_apply
+        await update_run_status(
+            session,
+            run_id,
+            status=ReconciliationRunStatus.pending_apply,
+            counts=RunCounts(
+                created=facts_created,
+                updated=facts_updated,
+                revoked=facts_revoked,
+                unchanged=unchanged_count,
+            ),
+        )
+
+    except Exception as exc:
+        # 5. Mark run as failed; re-raise so caller can handle
+        await update_run_status(
+            session,
+            run_id,
+            status=ReconciliationRunStatus.failed,
+            error=str(exc),
+        )
+        raise
 
     finished_at = datetime.now(UTC)
 
     return ReconciliationRunSummary(
+        run_id=run_id,
         application_id=application_id,
         started_at=run_started_at,
         finished_at=finished_at,
@@ -356,4 +637,7 @@ async def run_reconciliation(
         facts_revoked=facts_revoked,
         artifacts_unhandled=artifacts_unhandled,
         facts_errored=facts_errored,
+        unchanged_count=unchanged_count,
+        observed_snapshot_id=observed_snapshot_id,
+        current_snapshot_id=current_snapshot_id,
     )

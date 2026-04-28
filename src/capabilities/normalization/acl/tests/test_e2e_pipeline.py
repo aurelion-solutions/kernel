@@ -11,12 +11,11 @@ then asserts row counts, shapes, and event footprint.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from src.capabilities.normalization.acl.schemas import ACLEntryPayload
 from src.capabilities.normalization.acl.service import ACLNormalizerService
-from src.inventory.access_artifacts.models import AccessArtifact
 from src.inventory.access_artifacts.service import AccessArtifactService
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
+from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.access_facts.service import AccessFactService
 from src.inventory.artifact_bindings.models import ArtifactBinding
 from src.inventory.artifact_bindings.service import ArtifactBindingService
@@ -148,17 +147,18 @@ async def test_acl_pipeline_end_to_end(
 
         await session.commit()
 
-    # --- Row counts ---
+    # --- Row counts (raw SQL — ORM models deleted Phase 15 Step 16) ---
     async with session_factory() as session:
         artifact_count = (
             await session.execute(
-                select(func.count()).select_from(AccessArtifact).where(AccessArtifact.application_id == app_id)
+                text('SELECT COUNT(*) FROM access_artifacts WHERE application_id = :app_id'),
+                {'app_id': app_id},
             )
         ).scalar_one()
         resource_count = (
             await session.execute(select(func.count()).select_from(Resource).where(Resource.application_id == app_id))
         ).scalar_one()
-        fact_count = (await session.execute(select(func.count()).select_from(AccessFact))).scalar_one()
+        fact_count = (await session.execute(text('SELECT COUNT(*) FROM access_facts'))).scalar_one()
         binding_count = (await session.execute(select(func.count()).select_from(ArtifactBinding))).scalar_one()
 
     assert artifact_count == 6, f'Expected 6 artifacts, got {artifact_count}'
@@ -166,19 +166,21 @@ async def test_acl_pipeline_end_to_end(
     assert fact_count >= 3, f'Expected at least 3 facts, got {fact_count}'
     assert binding_count >= 6, f'Expected at least 6 bindings, got {binding_count}'
 
-    # --- Shape assertions ---
+    # --- Shape assertions (raw SQL) ---
     async with session_factory() as session:
-        facts = (await session.execute(select(AccessFact).where(AccessFact.subject_id == subject_id))).scalars().all()
+        facts_result = await session.execute(
+            text('SELECT effect FROM access_facts WHERE subject_id = :sid'),
+            {'sid': subject_id},
+        )
+        fact_effects = [r.effect for r in facts_result.all()]
 
-    assert all(f.effect == AccessFactEffect.allow for f in facts)
+    assert all(e == AccessFactEffect.allow.value for e in fact_effects)
 
     # Find the read-fact and write-fact for /repo/core/src.
     async with session_factory() as session:
         resources = (await session.execute(select(Resource).where(Resource.application_id == app_id))).scalars().all()
 
     core_resource = next(r for r in resources if r.external_id == '/repo/core/src')
-    # The write row was ingested second — resource was created on read-row,
-    # so privilege_level is 'read' (first-write-wins on create; no update path in Step 16).
     assert core_resource.privilege_level in (
         ResourcePrivilegeLevel.read,
         ResourcePrivilegeLevel.write,
@@ -192,40 +194,30 @@ async def test_acl_pipeline_end_to_end(
         write_action_id_result = await session.execute(select(RefAction.id).where(RefAction.slug == Action.write.value))
         write_action_id = write_action_id_result.scalar_one()
 
-        read_fact = (
-            (
-                await session.execute(
-                    select(AccessFact).where(
-                        AccessFact.subject_id == subject_id,
-                        AccessFact.action_id == read_action_id,
-                    )
-                )
+        read_fact_row = (
+            await session.execute(
+                text('SELECT id FROM access_facts WHERE subject_id = :sid AND action_id = :aid LIMIT 1'),
+                {'sid': subject_id, 'aid': read_action_id},
             )
-            .scalars()
-            .first()
-        )
-        write_fact = (
-            (
-                await session.execute(
-                    select(AccessFact).where(
-                        AccessFact.subject_id == subject_id,
-                        AccessFact.action_id == write_action_id,
-                    )
-                )
+        ).one_or_none()
+        write_fact_row = (
+            await session.execute(
+                text('SELECT id FROM access_facts WHERE subject_id = :sid AND action_id = :aid LIMIT 1'),
+                {'sid': subject_id, 'aid': write_action_id},
             )
-            .scalars()
-            .first()
-        )
+        ).one_or_none()
 
-    assert read_fact is not None
-    assert write_fact is not None
+    assert read_fact_row is not None
+    assert write_fact_row is not None
 
     # --- Event assertions ---
     event_types = [e.event_type for e in capturing_events.emitted]
 
     assert event_types.count('inventory.access_artifact.ingested') == 6
     assert event_types.count('inventory.resource.created') == 2
-    assert event_types.count('inventory.access_fact.created') == 3
+    # Step 12: inventory.access_fact.* events are no longer emitted by AccessFactService.
+    # They are emitted exclusively from SyncApplyService after Iceberg writes.
+    assert event_types.count('inventory.access_fact.created') == 0
     assert event_types.count('inventory.artifact_binding.created') == 6
     assert event_types.count('inventory.access_fact.revoked') == 0
 

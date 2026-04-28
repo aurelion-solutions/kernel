@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import ForeignKey, Index, UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -21,6 +21,8 @@ class ArtifactBinding(Base):
 
     target_type is an open snake_case string (no DB ENUM); supported values defined in service.py.
     target_id has no DB-level FK — application-level integrity is enforced in the service.
+    artifact_id is a soft Iceberg reference (Phase 15 Step 15); integrity is enforced by
+    ArtifactBindingService, not by a DB FK.
     """
 
     __tablename__ = 'artifact_bindings'
@@ -32,7 +34,6 @@ class ArtifactBinding(Base):
     )
     artifact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey('access_artifacts.id', ondelete='CASCADE'),
         nullable=False,
     )
     target_type: Mapped[str] = mapped_column(

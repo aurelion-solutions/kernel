@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import NoReturn
 import uuid
 
+import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.artifact_bindings.models import ArtifactBinding
@@ -67,9 +68,12 @@ def _resolve_target_loader(target_type: str) -> _TargetLoader:
     """
 
     async def _load_access_fact(session: AsyncSession, target_id: uuid.UUID) -> object | None:
-        from src.inventory.access_facts.models import AccessFact
-
-        return await session.get(AccessFact, target_id)
+        result = await session.execute(
+            sa.text('SELECT id FROM access_facts WHERE id = :id'),
+            {'id': target_id},
+        )
+        row = result.one_or_none()
+        return row  # truthy when row exists, None when not found
 
     async def _load_resource(session: AsyncSession, target_id: uuid.UUID) -> object | None:
         from src.inventory.resources.models import Resource
@@ -174,10 +178,12 @@ class ArtifactBindingService:
         """
         _validate_target_type(target_type)
 
-        from src.inventory.access_artifacts.models import AccessArtifact
-
-        artifact = await session.get(AccessArtifact, artifact_id)
-        if artifact is None:
+        result = await session.execute(
+            sa.text('SELECT id FROM access_artifacts WHERE id = :id'),
+            {'id': artifact_id},
+        )
+        artifact_row = result.one_or_none()
+        if artifact_row is None:
             raise ArtifactBindingArtifactNotFoundError(f'Access artifact not found: {artifact_id}')
 
         loader = _resolve_target_loader(target_type)

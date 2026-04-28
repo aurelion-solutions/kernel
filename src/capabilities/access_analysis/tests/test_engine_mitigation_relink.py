@@ -34,6 +34,7 @@ from src.capabilities.access_analysis.tests.conftest import (
     seed_sod_rule,
     seed_subject,
 )
+from src.platform.logs.service import NoOpLogService
 
 
 async def _seed_sod_scenario(session_factory):
@@ -77,7 +78,7 @@ async def _seed_sod_scenario(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_mitigation_relink_open_to_mitigated(session_factory) -> None:
+async def test_mitigation_relink_open_to_mitigated(session_factory, engine_test_lake_session) -> None:
     """Run 1: finding persisted as open. Mitigation activated. Run 2: status flips to mitigated."""
     subject_id, rule_id, owner_id = await _seed_sod_scenario(session_factory)
 
@@ -88,7 +89,15 @@ async def test_mitigation_relink_open_to_mitigated(session_factory) -> None:
         await session.flush()
         await session.refresh(run1)
         engine = ScanEngine()
-        result1 = await engine.run(session, run1, at=datetime.now(UTC), correlation_id='mit-run1')
+        result1 = await engine.run(
+            session,
+            run1,
+            at=datetime.now(UTC),
+            correlation_id='mit-run1',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result1.error is None
@@ -139,7 +148,15 @@ async def test_mitigation_relink_open_to_mitigated(session_factory) -> None:
         await session.refresh(run2)
         engine = ScanEngine()
         at = datetime.now(UTC)
-        result2 = await engine.run(session, run2, at=at, correlation_id='mit-run2')
+        result2 = await engine.run(
+            session,
+            run2,
+            at=at,
+            correlation_id='mit-run2',
+            lake_session=engine_test_lake_session,
+            log_service=NoOpLogService(),
+            pg_any_array_max_size=25000,
+        )
         await session.commit()
 
     assert result2.error is None

@@ -2,21 +2,36 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessFact API schemas."""
+"""AccessFact API schemas.
+
+Phase 15 Step 16: AccessFactEffect moved here from deleted models.py.
+AccessFactView added as the service-return DTO for lake-read paths.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 import uuid
 
 from pydantic import BaseModel, ConfigDict
-from src.inventory.access_facts.models import AccessFactEffect
 
 __all__ = [
     'AccessFactCreate',
     'AccessFactRead',
+    'AccessFactView',
     'AccessFactEffect',
 ]
+
+
+class AccessFactEffect(StrEnum):
+    """Effect of an access fact: allow or deny.
+
+    Moved from inventory/access_facts/models.py (Phase 15 Step 16 — PG table dropped).
+    """
+
+    allow = 'allow'
+    deny = 'deny'
 
 
 class AccessFactCreate(BaseModel):
@@ -55,3 +70,27 @@ class AccessFactRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AccessFactView(BaseModel):
+    """Frozen Pydantic v2 DTO for access fact reads — service-return type.
+
+    Returned by AccessFactService.get_fact, list_facts, get_fact_by_natural_key.
+    action_slug is resolved via DuckDB ref_actions_local join.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra='forbid')
+
+    id: uuid.UUID
+    subject_id: uuid.UUID
+    account_id: uuid.UUID | None
+    resource_id: uuid.UUID
+    action_id: int
+    action_slug: str
+    effect: AccessFactEffect
+    valid_from: datetime
+    valid_until: datetime | None
+    is_active: bool
+    revoked_at: datetime | None
+    observed_at: datetime
+    created_at: datetime

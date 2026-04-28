@@ -388,6 +388,143 @@ async def test_create_batch_does_not_emit_legacy_log_event_types(
 
 
 @pytest.mark.asyncio
+async def test_record_lake_write_persists_iceberg_columns(
+    storage_factory: DataLakeStorageFactory,
+    session_factory,
+) -> None:
+    """record_lake_write persists Iceberg columns and leaves storage coords NULL."""
+    svc = LakeBatchService(storage_factory=storage_factory)
+
+    async with session_factory() as session:
+        batch = await svc.record_lake_write(
+            session,
+            dataset_type='access_artifacts',
+            iceberg_namespace='raw',
+            iceberg_table='access_artifacts',
+            snapshot_id=12345,
+            row_count=42,
+        )
+        await session.commit()
+
+    assert batch.id is not None
+    assert batch.dataset_type == 'access_artifacts'
+    assert batch.iceberg_namespace == 'raw'
+    assert batch.iceberg_table == 'access_artifacts'
+    assert batch.snapshot_id == 12345
+    assert batch.row_count == 42
+    assert batch.storage_provider is None
+    assert batch.storage_key is None
+
+
+@pytest.mark.asyncio
+async def test_record_lake_write_works_without_optional_fields(
+    storage_factory: DataLakeStorageFactory,
+    session_factory,
+) -> None:
+    """record_lake_write succeeds when application_id, task_id, metadata_json are omitted."""
+    svc = LakeBatchService(storage_factory=storage_factory)
+
+    async with session_factory() as session:
+        batch = await svc.record_lake_write(
+            session,
+            dataset_type='access_artifacts',
+            iceberg_namespace='normalized',
+            iceberg_table='access_facts',
+            snapshot_id=99,
+            row_count=0,
+        )
+        await session.commit()
+
+    assert batch.application_id is None
+    assert batch.task_id is None
+    assert batch.metadata_json is None
+
+
+@pytest.mark.asyncio
+async def test_record_lake_write_emits_log_event(
+    tmp_path: Path,
+    storage_factory: DataLakeStorageFactory,
+    session_factory,
+) -> None:
+    """record_lake_write emits exactly one INFO log with required fields; no domain event."""
+    log_path = tmp_path / 'record_lake_write.jsonl'
+    log_factory = LogSinkFactory()
+    log_factory.register('file', lambda: FileLogSink(path=log_path))
+    log_service = LogService(sink=log_factory.get('file'))
+
+    capturing = CapturingEventService()
+    event_svc = EventService(sink=capturing)
+    svc = LakeBatchService(
+        storage_factory=storage_factory,
+        log_service=log_service,
+        event_service=event_svc,
+    )
+
+    async with session_factory() as session:
+        batch = await svc.record_lake_write(
+            session,
+            dataset_type='access_artifacts',
+            iceberg_namespace='raw',
+            iceberg_table='access_artifacts',
+            snapshot_id=7777,
+            row_count=10,
+        )
+        await session.commit()
+
+    assert log_path.exists()
+    log_records = [__import__('json').loads(line) for line in log_path.read_text().strip().split('\n')]
+    batch_records = [r for r in log_records if r.get('payload', {}).get('batch_id') == str(batch.id)]
+    assert len(batch_records) == 1, f'Expected 1 log record for batch, got {len(batch_records)}'
+
+    rec = batch_records[0]
+    assert rec['level'] == 'info'
+    assert rec['component'] == 'data-lake'
+    assert 'recorded' in rec['message']
+    assert rec['payload']['iceberg_namespace'] == 'raw'
+    assert rec['payload']['iceberg_table'] == 'access_artifacts'
+    assert rec['payload']['snapshot_id'] == 7777
+    assert rec['payload']['row_count'] == 10
+    # KEEP-variant guard: no event_type in log record
+    assert 'event_type' not in rec
+    # No domain event emitted by record_lake_write
+    assert len(capturing.emitted) == 0
+
+
+@pytest.mark.asyncio
+async def test_record_lake_write_does_not_commit(
+    storage_factory: DataLakeStorageFactory,
+    session_factory,
+) -> None:
+    """record_lake_write flushes (visible in same session) but does not commit."""
+    svc = LakeBatchService(storage_factory=storage_factory)
+
+    import sqlalchemy as sa
+
+    # Open one session, call record_lake_write, do NOT commit
+    async with session_factory() as session:
+        batch = await svc.record_lake_write(
+            session,
+            dataset_type='access_artifacts',
+            iceberg_namespace='raw',
+            iceberg_table='access_artifacts',
+            snapshot_id=55555,
+            row_count=1,
+        )
+        batch_id = batch.id
+
+        # Flushed: row is visible within the same session
+        result = await session.execute(sa.text('SELECT 1 FROM lake_batches WHERE id = :id').bindparams(id=batch_id))
+        assert result.scalar_one_or_none() == 1
+
+        # Do NOT commit — session exits via rollback on context manager exit
+
+    # Fresh independent session must NOT see the row (never committed)
+    async with session_factory() as independent:
+        result = await independent.execute(sa.text('SELECT 1 FROM lake_batches WHERE id = :id').bindparams(id=batch_id))
+        assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'method,explicit_corr_id',
     [

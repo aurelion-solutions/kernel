@@ -2,47 +2,29 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessFact service — business logic and event emission."""
+"""AccessFact service — lake-read-only facade.
+
+Phase 15 Step 16: PG write methods removed (create_fact, revoke_fact,
+refresh_fact_fields were dead since Step 12). ORM imports removed.
+Service reads from normalized.access_facts via DuckDB iceberg_scan.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import NoReturn
+from datetime import datetime
+from typing import Any
 import uuid
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-from src.inventory.access_facts.models import AccessFact, AccessFactEffect
-from src.inventory.access_facts.repository import (
-    create_access_fact as repo_create_access_fact,
+from src.inventory.access_facts.schemas import AccessFactEffect, AccessFactView
+from src.platform.logs.schemas import LogLevel
+from src.platform.logs.service import (
+    LogService,
+    NoOpLogService,
+    merge_emit_log_participant_fields,
+    noop_log_service,
 )
-from src.inventory.access_facts.repository import (
-    get_access_fact_by_id as repo_get_access_fact_by_id,
-)
-from src.inventory.access_facts.repository import (
-    get_access_fact_by_natural_key as repo_get_access_fact_by_natural_key,
-)
-from src.inventory.access_facts.repository import (
-    get_revoked_access_fact_by_key as repo_get_revoked_access_fact_by_key,
-)
-from src.inventory.access_facts.repository import (
-    list_access_facts as repo_list_access_facts,
-)
-from src.inventory.access_facts.repository import (
-    reactivate_access_fact as repo_reactivate_access_fact,
-)
-from src.inventory.access_facts.repository import (
-    revoke_access_fact as repo_revoke_access_fact,
-)
-from src.inventory.access_facts.repository import (
-    update_access_fact_fields as repo_update_access_fact_fields,
-)
-from src.platform.events.schemas import EventEnvelope, EventParticipantKind
-from src.platform.events.service import EventService, noop_event_service
 
 _COMPONENT = 'inventory.access_facts'
-
 
 # ---------------------------------------------------------------------------
 # Domain errors
@@ -57,262 +39,238 @@ class AccessFactNotFoundError(Exception):
         super().__init__(f'Access fact not found: {fact_id}')
 
 
+# ---------------------------------------------------------------------------
+# Backward-compat stubs (Phase 15 Step 16)
+# These error classes were removed when write methods were deleted.
+# They are retained here as stubs so that external callers (normalization/acl)
+# that import them by name don't break before those slices are migrated.
+# TODO: remove after normalization/acl is migrated away from AccessFact PG writes.
+# ---------------------------------------------------------------------------
+
+
 class DuplicateActiveAccessFactError(Exception):
-    """Raised when an active row with the same partial-unique key already exists.
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    Strict — not a silent no-op. The caller must check first or handle the error.
-    Maps to HTTP 409 in future write routes.
-    """
-
-    def __init__(self, detail: str) -> None:
+    def __init__(self, detail: str = '') -> None:
         self.detail = detail
         super().__init__(detail)
 
 
 class AccessFactForeignKeyError(Exception):
-    """Raised when a referenced entity (subject, resource, account) does not exist."""
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    def __init__(self, detail: str) -> None:
+    def __init__(self, detail: str = '') -> None:
         self.detail = detail
         super().__init__(detail)
 
 
 class AccessFactActionSlugUnknownError(Exception):
-    """Raised when the provided action_slug is not found in ref_actions.
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    Maps to HTTP 400 in future write routes.
-    """
-
-    def __init__(self, slug: str) -> None:
+    def __init__(self, slug: str = '') -> None:
         self.slug = slug
         super().__init__(f'Unknown action slug: {slug!r}')
 
 
 class AccessFactApplicationScopeMismatchError(Exception):
-    """Raised when Account.application_id != Resource.application_id.
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    Enforcement is in the service layer because PostgreSQL does not support
-    cross-table CHECK constraints natively; a trigger or materialized-view
-    approach would add operational complexity with no current benefit.
-    Maps to HTTP 422 in future write routes.
-    """
-
-    def __init__(self, account_id: uuid.UUID, resource_id: uuid.UUID) -> None:
-        self.account_id = account_id
-        self.resource_id = resource_id
-        super().__init__(f'Account {account_id} and resource {resource_id} belong to different applications')
+    def __init__(self, account_id: uuid.UUID | None = None, resource_id: uuid.UUID | None = None) -> None:
+        super().__init__(f'Scope mismatch: account={account_id}, resource={resource_id}')
 
 
 class AccessFactNotRevokedError(Exception):
-    """Raised by revoke_fact when the target row is already inactive.
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    Strict — silent no-op would hide connector bugs that double-revoke.
-    Maps to HTTP 409 in future write routes.
-    """
-
-    def __init__(self, fact_id: uuid.UUID) -> None:
+    def __init__(self, fact_id: uuid.UUID | None = None) -> None:
         self.fact_id = fact_id
         super().__init__(f'Access fact {fact_id} is already revoked')
 
 
 class AccessFactNotActiveError(Exception):
-    """Raised by refresh_fact_fields when the target row is revoked.
+    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
 
-    A revoked fact must be re-granted via create_fact (reactivation path),
-    not updated in place.
-    Maps to HTTP 409 in future write routes.
-    """
-
-    def __init__(self, fact_id: uuid.UUID) -> None:
+    def __init__(self, fact_id: uuid.UUID | None = None) -> None:
         self.fact_id = fact_id
-        super().__init__(f'Access fact {fact_id} is not active; use create_fact to reactivate')
+        super().__init__(f'Access fact {fact_id} is not active')
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers (service-layer discipline per ARCH_CONTEXT Step 11)
+# SQL helpers (blocking — called via asyncio.to_thread)
 # ---------------------------------------------------------------------------
 
+_FACT_COLUMNS = (
+    'id',
+    'subject_id',
+    'account_id',
+    'resource_id',
+    'action_id',
+    'action_slug',
+    'effect',
+    'valid_from',
+    'valid_until',
+    'is_active',
+    'revoked_at',
+    'observed_at',
+    'created_at',
+)
 
-async def _resolve_action_id(session: AsyncSession, slug: str) -> int | None:
-    """Return ref_actions.id for the given slug, or None if not found."""
-    from src.inventory.actions.models import Action as RefAction
 
-    result = await session.execute(select(RefAction.id).where(RefAction.slug == slug))
-    return result.scalar_one_or_none()
+def _row_to_view(row: tuple[Any, ...]) -> AccessFactView:
+    """Convert a DuckDB result row to AccessFactView."""
+    d = dict(zip(_FACT_COLUMNS, row, strict=True))
+    # Cast action_id to int (stored as string in some lake schemas)
+    if d.get('action_id') is not None:
+        d['action_id'] = int(d['action_id'])
+    # Normalise UUIDs
+    for field in ('id', 'subject_id', 'resource_id'):
+        if d.get(field) is not None and not isinstance(d[field], uuid.UUID):
+            d[field] = uuid.UUID(str(d[field]))
+    if d.get('account_id') is not None and not isinstance(d['account_id'], uuid.UUID):
+        d['account_id'] = uuid.UUID(str(d['account_id']))
+    return AccessFactView.model_validate(d, strict=False)
 
 
-async def _find_revoked_by_key(
-    session: AsyncSession,
+def _run_get_fact(
+    lake_session: Any,
     *,
+    warehouse_uri: str,
+    fact_id: uuid.UUID,
+) -> AccessFactView | None:
+    """DuckDB iceberg_scan for a single fact by id. Blocking."""
+    sql = f"""
+        SELECT
+            f.id, f.subject_id, f.account_id, f.resource_id,
+            f.action_id, r.slug AS action_slug, f.effect,
+            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
+            f.observed_at, f.created_at
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
+        WHERE f.id = ?::uuid AND f.id IS NOT NULL
+        LIMIT 1
+    """
+    lake_session.execute(sql, [str(fact_id)])
+    rows = lake_session.fetchmany(1)
+    if not rows:
+        return None
+    return _row_to_view(rows[0])
+
+
+def _run_list_facts(
+    lake_session: Any,
+    *,
+    warehouse_uri: str,
+    subject_id: uuid.UUID | None,
+    resource_id: uuid.UUID | None,
+    account_id: uuid.UUID | None,
+    action_slug: str | None,
+    effect: AccessFactEffect | None,
+    is_active: bool | None,
+    valid_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[AccessFactView]:
+    """DuckDB iceberg_scan for access facts with filters. Blocking."""
+    predicates: list[str] = ['f.id IS NOT NULL']
+    params: list[Any] = []
+
+    if subject_id is not None:
+        predicates.append('f.subject_id = ?::uuid')
+        params.append(str(subject_id))
+    if resource_id is not None:
+        predicates.append('f.resource_id = ?::uuid')
+        params.append(str(resource_id))
+    if account_id is not None:
+        predicates.append('f.account_id = ?::uuid')
+        params.append(str(account_id))
+    if action_slug is not None:
+        predicates.append('r.slug = ?')
+        params.append(action_slug)
+    if effect is not None:
+        predicates.append('f.effect = ?')
+        params.append(effect.value)
+    if is_active is not None:
+        predicates.append('f.is_active = ?')
+        params.append(is_active)
+    if valid_at is not None:
+        predicates.append('f.valid_from <= ?')
+        params.append(valid_at)
+        predicates.append('(f.valid_until IS NULL OR f.valid_until >= ?)')
+        params.append(valid_at)
+
+    where_clause = 'WHERE ' + ' AND '.join(predicates)
+
+    sql = f"""
+        SELECT
+            f.id, f.subject_id, f.account_id, f.resource_id,
+            f.action_id, r.slug AS action_slug, f.effect,
+            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
+            f.observed_at, f.created_at
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
+        {where_clause}
+        ORDER BY f.id
+        LIMIT ?
+        OFFSET ?
+    """
+    params.append(min(limit, 200))
+    params.append(offset)
+
+    lake_session.execute(sql, params)
+    views: list[AccessFactView] = []
+    while True:
+        batch = lake_session.fetchmany(500)
+        if not batch:
+            break
+        for row in batch:
+            views.append(_row_to_view(row))
+    return views
+
+
+def _run_get_by_natural_key(
+    lake_session: Any,
+    *,
+    warehouse_uri: str,
     subject_id: uuid.UUID,
     account_id: uuid.UUID | None,
     resource_id: uuid.UUID,
-    action_id: int,
-) -> AccessFact | None:
-    """Look up an existing revoked row by partial-unique key."""
-    return await repo_get_revoked_access_fact_by_key(
-        session,
-        subject_id=subject_id,
-        account_id=account_id,
-        resource_id=resource_id,
-        action_id=action_id,
-    )
+    action_slug: str,
+) -> AccessFactView | None:
+    """DuckDB iceberg_scan for active fact by natural key. Blocking."""
+    predicates = [
+        'f.subject_id = ?::uuid',
+        'f.resource_id = ?::uuid',
+        'r.slug = ?',
+        'f.is_active = true',
+        'f.id IS NOT NULL',
+    ]
+    params: list[Any] = [str(subject_id), str(resource_id), action_slug]
 
+    if account_id is None:
+        predicates.append('f.account_id IS NULL')
+    else:
+        predicates.append('f.account_id = ?::uuid')
+        params.append(str(account_id))
 
-async def _validate_application_scope(
-    session: AsyncSession,
-    *,
-    account_id: uuid.UUID,
-    resource_id: uuid.UUID,
-) -> None:
-    """Raise AccessFactApplicationScopeMismatchError if account and resource are in different apps.
+    where_clause = 'WHERE ' + ' AND '.join(predicates)
 
-    No-op call site when account_id is None — caller must guard.
-    Service-layer enforcement: cross-table CHECK is not possible in PostgreSQL without
-    triggers or deferred constraints; service check + tests is sufficient at this stage.
+    sql = f"""
+        SELECT
+            f.id, f.subject_id, f.account_id, f.resource_id,
+            f.action_id, r.slug AS action_slug, f.effect,
+            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
+            f.observed_at, f.created_at
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
+        {where_clause}
+        LIMIT 1
     """
-    from src.inventory.accounts.models import Account
-    from src.inventory.resources.models import Resource
 
-    account = await session.get(Account, account_id)
-    resource = await session.get(Resource, resource_id)
-    # Both should exist at this point (FK validation precedes scope check in create_fact)
-    if account is not None and resource is not None:
-        if account.application_id != resource.application_id:
-            raise AccessFactApplicationScopeMismatchError(account_id, resource_id)
-
-
-def _translate_create_integrity_error(exc: IntegrityError) -> NoReturn:
-    """Translate IntegrityError to a domain error based on pgcode.
-
-    pgcode 23505 → DuplicateActiveAccessFactError (partial-unique collision on active row).
-    pgcode 23503 → AccessFactForeignKeyError.
-    Any other pgcode → re-raise.
-    """
-    orig = exc.orig
-    pgcode: str | None = getattr(orig, 'pgcode', None) or getattr(orig, 'sqlstate', None)
-    if pgcode == '23505':
-        constraint = getattr(getattr(orig, 'diag', None), 'constraint_name', 'unknown')
-        raise DuplicateActiveAccessFactError(
-            f'Active access fact already exists for this key (constraint: {constraint})'
-        ) from exc
-    if pgcode == '23503':
-        raise AccessFactForeignKeyError(str(exc)) from exc
-    raise exc
-
-
-def _build_created_event(
-    fact: AccessFact,
-    action_slug: str,
-    correlation_id: str,
-) -> EventEnvelope:
-    return EventEnvelope(
-        event_id=uuid.uuid4(),
-        event_type='inventory.access_fact.created',
-        occurred_at=datetime.now(UTC),
-        correlation_id=correlation_id,
-        payload={
-            'access_fact_id': str(fact.id),
-            'subject_id': str(fact.subject_id),
-            'account_id': str(fact.account_id) if fact.account_id else None,
-            'resource_id': str(fact.resource_id),
-            'action_id': fact.action_id,
-            'action_slug': action_slug,
-            'effect': fact.effect.value,
-            'is_active': fact.is_active,
-            'valid_from': str(fact.valid_from),
-            'valid_until': str(fact.valid_until) if fact.valid_until else None,
-            'observed_at': str(fact.observed_at),
-        },
-        actor_kind=EventParticipantKind.CAPABILITY,
-        actor_id=_COMPONENT,
-        target_kind=EventParticipantKind.SYSTEM,
-        target_id=str(fact.id),
-    )
-
-
-def _build_reactivated_event(
-    fact: AccessFact,
-    action_slug: str,
-    previous_revoked_at: datetime | None,
-    correlation_id: str,
-) -> EventEnvelope:
-    return EventEnvelope(
-        event_id=uuid.uuid4(),
-        event_type='inventory.access_fact.reactivated',
-        occurred_at=datetime.now(UTC),
-        correlation_id=correlation_id,
-        payload={
-            'access_fact_id': str(fact.id),
-            'subject_id': str(fact.subject_id),
-            'account_id': str(fact.account_id) if fact.account_id else None,
-            'resource_id': str(fact.resource_id),
-            'action_id': fact.action_id,
-            'action_slug': action_slug,
-            'effect': fact.effect.value,
-            'previous_revoked_at': str(previous_revoked_at) if previous_revoked_at else None,
-            'observed_at': str(fact.observed_at),
-            'valid_from': str(fact.valid_from),
-            'valid_until': str(fact.valid_until) if fact.valid_until else None,
-        },
-        actor_kind=EventParticipantKind.CAPABILITY,
-        actor_id=_COMPONENT,
-        target_kind=EventParticipantKind.SYSTEM,
-        target_id=str(fact.id),
-    )
-
-
-def _build_updated_event(
-    fact: AccessFact,
-    changed_fields: list[str],
-    previous_values: dict,
-    observed_at: datetime,
-    correlation_id: str,
-) -> EventEnvelope:
-    """Build EventEnvelope for inventory.access_fact.updated."""
-    return EventEnvelope(
-        event_id=uuid.uuid4(),
-        event_type='inventory.access_fact.updated',
-        occurred_at=datetime.now(UTC),
-        correlation_id=correlation_id,
-        payload={
-            'fact_id': str(fact.id),
-            'changed_fields': changed_fields,
-            'previous_values': previous_values,
-            'observed_at': str(observed_at),
-        },
-        actor_kind=EventParticipantKind.CAPABILITY,
-        actor_id=_COMPONENT,
-        target_kind=EventParticipantKind.SYSTEM,
-        target_id=str(fact.id),
-    )
-
-
-def _build_revoked_event(
-    fact: AccessFact,
-    action_slug: str,
-    correlation_id: str,
-) -> EventEnvelope:
-    # Payload per phase_12.md emission table: fact_id, subject_id, resource_id,
-    # action_id, action_slug, revoked_at. account_id deliberately not included.
-    return EventEnvelope(
-        event_id=uuid.uuid4(),
-        event_type='inventory.access_fact.revoked',
-        occurred_at=datetime.now(UTC),
-        correlation_id=correlation_id,
-        payload={
-            'fact_id': str(fact.id),
-            'subject_id': str(fact.subject_id),
-            'resource_id': str(fact.resource_id),
-            'action_id': fact.action_id,
-            'action_slug': action_slug,
-            'revoked_at': str(fact.revoked_at),
-        },
-        actor_kind=EventParticipantKind.CAPABILITY,
-        actor_id=_COMPONENT,
-        target_kind=EventParticipantKind.SYSTEM,
-        target_id=str(fact.id),
-    )
+    lake_session.execute(sql, params)
+    rows = lake_session.fetchmany(1)
+    if not rows:
+        return None
+    return _row_to_view(rows[0])
 
 
 # ---------------------------------------------------------------------------
@@ -321,238 +279,100 @@ def _build_revoked_event(
 
 
 class AccessFactService:
-    """Orchestrates access fact creation, retrieval, revocation, and event emission."""
+    """Lake-read-only facade for normalized.access_facts.
+
+    Phase 15 Step 16: write methods removed (create_fact, revoke_fact,
+    refresh_fact_fields). event_service param removed. Reads go via DuckDB.
+
+    NOTE: event_service and session-based constructor params are accepted for
+    backward-compat with callers (normalization/acl, effective_access tests)
+    that have not yet been migrated. They are ignored.
+    """
 
     def __init__(
         self,
-        event_service: EventService | None = None,
+        event_service: Any = None,  # noqa: ARG002 — backward compat, ignored
+        *,
+        log_service: LogService | None = None,
     ) -> None:
-        self._events = event_service if event_service is not None else noop_event_service
+        self._log: LogService | NoOpLogService = log_service if log_service is not None else noop_log_service
 
-    async def create_fact(
-        self,
-        session: AsyncSession,
-        *,
-        subject_id: uuid.UUID,
-        account_id: uuid.UUID | None = None,
-        resource_id: uuid.UUID,
-        action_slug: str,
-        effect: AccessFactEffect,
-        observed_at: datetime,
-        valid_from: datetime | None = None,
-        valid_until: datetime | None = None,
-        correlation_id: str | None = None,
-    ) -> AccessFact:
-        """Create or reactivate an access fact.
+    def _get_warehouse_uri(self, lake_session: Any) -> str:
+        """Extract warehouse URI from lake_session if available."""
+        if hasattr(lake_session, 'warehouse_uri'):
+            uri = lake_session.warehouse_uri
+            return str(uri) if uri is not None else ''
+        # Fallback: derive from iceberg_table_path convention
+        if hasattr(lake_session, 'iceberg_table_path'):
+            path: str = lake_session.iceberg_table_path('normalized', 'access_facts')
+            # strip namespace+table suffix to get warehouse root
+            parts = path.split('/')
+            if len(parts) >= 3:
+                return '/'.join(parts[:-2])
+        return ''
 
-        Flow:
-        1. Resolve action_slug → action_id (AccessFactActionSlugUnknownError if unknown).
-        2. Validate subject, resource, account FK targets exist.
-        3. Scope check: when account_id set, Account.application_id must equal Resource.application_id.
-        4. Reactivate-or-create:
-           - Existing revoked row for key → reactivate in place, emit .reactivated.
-           - No existing row → insert, emit .created.
-           - Existing ACTIVE row → DuplicateActiveAccessFactError (strict, no silent no-op).
+    async def create_fact(self, *args: Any, **kwargs: Any) -> Any:
+        """Removed in Phase 15 Step 16. Fact mutation flows through SyncApplyService.
+
+        This stub exists for backward compatibility with normalization/acl callers
+        that have not yet been migrated. Raises NotImplementedError at runtime.
         """
-        cid = correlation_id if correlation_id is not None else uuid.uuid4().hex
-
-        # Step 1: resolve action slug
-        action_id = await _resolve_action_id(session, action_slug)
-        if action_id is None:
-            raise AccessFactActionSlugUnknownError(action_slug)
-
-        # Step 2: validate FK targets
-        from src.inventory.subjects.models import Subject
-
-        if await session.get(Subject, subject_id) is None:
-            raise AccessFactForeignKeyError(f'Subject not found: {subject_id}')
-
-        from src.inventory.resources.models import Resource
-
-        if await session.get(Resource, resource_id) is None:
-            raise AccessFactForeignKeyError(f'Resource not found: {resource_id}')
-
-        if account_id is not None:
-            from src.inventory.accounts.models import Account
-
-            if await session.get(Account, account_id) is None:
-                raise AccessFactForeignKeyError(f'Account not found: {account_id}')
-
-            # Step 3: application-scope invariant
-            await _validate_application_scope(session, account_id=account_id, resource_id=resource_id)
-
-        # Step 4: reactivate-or-create
-        existing_revoked = await _find_revoked_by_key(
-            session,
-            subject_id=subject_id,
-            account_id=account_id,
-            resource_id=resource_id,
-            action_id=action_id,
+        raise NotImplementedError(
+            'AccessFactService.create_fact was removed in Phase 15 Step 16. '
+            'Fact mutation must flow through SyncApplyService + lake_writer.'
         )
 
-        if existing_revoked is not None:
-            # Capture previous_revoked_at BEFORE mutation (architect requirement)
-            previous_revoked_at = existing_revoked.revoked_at
-            await repo_reactivate_access_fact(
-                session,
-                existing_revoked,
-                effect=effect,
-                observed_at=observed_at,
-                valid_from=valid_from,
-                valid_until=valid_until,
-            )
-            await self._events.emit(_build_reactivated_event(existing_revoked, action_slug, previous_revoked_at, cid))
-            return existing_revoked
+    async def revoke_fact(self, *args: Any, **kwargs: Any) -> Any:
+        """Removed in Phase 15 Step 16. See create_fact docstring."""
+        raise NotImplementedError('AccessFactService.revoke_fact was removed in Phase 15 Step 16.')
 
-        # Fresh insert path
-        try:
-            fact = await repo_create_access_fact(
-                session,
-                subject_id=subject_id,
-                account_id=account_id,
-                resource_id=resource_id,
-                action_id=action_id,
-                effect=effect,
-                observed_at=observed_at,
-                valid_from=valid_from,
-                valid_until=valid_until,
-            )
-        except IntegrityError as exc:
-            _translate_create_integrity_error(exc)
-
-        await self._events.emit(_build_created_event(fact, action_slug, cid))
-        return fact
-
-    async def revoke_fact(
-        self,
-        session: AsyncSession,
-        fact_id: uuid.UUID,
-        *,
-        observed_at: datetime,
-        correlation_id: str | None = None,
-    ) -> AccessFact:
-        """Revoke an access fact (is_active=False, stamp revoked_at).
-
-        Emits inventory.access_fact.revoked.
-        Raises AccessFactNotFoundError if not found.
-        Raises AccessFactNotRevokedError if already revoked (strict — no silent no-op).
-        """
-        cid = correlation_id if correlation_id is not None else uuid.uuid4().hex
-
-        fact = await repo_get_access_fact_by_id(session, fact_id, with_action_ref=True)
-        if fact is None:
-            raise AccessFactNotFoundError(fact_id)
-        if not fact.is_active:
-            raise AccessFactNotRevokedError(fact_id)
-
-        # action_ref is eager-loaded above — no extra SELECT needed
-        action_slug = fact.action_ref.slug
-
-        await repo_revoke_access_fact(session, fact, revoked_at=observed_at)
-        await self._events.emit(_build_revoked_event(fact, action_slug, cid))
-        return fact
-
-    async def refresh_fact_fields(
-        self,
-        session: AsyncSession,
-        fact_id: uuid.UUID,
-        *,
-        effect: AccessFactEffect,
-        valid_from: datetime | None,
-        valid_until: datetime | None,
-        observed_at: datetime,
-        correlation_id: str | None = None,
-    ) -> AccessFact:
-        """Update mutable fields of an active fact in place.
-
-        Only updates fields that actually changed.  Emits inventory.access_fact.updated
-        with the list of changed fields and their previous values.
-
-        Raises:
-            AccessFactNotFoundError: when fact_id does not exist.
-            AccessFactNotActiveError: when the fact is revoked.
-        """
-        cid = correlation_id if correlation_id is not None else uuid.uuid4().hex
-
-        fact = await repo_get_access_fact_by_id(session, fact_id)
-        if fact is None:
-            raise AccessFactNotFoundError(fact_id)
-        if not fact.is_active:
-            raise AccessFactNotActiveError(fact_id)
-
-        # Compute drift
-        changed_fields: list[str] = []
-        previous_values: dict = {}
-
-        if fact.effect != effect:
-            changed_fields.append('effect')
-            previous_values['effect'] = fact.effect.value
-        # Only track valid_from change when a new explicit value is provided
-        # (valid_from is NOT NULL in schema; None means "don't touch")
-        if valid_from is not None and fact.valid_from != valid_from:
-            changed_fields.append('valid_from')
-            previous_values['valid_from'] = str(fact.valid_from) if fact.valid_from else None
-        if fact.valid_until != valid_until:
-            changed_fields.append('valid_until')
-            previous_values['valid_until'] = str(fact.valid_until) if fact.valid_until else None
-
-        if not changed_fields:
-            # No actual drift — still update observed_at and return
-            fact.observed_at = observed_at
-            await session.flush()
-            return fact
-
-        await repo_update_access_fact_fields(
-            session,
-            fact,
-            effect=effect,
-            valid_from=valid_from,
-            valid_until=valid_until,
-            observed_at=observed_at,
-        )
-        await self._events.emit(_build_updated_event(fact, changed_fields, previous_values, observed_at, cid))
-        return fact
-
-    async def get_fact_by_natural_key(
-        self,
-        session: AsyncSession,
-        *,
-        subject_id: uuid.UUID,
-        account_id: uuid.UUID | None,
-        resource_id: uuid.UUID,
-        action_slug: str,
-    ) -> AccessFact | None:
-        """Look up an ACTIVE access fact by natural key.
-
-        Returns None when the fact is absent or revoked (active_only=True).
-        Unknown action_slug → None (read path is permissive, symmetric with list_facts).
-        """
-        action_id = await _resolve_action_id(session, action_slug)
-        if action_id is None:
-            return None
-        return await repo_get_access_fact_by_natural_key(
-            session,
-            subject_id=subject_id,
-            account_id=account_id,
-            resource_id=resource_id,
-            action_id=action_id,
-            active_only=True,
-        )
+    async def refresh_fact_fields(self, *args: Any, **kwargs: Any) -> Any:
+        """Removed in Phase 15 Step 16. See create_fact docstring."""
+        raise NotImplementedError('AccessFactService.refresh_fact_fields was removed in Phase 15 Step 16.')
 
     async def get_fact(
         self,
-        session: AsyncSession,
+        lake_session: Any,
         fact_id: uuid.UUID,
-    ) -> AccessFact | None:
-        """Get access fact by id. No event emitted.
+    ) -> AccessFactView | None:
+        """Get access fact by id via DuckDB iceberg_scan. Returns DTO or None."""
+        import asyncio
 
-        Eager-loads action_ref so that routes can expose action_slug without N+1.
-        """
-        return await repo_get_access_fact_by_id(session, fact_id, with_action_ref=True)
+        warehouse_uri = self._get_warehouse_uri(lake_session)
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.get_started',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'fact_id': str(fact_id)},
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+
+        view = await asyncio.to_thread(
+            _run_get_fact,
+            lake_session,
+            warehouse_uri=warehouse_uri,
+            fact_id=fact_id,
+        )
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.get_completed',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'fact_id': str(fact_id), 'found': view is not None},
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+        return view
 
     async def list_facts(
         self,
-        session: AsyncSession,
+        lake_session: Any,
         *,
         subject_id: uuid.UUID | None = None,
         resource_id: uuid.UUID | None = None,
@@ -563,27 +383,101 @@ class AccessFactService:
         valid_at: datetime | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[AccessFact]:
-        """List access facts with optional filters. No event emitted.
+    ) -> list[AccessFactView]:
+        """List access facts with optional filters via DuckDB iceberg_scan."""
+        import asyncio
 
-        Unknown action_slug → empty list (read path permissive — symmetric with Step 12 Q7).
-        is_active=None → both active and revoked rows.
-        """
-        action_id: int | None = None
-        if action_slug is not None:
-            action_id = await _resolve_action_id(session, action_slug)
-            if action_id is None:
-                return []
-        return await repo_list_access_facts(
-            session,
+        warehouse_uri = self._get_warehouse_uri(lake_session)
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.list_started',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {
+                    'subject_id': str(subject_id) if subject_id else None,
+                    'limit': limit,
+                    'offset': offset,
+                },
+                actor_component=_COMPONENT,
+                target_id='list',
+            ),
+        )
+
+        views = await asyncio.to_thread(
+            _run_list_facts,
+            lake_session,
+            warehouse_uri=warehouse_uri,
             subject_id=subject_id,
             resource_id=resource_id,
             account_id=account_id,
-            action_id=action_id,
+            action_slug=action_slug,
             effect=effect,
             is_active=is_active,
             valid_at=valid_at,
             limit=limit,
             offset=offset,
-            with_action_ref=True,
         )
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.list_completed',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'row_count': len(views)},
+                actor_component=_COMPONENT,
+                target_id='list',
+            ),
+        )
+        return views
+
+    async def get_fact_by_natural_key(
+        self,
+        lake_session: Any,
+        *,
+        subject_id: uuid.UUID,
+        account_id: uuid.UUID | None,
+        resource_id: uuid.UUID,
+        action_slug: str,
+    ) -> AccessFactView | None:
+        """Look up an ACTIVE access fact by natural key via DuckDB iceberg_scan."""
+        import asyncio
+
+        warehouse_uri = self._get_warehouse_uri(lake_session)
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.get_by_natural_key_started',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {
+                    'subject_id': str(subject_id),
+                    'resource_id': str(resource_id),
+                    'action_slug': action_slug,
+                },
+                actor_component=_COMPONENT,
+                target_id='natural_key',
+            ),
+        )
+
+        view = await asyncio.to_thread(
+            _run_get_by_natural_key,
+            lake_session,
+            warehouse_uri=warehouse_uri,
+            subject_id=subject_id,
+            account_id=account_id,
+            resource_id=resource_id,
+            action_slug=action_slug,
+        )
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.get_by_natural_key_completed',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'found': view is not None},
+                actor_component=_COMPONENT,
+                target_id='natural_key',
+            ),
+        )
+        return view

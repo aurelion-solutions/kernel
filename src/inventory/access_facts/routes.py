@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessFact API routes — read-only."""
+"""AccessFact API routes — read-only (lake-backed, Phase 15 Step 16)."""
 
 from __future__ import annotations
 
@@ -10,16 +10,15 @@ from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from src.core.db.deps import get_db
 from src.inventory.access_facts.deps import get_access_fact_service
-from src.inventory.access_facts.models import AccessFactEffect
-from src.inventory.access_facts.schemas import AccessFactRead
+from src.inventory.access_facts.schemas import AccessFactEffect, AccessFactRead, AccessFactView
 from src.inventory.access_facts.service import AccessFactService
+from src.platform.lake.deps import get_lake_session
+from src.platform.lake.duckdb_session import LakeSession
 
 router = APIRouter(prefix='/access-facts', tags=['access-facts'])
-DependsSession = Depends(get_db)
 DependsService = Depends(get_access_fact_service)
+DependsLakeSession = Depends(get_lake_session)
 
 
 @router.get('', response_model=list[AccessFactRead])
@@ -33,7 +32,7 @@ async def list_access_facts(
     valid_at: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    session: AsyncSession = DependsSession,
+    lake_session: LakeSession = DependsLakeSession,
     service: AccessFactService = DependsService,
 ) -> list[AccessFactRead]:
     """List access facts with optional filters.
@@ -41,8 +40,8 @@ async def list_access_facts(
     action_slug: filter by action slug (e.g. 'read', 'write'). Unknown slug returns [].
     is_active: filter by lifecycle state (True=active only, False=revoked only, omit=both).
     """
-    facts = await service.list_facts(
-        session,
+    views = await service.list_facts(
+        lake_session,
         subject_id=subject_id,
         resource_id=resource_id,
         account_id=account_id,
@@ -53,39 +52,35 @@ async def list_access_facts(
         limit=limit,
         offset=offset,
     )
-    return [_to_read(f) for f in facts]
+    return [_view_to_read(v) for v in views]
 
 
 @router.get('/{fact_id}', response_model=AccessFactRead)
 async def get_access_fact(
     fact_id: uuid.UUID,
-    session: AsyncSession = DependsSession,
+    lake_session: LakeSession = DependsLakeSession,
     service: AccessFactService = DependsService,
 ) -> AccessFactRead:
     """Get access fact by id."""
-    fact = await service.get_fact(session, fact_id)
-    if fact is None:
+    view: AccessFactView | None = await service.get_fact(lake_session, fact_id)
+    if view is None:
         raise HTTPException(status_code=404, detail='Access fact not found')
-    return _to_read(fact)
+    return _view_to_read(view)
 
 
-def _to_read(fact) -> AccessFactRead:  # type: ignore[no-untyped-def]
-    """Build AccessFactRead from ORM fact.
-
-    action_ref is eager-loaded by the service layer (selectinload) so that
-    fact.action_ref.slug is accessible here without a lazy-load error.
-    """
+def _view_to_read(view: AccessFactView) -> AccessFactRead:
+    """Convert AccessFactView DTO to AccessFactRead response schema."""
     return AccessFactRead(
-        id=fact.id,
-        subject_id=fact.subject_id,
-        account_id=fact.account_id,
-        resource_id=fact.resource_id,
-        action_slug=fact.action_ref.slug,
-        effect=fact.effect,
-        is_active=fact.is_active,
-        revoked_at=fact.revoked_at,
-        observed_at=fact.observed_at,
-        valid_from=fact.valid_from,
-        valid_until=fact.valid_until,
-        created_at=fact.created_at,
+        id=view.id,
+        subject_id=view.subject_id,
+        account_id=view.account_id,
+        resource_id=view.resource_id,
+        action_slug=view.action_slug,
+        effect=view.effect,
+        is_active=view.is_active,
+        revoked_at=view.revoked_at,
+        observed_at=view.observed_at,
+        valid_from=view.valid_from,
+        valid_until=view.valid_until,
+        created_at=view.created_at,
     )
