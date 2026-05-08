@@ -156,7 +156,7 @@ async def test_invalid_application_id(session_factory) -> None:
 @pytest.mark.asyncio
 async def test_create_nhi_with_valid_fks(session_factory) -> None:
     async with session_factory() as session:
-        person = Person(external_id='p-nhi-r', description='P')
+        person = Person(external_id='p-nhi-r', full_name='P')
         session.add(person)
         await session.flush()
         employee = Employee(person_id=person.id, is_locked=False)

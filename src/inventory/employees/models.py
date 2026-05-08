@@ -45,6 +45,11 @@ class Employee(Base):
         String(255),
         nullable=True,
     )
+    org_unit_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey('org_units.id', ondelete='SET NULL'),
+        nullable=True,
+    )
 
     person: Mapped[Person] = relationship(
         'Person',
@@ -59,6 +64,8 @@ class Employee(Base):
         back_populates='employee',
         cascade='all, delete-orphan',
     )
+
+    __table_args__ = (sa.UniqueConstraint('person_id', name='uq_employees_person_id'),)
 
 
 class EmployeeAttribute(Base):

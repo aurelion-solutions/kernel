@@ -61,7 +61,7 @@ async def _make_prerequisites(engine) -> dict:
         class_=AsyncSession,
     )
     async with sf() as session:
-        person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
         await session.flush()
         emp = await create_employee(session, person_id=person.id)
         await session.flush()
@@ -111,7 +111,7 @@ async def _make_prerequisites(engine) -> dict:
             sa.text(
                 'INSERT INTO access_artifacts '
                 '(id, application_id, artifact_type, external_id, payload, observed_at) '
-                'VALUES (:id, :application_id, :artifact_type, :external_id, :payload::jsonb, :observed_at)'
+                'VALUES (:id, :application_id, :artifact_type, :external_id, CAST(:payload AS jsonb), :observed_at)'
             ),
             {
                 'id': artifact_id,
@@ -124,28 +124,9 @@ async def _make_prerequisites(engine) -> dict:
         )
         await session.flush()
 
-        from sqlalchemy import select as sa_select
-        from src.inventory.actions.models import Action as RefAction
-
-        action_id_row = await session.execute(sa_select(RefAction.id).where(RefAction.slug == 'read'))
-        action_id = action_id_row.scalar_one()
-
+        # Phase 15 Step 16: PG access_facts table dropped — synthesize a UUID
+        # for binding targets of kind 'access_fact' (plain UUID, no FK).
         fact_id = uuid.uuid4()
-        await session.execute(
-            sa.text(
-                'INSERT INTO access_facts '
-                '(id, subject_id, resource_id, action_id, effect, observed_at) '
-                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
-            ),
-            {
-                'id': fact_id,
-                'subject_id': subj.id,
-                'resource_id': resource.id,
-                'action_id': action_id,
-                'effect': 'allow',
-                'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
-            },
-        )
         await session.commit()
 
         return {

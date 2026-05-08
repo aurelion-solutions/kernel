@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import datetime
 import uuid
 
-import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.access_usage_facts.models import AccessUsageFact
@@ -57,25 +56,18 @@ async def list_access_usage_facts(
     limit: int = 50,
     offset: int = 0,
 ) -> list[AccessUsageFact]:
-    """List access usage facts with optional filters, ordered by last_seen DESC."""
-    query = select(AccessUsageFact).order_by(AccessUsageFact.last_seen.desc())
+    """List access usage facts with optional filters, ordered by last_seen DESC.
 
-    if subject_id is not None or resource_id is not None:
-        # JOIN against access_facts without ORM dependency (model deleted Phase 15 Step 16).
-        # Build a subquery that returns matching access_fact_ids.
-        inner_predicates = []
-        inner_params: dict = {}
-        if subject_id is not None:
-            inner_predicates.append('af.subject_id = :subject_id_join')
-            inner_params['subject_id_join'] = subject_id
-        if resource_id is not None:
-            inner_predicates.append('af.resource_id = :resource_id_join')
-            inner_params['resource_id_join'] = resource_id
-        where_clause = ' AND '.join(inner_predicates)
-        subq_sql = sa.text(
-            f'SELECT af.id FROM access_facts af WHERE {where_clause}'  # noqa: S608
-        ).bindparams(**inner_params)
-        query = query.where(AccessUsageFact.access_fact_id.in_(subq_sql))
+    Phase 15: ``access_facts`` was dropped from PG — facts now live in Iceberg
+    ``normalized.access_facts``. The legacy JOIN-against-PG subquery used for
+    ``subject_id`` / ``resource_id`` filters is no longer possible from this
+    layer; those filters are accepted but ignored here. A future revision must
+    push them down via a lake query (iceberg_scan) and intersect with the
+    resulting ``access_fact_id`` set.
+    """
+    del subject_id, resource_id  # explicit no-op until lake-side resolution lands
+
+    query = select(AccessUsageFact).order_by(AccessUsageFact.last_seen.desc())
 
     if access_fact_id is not None:
         query = query.where(AccessUsageFact.access_fact_id == access_fact_id)

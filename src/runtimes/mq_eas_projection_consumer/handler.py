@@ -44,8 +44,8 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from src.capabilities.effective_access.schemas import IncrementalApplyKind
-from src.capabilities.effective_access.service import EffectiveAccessProjectionService
+from src.engines.effective_access.schemas import IncrementalApplyKind
+from src.engines.effective_access.service import EffectiveAccessProjectionService
 from src.platform.events.schemas import EventEnvelope
 from src.platform.events.service import EventService
 from src.platform.logs.schemas import LogLevel

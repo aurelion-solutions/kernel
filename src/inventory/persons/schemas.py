@@ -6,14 +6,14 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PersonCreate(BaseModel):
     """Request body for POST /persons."""
 
     external_id: str = Field(..., min_length=1, max_length=255)
-    description: str = Field(..., min_length=1, max_length=255)
+    full_name: str = Field(..., min_length=1, max_length=255)
 
 
 class PersonRead(BaseModel):
@@ -21,7 +21,7 @@ class PersonRead(BaseModel):
 
     id: uuid.UUID
     external_id: str
-    description: str
+    full_name: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -42,3 +42,33 @@ class PersonAttributeRead(BaseModel):
     value: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PersonBulkItem(BaseModel):
+    """Single item in a bulk-upsert request."""
+
+    external_id: str = Field(..., min_length=1, max_length=255)
+    full_name: str = Field(..., min_length=1, max_length=255)
+
+
+class PersonBulkRequest(BaseModel):
+    """Request body for POST /persons/bulk."""
+
+    items: list[PersonBulkItem] = Field(..., min_length=1, max_length=500)
+
+    @model_validator(mode='after')
+    def _check_unique_external_ids(self) -> 'PersonBulkRequest':
+        seen: set[str] = set()
+        for item in self.items:
+            if item.external_id in seen:
+                raise ValueError(f'Duplicate external_id in request: {item.external_id!r}')
+            seen.add(item.external_id)
+        return self
+
+
+class PersonBulkResponse(BaseModel):
+    """Response for POST /persons/bulk (lake-first path)."""
+
+    row_count: int
+    snapshot_id: int | None
+    backend: str = 'iceberg'

@@ -132,7 +132,7 @@ class ThreatFactService:
                     'failed_auth_count': payload.failed_auth_count,
                     'observed_at': observed_at.isoformat(),
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(fact.id),

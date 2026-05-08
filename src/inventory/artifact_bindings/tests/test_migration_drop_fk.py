@@ -44,8 +44,16 @@ _MIGRATION_MODULE = 'ops.db_versions.2026_04_27_0600_phase_15_step_15_drop_artif
 
 
 def _make_async_test_url() -> str:
-    """Derive the test database async URL from DATABASE_URL."""
-    raw = os.environ['DATABASE_URL']
+    """Derive the test database async URL from settings/DATABASE_URL."""
+    raw: str | None
+    try:
+        from src.core.config import get_settings  # noqa: PLC0415
+
+        raw = get_settings().postgres.dsn
+    except Exception:
+        raw = os.getenv('DATABASE_URL')
+    if not raw:
+        raise RuntimeError('Cannot resolve database URL: no secrets file and DATABASE_URL not set')
     parsed = urlparse(raw)
     db_name = parsed.path.lstrip('/')
     test_db = db_name.rsplit('_', 1)[0] + '_test' if '_' in db_name else db_name + '_test'
@@ -151,25 +159,25 @@ async def migration_engine() -> AsyncEngine:  # type: ignore[misc]
     already dropped the ForeignKey declaration, the artifact_bindings.artifact_id FK
     will NOT be present after create_all — tests add it manually as needed.
     """
-    import src.capabilities.access_analysis.capabilities.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.capability_grants.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.capability_mappings.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.capability_scope_keys.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.feedbacks.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.findings.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.mitigation_controls.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.mitigations.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.scan_runs.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.sod_rule_conditions.models  # noqa: F401, PLC0415
-    import src.capabilities.access_analysis.sod_rules.models  # noqa: F401, PLC0415
-    import src.capabilities.effective_access.models  # noqa: F401, PLC0415
-    import src.capabilities.lake_migration.models  # noqa: F401, PLC0415
-    import src.capabilities.reconciliation.models  # noqa: F401, PLC0415
-    import src.capabilities.sync_apply.models  # noqa: F401, PLC0415
     from src.core.db.base import Base  # noqa: PLC0415
+    import src.engines.effective_access.models  # noqa: F401, PLC0415
+    import src.engines.lake_migration.models  # noqa: F401, PLC0415
+    import src.engines.reconciliation.models  # noqa: F401, PLC0415
+    import src.engines.sync_apply.models  # noqa: F401, PLC0415
+    import src.inventory.access_model.capabilities.models  # noqa: F401, PLC0415
+    import src.inventory.access_model.capability_grants.models  # noqa: F401, PLC0415
+    import src.inventory.access_model.capability_mappings.models  # noqa: F401, PLC0415
+    import src.inventory.access_model.capability_scope_keys.models  # noqa: F401, PLC0415
     import src.inventory.actions.models  # noqa: F401, PLC0415
     import src.inventory.artifact_bindings.models  # noqa: F401, PLC0415
+    import src.inventory.assessment.feedbacks.models  # noqa: F401, PLC0415
+    import src.inventory.assessment.findings.models  # noqa: F401, PLC0415
+    import src.inventory.assessment.mitigation_controls.models  # noqa: F401, PLC0415
+    import src.inventory.assessment.mitigations.models  # noqa: F401, PLC0415
+    import src.inventory.assessment.scan_runs.models  # noqa: F401, PLC0415
     import src.inventory.lake_batches.models  # noqa: F401, PLC0415
+    import src.inventory.policy.sod_rule_conditions.models  # noqa: F401, PLC0415
+    import src.inventory.policy.sod_rules.models  # noqa: F401, PLC0415
     import src.platform.llm.models  # noqa: F401, PLC0415
     import src.platform.logs.models  # noqa: F401, PLC0415
 
@@ -195,6 +203,11 @@ async def migration_engine() -> AsyncEngine:  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(
+    reason='Phase 15 Step 16 removed access_artifacts from PG (moved to Iceberg). '
+    'This Step-15 round-trip test cannot rebuild the FK target — the simulated '
+    'pre-Step-15 state is no longer reachable on a head schema. Kept for history.'
+)
 @pytest.mark.asyncio
 async def test_drop_fk_round_trip(migration_engine: AsyncEngine) -> None:
     """FK drop round-trip: setup → upgrade (drop) → downgrade (restore) → upgrade (cleanup)."""

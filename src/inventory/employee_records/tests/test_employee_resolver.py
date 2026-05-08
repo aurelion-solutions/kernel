@@ -29,7 +29,7 @@ async def test_direct_determinator_matches_existing_canonical_employee(
         app = Application(name='res-t1', code='res-t1')
         session.add(app)
         await session.flush()
-        person = Person(external_id='res-t1-p', description='d')
+        person = Person(external_id='res-t1-p', full_name='d')
         session.add(person)
         await session.flush()
         canonical = Employee(person_id=person.id)

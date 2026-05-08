@@ -89,7 +89,7 @@ async def test_list_by_application_loads_new_columns(session_factory):
         from src.inventory.persons.repository import create_person
         from src.inventory.subjects.models import Subject, SubjectKind
 
-        person = await create_person(session, external_id=str(uuid.uuid4()), description='repo-test')
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='repo-test')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.flush()

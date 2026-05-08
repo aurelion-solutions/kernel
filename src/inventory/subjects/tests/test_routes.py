@@ -48,7 +48,7 @@ async def _make_employee_id(engine) -> uuid.UUID:
 
     sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
     async with sf() as session:
-        person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
         await session.flush()
         emp = await create_employee(session, person_id=person.id)
         await session.commit()

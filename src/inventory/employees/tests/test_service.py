@@ -49,7 +49,7 @@ def service(event_service: EventService) -> EmployeeService:
 async def test_create_employee(service: EmployeeService, session_factory) -> None:
     """create_employee creates and returns employee."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-svc', description='Svc')
+        person = await create_person(session, external_id='p-svc', full_name='Svc')
         await session.flush()
         employee = await service.create_employee(
             session,
@@ -79,7 +79,7 @@ async def test_create_employee_invalid_person_id_raises(
 async def test_get_employee(service: EmployeeService, session_factory) -> None:
     """get_employee returns employee when found."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-get', description='Get')
+        person = await create_person(session, external_id='p-get', full_name='Get')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.commit()
@@ -106,10 +106,11 @@ async def test_get_employee_returns_none_when_missing(
 async def test_list_employees(service: EmployeeService, session_factory) -> None:
     """list_employees returns all employees."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-list', description='L')
+        person1 = await create_person(session, external_id='p-list-1', full_name='L1')
+        person2 = await create_person(session, external_id='p-list-2', full_name='L2')
         await session.flush()
-        await service.create_employee(session, person_id=person.id)
-        await service.create_employee(session, person_id=person.id)
+        await service.create_employee(session, person_id=person1.id)
+        await service.create_employee(session, person_id=person2.id)
         await session.commit()
 
     async with session_factory() as session:
@@ -121,7 +122,7 @@ async def test_list_employees(service: EmployeeService, session_factory) -> None
 async def test_list_attributes(service: EmployeeService, session_factory) -> None:
     """list_attributes returns attributes for employee."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-la', description='LA')
+        person = await create_person(session, external_id='p-la', full_name='LA')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -151,7 +152,7 @@ async def test_list_attributes_raises_when_employee_missing(
 async def test_add_attribute(service: EmployeeService, session_factory) -> None:
     """add_attribute adds and returns attribute."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-add', description='Add')
+        person = await create_person(session, external_id='p-add', full_name='Add')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -169,7 +170,7 @@ async def test_add_attribute_duplicate_key_raises(
 ) -> None:
     """add_attribute raises DuplicateEmployeeAttributeError on duplicate key."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-dup', description='Dup')
+        person = await create_person(session, external_id='p-dup', full_name='Dup')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -189,7 +190,7 @@ async def test_add_attribute_duplicate_key_raises(
 async def test_remove_attribute(service: EmployeeService, session_factory) -> None:
     """remove_attribute removes attribute."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-rm', description='Rm')
+        person = await create_person(session, external_id='p-rm', full_name='Rm')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -213,7 +214,7 @@ async def test_remove_attribute_raises_when_missing(
 ) -> None:
     """remove_attribute raises EmployeeAttributeNotFoundError when attribute missing."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-norm', description='No')
+        person = await create_person(session, external_id='p-norm', full_name='No')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.commit()
@@ -238,7 +239,7 @@ async def test_create_employee_emits_inventory_employee_created(
 ) -> None:
     """create_employee emits inventory.employee.created with correct envelope fields."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-emit-c', description='Alice')
+        person = await create_person(session, external_id='p-emit-c', full_name='Alice')
         await session.flush()
         employee = await service.create_employee(
             session,
@@ -251,7 +252,7 @@ async def test_create_employee_emits_inventory_employee_created(
     emitted = capturing_events.filter_by_type('inventory.employee.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.employees'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(employee.id)
@@ -272,7 +273,7 @@ async def test_add_attribute_emits_inventory_employee_attribute_added(
 ) -> None:
     """add_attribute emits inventory.employee.attribute_added with correct envelope fields."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-emit-a', description='Emit')
+        person = await create_person(session, external_id='p-emit-a', full_name='Emit')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -300,7 +301,7 @@ async def test_remove_attribute_emits_inventory_employee_attribute_removed(
 ) -> None:
     """remove_attribute emits inventory.employee.attribute_removed with correct envelope fields."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-emit-r', description='Emit')
+        person = await create_person(session, external_id='p-emit-r', full_name='Emit')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()
@@ -335,7 +336,7 @@ async def test_get_employee_does_not_emit_event(
 ) -> None:
     """get_employee emits no events (Q1 — employee.retrieved dropped)."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-noevt', description='NoEvt')
+        person = await create_person(session, external_id='p-noevt', full_name='NoEvt')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.commit()
@@ -365,7 +366,7 @@ async def test_create_employee_propagates_explicit_correlation_id(
 ) -> None:
     """create_employee passes caller-supplied correlation_id through to envelope."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-corr1', description='Corr')
+        person = await create_person(session, external_id='p-corr1', full_name='Corr')
         await session.flush()
         await service.create_employee(
             session,
@@ -387,7 +388,7 @@ async def test_create_employee_generates_correlation_id_when_missing(
 ) -> None:
     """create_employee auto-generates a 32-char hex correlation_id when none is supplied."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-corr2', description='Corr')
+        person = await create_person(session, external_id='p-corr2', full_name='Corr')
         await session.flush()
         await service.create_employee(session, person_id=person.id)
         await session.commit()
@@ -408,7 +409,7 @@ async def test_add_attribute_propagates_explicit_correlation_id(
 ) -> None:
     """add_attribute passes caller-supplied correlation_id through to envelope."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-corr3', description='Corr')
+        person = await create_person(session, external_id='p-corr3', full_name='Corr')
         await session.flush()
         employee = await service.create_employee(session, person_id=person.id)
         await session.flush()

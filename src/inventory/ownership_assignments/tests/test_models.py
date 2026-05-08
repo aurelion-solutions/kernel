@@ -23,7 +23,7 @@ async def _make_subject(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await create_employee(session, person_id=person.id)
     await session.flush()
@@ -57,6 +57,8 @@ async def _make_resource(session) -> uuid.UUID:
         external_id=str(uuid.uuid4()),
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=f'db-{uuid.uuid4().hex[:8]}',
     )
     session.add(resource)
     await session.flush()

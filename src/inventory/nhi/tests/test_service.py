@@ -101,7 +101,7 @@ async def test_create_nhi_with_valid_fks(
     session_factory,
 ) -> None:
     async with session_factory() as session:
-        person = Person(external_id='p-svc-fk', description='P')
+        person = Person(external_id='p-svc-fk', full_name='P')
         session.add(person)
         await session.flush()
         employee = Employee(person_id=person.id, is_locked=False)
@@ -243,7 +243,7 @@ async def test_create_nhi_emits_inventory_nhi_created(
     envelopes = capturing_events.filter_by_type('inventory.nhi.created')
     assert len(envelopes) == 1
     envelope = envelopes[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.nhi'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(nhi.id)

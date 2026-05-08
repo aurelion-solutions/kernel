@@ -9,7 +9,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 from src.inventory.initiatives.models import Initiative, InitiativeType
 
 # ---------------------------------------------------------------------------
@@ -23,7 +22,7 @@ async def _make_employee_subject(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await create_employee(session, person_id=person.id)
     await session.flush()
@@ -63,37 +62,13 @@ async def _make_resource(session) -> uuid.UUID:
 
 
 async def _make_access_fact(session) -> uuid.UUID:
-    """Create an access fact via raw SQL — ORM model deleted Phase 15 Step 16."""
-    import sqlalchemy as sa
-    from sqlalchemy import select
-    from src.inventory.actions.models import Action as RefAction
+    """Synthesize an access_fact UUID.
 
-    subject_id = await _make_employee_subject(session)
-    resource_id = await _make_resource(session)
-
-    action_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
-    action_id = action_row.scalar_one()
-
-    from datetime import UTC, datetime
-
-    fact_id = uuid.uuid4()
-    await session.execute(
-        sa.text(
-            'INSERT INTO access_facts '
-            '(id, subject_id, resource_id, action_id, effect, observed_at) '
-            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
-        ),
-        {
-            'id': fact_id,
-            'subject_id': subject_id,
-            'resource_id': resource_id,
-            'action_id': action_id,
-            'effect': 'allow',
-            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
-        },
-    )
-    await session.flush()
-    return fact_id
+    Phase 15 Step 16: PG ``access_facts`` table was dropped — facts now live in
+    Iceberg. ``Initiative.access_fact_id`` is a plain UUID with no FK, so we
+    just return a fresh id.
+    """
+    return uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------
@@ -127,49 +102,6 @@ async def test_initiative_creation_stores_all_fields(session_factory) -> None:
         assert initiative.updated_at is not None
 
 
-@pytest.mark.asyncio
-async def test_initiative_fk_cascade_on_access_fact_delete(session_factory) -> None:
-    """Deleting an AccessFact cascades and removes its initiatives."""
-    import sqlalchemy as sa
-
-    async with session_factory() as session:
-        fact_id = await _make_access_fact(session)
-
-        initiative = Initiative(
-            access_fact_id=fact_id,
-            type=InitiativeType.birthright,
-            origin='Auto-assigned at birth',
-        )
-        session.add(initiative)
-        await session.flush()
-        initiative_id = initiative.id
-
-        # Delete the access fact via raw SQL — ORM model deleted Phase 15 Step 16.
-        result = await session.execute(
-            sa.text('DELETE FROM access_facts WHERE id = :id RETURNING id'),
-            {'id': fact_id},
-        )
-        assert result.scalar_one_or_none() is not None
-        await session.flush()
-
-        # Initiative should be gone via CASCADE
-        from sqlalchemy import select
-
-        result2 = await session.execute(select(Initiative).where(Initiative.id == initiative_id))
-        assert result2.scalar_one_or_none() is None
-
-
-@pytest.mark.asyncio
-async def test_initiative_fk_rejects_unknown_access_fact(session_factory) -> None:
-    """Inserting an initiative with non-existent access_fact_id raises IntegrityError (23503)."""
-    async with session_factory() as session:
-        initiative = Initiative(
-            access_fact_id=uuid.uuid4(),  # non-existent
-            type=InitiativeType.delegated,
-            origin='Should fail',
-        )
-        session.add(initiative)
-        with pytest.raises(IntegrityError) as exc_info:
-            await session.flush()
-        pgcode = getattr(exc_info.value.orig, 'pgcode', None)
-        assert pgcode == '23503'
+# Phase 15 Step 16: PG access_facts table dropped — Initiative.access_fact_id
+# is a plain UUID with no FK, so cascade-delete and FK-rejection tests are
+# no longer applicable.

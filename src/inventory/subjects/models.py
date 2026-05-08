@@ -150,6 +150,11 @@ class Subject(Base):
             _STATUS_VOCABULARY,
             name='ck_subjects_status_vocabulary',
         ),
+        sa.UniqueConstraint(
+            'kind',
+            'external_id',
+            name='uq_subjects_kind_external_id',
+        ),
         Index(
             'uq_subjects_principal_employee_id',
             'principal_employee_id',

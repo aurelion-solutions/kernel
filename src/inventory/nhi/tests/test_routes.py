@@ -55,7 +55,7 @@ async def person_employee_app_ids(engine):
         class_=AsyncSession,
     )
     async with session_factory() as session:
-        person = Person(external_id='rt-p', description='P')
+        person = Person(external_id='rt-p', full_name='P')
         session.add(person)
         await session.flush()
         employee = Employee(person_id=person.id, is_locked=False)

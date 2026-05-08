@@ -19,6 +19,9 @@ if TYPE_CHECKING:
     from src.inventory.employees.models import Employee
     from src.inventory.nhi.models import NHI
 from src.inventory.subjects.repository import (
+    bulk_upsert_employee_subjects as repo_bulk_upsert_employee_subjects,
+)
+from src.inventory.subjects.repository import (
     create_subject as repo_create_subject,
 )
 from src.inventory.subjects.repository import (
@@ -26,6 +29,9 @@ from src.inventory.subjects.repository import (
 )
 from src.inventory.subjects.repository import (
     delete_subject_attribute as repo_delete_subject_attribute,
+)
+from src.inventory.subjects.repository import (
+    find_employee_subjects_excluding_keys as repo_find_employee_subjects_excluding_keys,
 )
 from src.inventory.subjects.repository import (
     get_subject_by_id as repo_get_subject_by_id,
@@ -40,9 +46,15 @@ from src.inventory.subjects.repository import (
     list_subjects as repo_list_subjects,
 )
 from src.inventory.subjects.repository import (
+    resolve_employees_by_person_ids as repo_resolve_employees_by_person_ids,
+)
+from src.inventory.subjects.repository import (
+    resolve_persons_by_external_ids as repo_resolve_persons_by_external_ids,
+)
+from src.inventory.subjects.repository import (
     update_subject as repo_update_subject,
 )
-from src.inventory.subjects.schemas import SubjectPatch, _check_status_for_kind
+from src.inventory.subjects.schemas import SubjectBulkItem, SubjectPatch, _check_status_for_kind
 from src.inventory.subjects.status_derivation import derive_subject_status
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
@@ -69,8 +81,9 @@ class SubjectPrincipalNotFoundError(Exception):
 class SubjectPrincipalAlreadyBoundError(Exception):
     """Raised when the principal is already bound to another Subject (unique violation, pgcode 23505)."""
 
-    def __init__(self) -> None:
-        super().__init__('Principal is already bound to a Subject')
+    def __init__(self, conflicts: list[tuple[str, str]] | None = None) -> None:
+        self.conflicts = conflicts or []
+        super().__init__('Employee already bound to a different Subject')
 
 
 class InvalidSubjectStatusForKindError(Exception):
@@ -115,6 +128,28 @@ class SubjectStatusRecomputePrincipalMissingError(Exception):
         super().__init__(f'Subject {subject_id} references {kind} principal {principal_id} which does not exist')
 
 
+class UnknownPersonExternalIdsError(Exception):
+    """Raised when one or more person_external_ids are not found in persons."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(f'Unknown person_external_ids: {", ".join(missing)}')
+
+
+class UnresolvedEmployeesForPersonsError(Exception):
+    """Raised when persons exist but have no Employee row.
+
+    A person can exist without an employee record (e.g. a contractor
+    not yet promoted). For subject bulk upsert with kind=employee,
+    every input person MUST have an employee — otherwise we cannot
+    bind the Subject to a principal_employee_id.
+    """
+
+    def __init__(self, missing_person_external_ids: list[str]) -> None:
+        self.missing = missing_person_external_ids
+        super().__init__(f'No employee record for person_external_ids: {", ".join(missing_person_external_ids)}')
+
+
 # ---------------------------------------------------------------------------
 # Module-level helpers — validators, translators, envelope builders
 # ---------------------------------------------------------------------------
@@ -156,7 +191,7 @@ def _build_subject_created_event(subject: Subject, correlation_id: str | None) -
             'principal_customer_id': (str(subject.principal_customer_id) if subject.principal_customer_id else None),
             'status': subject.status,
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(subject.id),
@@ -179,7 +214,7 @@ def _build_subject_updated_event(
             'subject_id': str(subject_id),
             'changed_fields': sorted(changed_fields),
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(subject_id),
@@ -202,7 +237,7 @@ def _build_subject_attribute_added_event(
             'subject_id': str(subject_id),
             'key': key,
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(subject_id),
@@ -225,7 +260,7 @@ def _build_subject_attribute_removed_event(
             'subject_id': str(subject_id),
             'key': key,
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(subject_id),
@@ -251,10 +286,33 @@ def _build_subject_status_changed_event(
             'new_status': new_status,
             'at': datetime.now(UTC).isoformat(),
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(subject.id),
+    )
+
+
+def _build_subject_bulk_upserted_event(
+    subjects: list[Subject],
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build EventEnvelope for inventory.subject.bulk_upserted."""
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='inventory.subject.bulk_upserted',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+        causation_id=None,
+        payload={
+            'count': len(subjects),
+            'kind': SubjectKind.employee.value,
+            'external_ids': [s.external_id for s in subjects],
+        },
+        actor_kind=EventParticipantKind.COMPONENT,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=_COMPONENT,
     )
 
 
@@ -426,6 +484,97 @@ class SubjectService:
             _build_subject_status_changed_event(subject, previous_status, new_status, correlation_id)
         )
         return subject
+
+    async def bulk_upsert_employee_subjects(
+        self,
+        session: AsyncSession,
+        items: list[SubjectBulkItem],
+        correlation_id: str | None = None,
+    ) -> list[Subject]:
+        """Bulk-upsert employee-kind subjects.
+
+        Resolves person_external_id → person_id → employee_id, then
+        upserts by (kind='employee', external_id). Emits
+        inventory.subject.bulk_upserted.
+
+        Raises:
+            UnknownPersonExternalIdsError: any person_external_id absent
+                from persons.
+            UnresolvedEmployeesForPersonsError: a person exists but has
+                no employee row.
+            SubjectPrincipalAlreadyBoundError: an employee_id is already
+                bound to a different Subject (partial-unique violation
+                on uq_subjects_principal_employee_id). Translated from
+                IntegrityError pgcode 23505.
+
+        """
+        person_external_ids = [item.person_external_id for item in items]
+        person_map = await repo_resolve_persons_by_external_ids(session, person_external_ids)
+
+        missing_persons = [eid for eid in person_external_ids if eid not in person_map]
+        if missing_persons:
+            raise UnknownPersonExternalIdsError(missing_persons)
+
+        person_ids = [person_map[eid] for eid in person_external_ids]
+        employee_map = await repo_resolve_employees_by_person_ids(
+            session,
+            list(set(person_ids)),
+        )
+
+        # Map each input item back through person_external_id -> person_id ->
+        # employee_id. If any item's person has no employee row, collect the
+        # original person_external_id for the error message.
+        missing_employees: list[str] = []
+        items_with_employee_ids: list[tuple[str, uuid.UUID, str]] = []
+        for item in items:
+            person_id = person_map[item.person_external_id]
+            employee_id = employee_map.get(person_id)
+            if employee_id is None:
+                missing_employees.append(item.person_external_id)
+                continue
+            items_with_employee_ids.append((item.external_id, employee_id, item.status.value))
+
+        if missing_employees:
+            raise UnresolvedEmployeesForPersonsError(missing_employees)
+
+        # Pre-SELECT: detect employee_ids already bound to OTHER subjects
+        # (different external_id) so we can give a useful 409 message.
+        incoming_employee_ids = [emp_id for _, emp_id, _ in items_with_employee_ids]
+        incoming_ext_ids = {ext_id for ext_id, _, _ in items_with_employee_ids}
+        conflict_subjects = await repo_find_employee_subjects_excluding_keys(
+            session,
+            employee_ids=incoming_employee_ids,
+            exclude_external_ids=incoming_ext_ids,
+        )
+        if conflict_subjects:
+            # Build useful error: map employee_id back to person_external_id
+            emp_to_person_ext: dict[uuid.UUID, str] = {
+                v: k
+                for k, v in {
+                    eid: employee_map[person_map[eid]]
+                    for eid in person_external_ids
+                    if person_map.get(eid) and employee_map.get(person_map[eid])
+                }.items()
+            }
+            raise SubjectPrincipalAlreadyBoundError(
+                conflicts=[
+                    (
+                        emp_to_person_ext.get(s.principal_employee_id, str(s.principal_employee_id)),
+                        s.external_id,
+                    )
+                    for s in conflict_subjects
+                    if s.principal_employee_id is not None
+                ]
+            )
+
+        try:
+            subjects = await repo_bulk_upsert_employee_subjects(session, items_with_employee_ids)
+        except IntegrityError as exc:
+            # Fallback for race-condition window: generic message.
+            _translate_subject_create_integrity_error(exc)
+
+        await self._events.emit(_build_subject_bulk_upserted_event(subjects, correlation_id))
+        return subjects
 
 
 async def _load_principal(

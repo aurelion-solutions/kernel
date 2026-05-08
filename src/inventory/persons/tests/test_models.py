@@ -19,13 +19,13 @@ async def test_create_person_with_required_fields(session_factory) -> None:
     async with session_factory() as session:
         person = Person(
             external_id='ext-123',
-            description='Alice Smith',
+            full_name='Alice Smith',
         )
         session.add(person)
         await session.flush()
         assert person.id is not None
         assert person.external_id == 'ext-123'
-        assert person.description == 'Alice Smith'
+        assert person.full_name == 'Alice Smith'
 
 
 @pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_person_id_is_uuid_primary_key(session_factory) -> None:
     async with session_factory() as session:
         person = Person(
             external_id='ext-456',
-            description='Bob Jones',
+            full_name='Bob Jones',
         )
         session.add(person)
         await session.commit()
@@ -48,7 +48,7 @@ async def test_create_person_attribute_with_required_fields(session_factory) -> 
     async with session_factory() as session:
         person = Person(
             external_id='ext-789',
-            description='Carol Doe',
+            full_name='Carol Doe',
         )
         session.add(person)
         await session.flush()
@@ -72,7 +72,7 @@ async def test_person_attribute_belongs_to_person(session_factory) -> None:
     async with session_factory() as session:
         person = Person(
             external_id='ext-rel',
-            description='Dave Wilson',
+            full_name='Dave Wilson',
         )
         session.add(person)
         await session.flush()
@@ -104,7 +104,7 @@ async def test_uniqueness_on_person_id_key_rejected(session_factory) -> None:
     async with session_factory() as session:
         person = Person(
             external_id='ext-dup',
-            description='Eve Brown',
+            full_name='Eve Brown',
         )
         session.add(person)
         await session.flush()
@@ -131,9 +131,9 @@ async def test_uniqueness_on_person_id_key_rejected(session_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_required_field_behavior_person(session_factory) -> None:
-    """Person requires external_id, description."""
+    """Person requires external_id, full_name."""
     async with session_factory() as session:
-        person = Person(external_id='x')  # missing description
+        person = Person(external_id='x')  # missing full_name
         session.add(person)
         with pytest.raises(IntegrityError):
             await session.commit()
@@ -145,7 +145,7 @@ async def test_required_field_behavior_person_attribute_missing_value(
 ) -> None:
     """PersonAttribute requires value; missing raises IntegrityError."""
     async with session_factory() as session:
-        person = Person(external_id='ext-req', description='Frank')
+        person = Person(external_id='ext-req', full_name='Frank')
         session.add(person)
         await session.flush()
 
@@ -161,7 +161,7 @@ async def test_required_field_behavior_person_attribute_missing_key(
 ) -> None:
     """PersonAttribute requires key; missing raises IntegrityError."""
     async with session_factory() as session:
-        person = Person(external_id='ext-req2', description='Frank')
+        person = Person(external_id='ext-req2', full_name='Frank')
         session.add(person)
         await session.flush()
 

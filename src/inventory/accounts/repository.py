@@ -7,6 +7,7 @@
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.accounts.models import Account, AccountStatus
 
@@ -66,3 +67,25 @@ async def list_by_application(
 ) -> list[Account]:
     """Load all accounts for the given application. Shim over list_accounts."""
     return await list_accounts(session, application_id=application_id)
+
+
+async def upsert_accounts_bulk(
+    session: AsyncSession,
+    items: list[dict],
+) -> int:
+    """INSERT ... ON CONFLICT (application_id, username) DO UPDATE display_name, email.
+
+    Returns rowcount as reported by the driver (inserts + updates).
+    """
+    if not items:
+        return 0
+    stmt = pg_insert(Account).values(items)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['application_id', 'username'],
+        set_={
+            'display_name': stmt.excluded.display_name,
+            'email': stmt.excluded.email,
+        },
+    )
+    result = await session.execute(stmt)
+    return result.rowcount

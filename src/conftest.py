@@ -15,25 +15,28 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
-import src.capabilities.access_analysis.capabilities.models  # noqa: F401 — registers Capability for create_all
-import src.capabilities.access_analysis.capability_grants.models  # noqa: F401 — registers CapabilityGrant for create_all
-import src.capabilities.access_analysis.capability_mappings.models  # noqa: F401 — registers CapabilityMapping for create_all
-import src.capabilities.access_analysis.capability_scope_keys.models  # noqa: F401 — registers CapabilityScopeKey for create_all
-import src.capabilities.access_analysis.evaluators.sod  # noqa: F401 — keeps evaluator module discoverable for test collection
-import src.capabilities.access_analysis.feedbacks.models  # noqa: F401 — registers Feedback for create_all
-import src.capabilities.access_analysis.findings.models  # noqa: F401 — registers Finding for create_all
-import src.capabilities.access_analysis.mitigation_controls.models  # noqa: F401 — registers MitigationControl for create_all
-import src.capabilities.access_analysis.mitigations.models  # noqa: F401 — registers Mitigation for create_all
-import src.capabilities.access_analysis.scan_runs.models  # noqa: F401 — registers ScanRun for create_all
-import src.capabilities.access_analysis.sod_rule_conditions.models  # noqa: F401 — registers SodRuleCondition + M2M for create_all
-import src.capabilities.access_analysis.sod_rules.models  # noqa: F401 — registers SodRule for create_all
-import src.capabilities.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
-import src.capabilities.lake_migration.models  # noqa: F401 — registers LakeMigrationRun for create_all
-import src.capabilities.reconciliation.models  # noqa: F401 — registers ReconciliationRun + ReconciliationDeltaItem for create_all
-import src.capabilities.sync_apply.models  # noqa: F401 — registers SyncApplyRun + SyncApplyResult for create_all
 from src.core.db.base import Base
 from src.core.db.deps import get_db
+import src.engines.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
+import src.engines.lake_migration.models  # noqa: F401 — registers LakeMigrationRun for create_all
+import src.engines.policy_assessment.policy_types.sod.evaluator  # noqa: F401 — keeps evaluator module discoverable for test collection
+import src.engines.reconciliation.models  # noqa: F401 — registers ReconciliationRun + ReconciliationDeltaItem for create_all
+import src.engines.sync_apply.models  # noqa: F401 — registers SyncApplyRun + SyncApplyResult for create_all
+import src.inventory.access_model.capabilities.models  # noqa: F401 — registers Capability for create_all
+import src.inventory.access_model.capability_grants.models  # noqa: F401 — registers CapabilityGrant for create_all
+import src.inventory.access_model.capability_mappings.models  # noqa: F401 — registers CapabilityMapping for create_all
+import src.inventory.access_model.capability_scope_keys.models  # noqa: F401 — registers CapabilityScopeKey for create_all
 import src.inventory.actions.models  # noqa: F401 — registers ref_actions for create_all
+import src.inventory.assessment.feedbacks.models  # noqa: F401 — registers Feedback for create_all
+import src.inventory.assessment.findings.models  # noqa: F401 — registers Finding for create_all
+import src.inventory.assessment.mitigation_controls.models  # noqa: F401 — registers MitigationControl for create_all
+import src.inventory.assessment.mitigations.models  # noqa: F401 — registers Mitigation for create_all
+import src.inventory.assessment.scan_runs.models  # noqa: F401 — registers ScanRun for create_all
+import src.inventory.nhi.models  # noqa: F401 — registers NHI for create_all
+import src.inventory.org_units.models  # noqa: F401 — registers OrgUnit for create_all
+import src.inventory.policy.sod_rule_conditions.models  # noqa: F401 — registers SodRuleCondition + M2M for create_all
+import src.inventory.policy.sod_rules.models  # noqa: F401 — registers SodRule for create_all
+import src.inventory.subjects.models  # noqa: F401 — registers Subject for create_all
 from src.platform.events.buffer import InMemoryEventBuffer
 from src.platform.lake.config import LakeSettings
 from src.platform.lake.deps import get_lake_session
@@ -42,9 +45,11 @@ import src.platform.llm.models  # noqa: F401 — registers LLMModel for create_a
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all
 from src.platform.logs.service import NoOpLogService
 import src.platform.runtime_settings.models  # noqa: F401 — registers RuntimeSetting for create_all
+from src.platform.secrets.factory import register_default_providers
 from src.routers.v0 import router
 
 load_dotenv()
+register_default_providers()
 
 
 @pytest.fixture(autouse=True)
@@ -124,11 +129,62 @@ async def engine():
     engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
     async with engine.begin() as conn:
+        # Drop legacy access_artifacts/access_facts (raw — not in Base.metadata)
+        # before drop_all, in case a prior fixture left them around.
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_facts CASCADE'))
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_artifacts CASCADE'))
         await conn.run_sync(lambda conn: Base.metadata.drop_all(conn, checkfirst=True))
         # llm_provider PG enum is owned by the migration; create explicitly for tests.
         await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
+        await conn.execute(sa.text('DROP TYPE IF EXISTS access_fact_effect CASCADE'))
         await conn.execute(sa.text("CREATE TYPE llm_provider AS ENUM ('llama_cpp', 'openai', 'ollama')"))
+        await conn.execute(sa.text("CREATE TYPE access_fact_effect AS ENUM ('allow', 'deny')"))
         await conn.run_sync(Base.metadata.create_all)
+        # Phase 15 Step 16 dropped access_artifacts and access_facts from PG (data
+        # now lives in Iceberg). Tests that simulate pre-Step-16 PG state — the
+        # legacy lake_migration service, parity tests, and ACL-bound binding
+        # tests — still INSERT into these tables. Recreate them as empty PG
+        # tables; tests that don't use them are unaffected. Schema mirrors
+        # Step-16 migration's downgrade(), trimmed to columns the surviving
+        # readers/writers reference.
+        await conn.execute(
+            sa.text(
+                'CREATE TABLE access_artifacts ('
+                ' id UUID PRIMARY KEY,'
+                ' application_id UUID NOT NULL REFERENCES applications(id) ON DELETE RESTRICT,'
+                ' artifact_type VARCHAR(255) NOT NULL,'
+                ' external_id VARCHAR(255) NOT NULL,'
+                ' payload JSONB NOT NULL,'
+                ' ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),'
+                ' ingest_batch_id VARCHAR(255),'
+                ' observed_at TIMESTAMPTZ NOT NULL,'
+                ' raw_name VARCHAR(255),'
+                ' effect TEXT,'
+                ' valid_from TIMESTAMPTZ,'
+                ' valid_until TIMESTAMPTZ,'
+                ' is_active BOOLEAN NOT NULL DEFAULT TRUE,'
+                ' tombstoned_at TIMESTAMPTZ'
+                ')'
+            )
+        )
+        await conn.execute(
+            sa.text(
+                'CREATE TABLE access_facts ('
+                ' id UUID PRIMARY KEY,'
+                ' subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE RESTRICT,'
+                ' account_id UUID,'
+                ' resource_id UUID NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,'
+                ' action_id BIGINT NOT NULL REFERENCES ref_actions(id) ON DELETE RESTRICT,'
+                ' effect access_fact_effect NOT NULL,'
+                ' valid_from TIMESTAMPTZ NOT NULL DEFAULT now(),'
+                ' valid_until TIMESTAMPTZ,'
+                ' is_active BOOLEAN NOT NULL DEFAULT TRUE,'
+                ' revoked_at TIMESTAMPTZ,'
+                ' observed_at TIMESTAMPTZ NOT NULL,'
+                ' created_at TIMESTAMPTZ NOT NULL DEFAULT now()'
+                ')'
+            )
+        )
 
     # Seed reference data
     async with AsyncSession(engine) as session:
@@ -142,7 +198,10 @@ async def engine():
         yield engine
     finally:
         async with engine.begin() as conn:
+            await conn.execute(sa.text('DROP TABLE IF EXISTS access_facts CASCADE'))
+            await conn.execute(sa.text('DROP TABLE IF EXISTS access_artifacts CASCADE'))
             await conn.run_sync(lambda conn: Base.metadata.drop_all(conn, checkfirst=True))
+            await conn.execute(sa.text('DROP TYPE IF EXISTS access_fact_effect CASCADE'))
             await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
         await engine.dispose()
 

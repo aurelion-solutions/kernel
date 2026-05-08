@@ -27,7 +27,7 @@ class Person(Base):
         String(255),
         nullable=False,
     )
-    description: Mapped[str] = mapped_column(
+    full_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
     )
@@ -37,6 +37,8 @@ class Person(Base):
         back_populates='person',
         cascade='all, delete-orphan',
     )
+
+    __table_args__ = (sa.UniqueConstraint('external_id', name='uq_persons_external_id'),)
 
 
 class PersonAttribute(Base):

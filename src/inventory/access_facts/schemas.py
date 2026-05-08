@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 __all__ = [
     'AccessFactCreate',
+    'AccessFactArtifactRefRead',
     'AccessFactRead',
     'AccessFactView',
     'AccessFactEffect',
@@ -70,6 +71,17 @@ class AccessFactRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AccessFactArtifactRefRead(BaseModel):
+    """Response schema for GET /access-facts/{fact_id}/artifact-ref.
+
+    Resolves the chain: access_fact → reconciliation_delta_item → access_artifact.
+    """
+
+    artifact_id: uuid.UUID
+    application_id: uuid.UUID
+    external_id: str
 
 
 class AccessFactView(BaseModel):

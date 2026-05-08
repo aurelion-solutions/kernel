@@ -271,7 +271,7 @@ async def test_create_employee_record_emits_inventory_employee_record_created(
     envelopes = capturing_events.filter_by_type('inventory.employee_record.created')
     assert len(envelopes) == 1
     envelope = envelopes[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.employee_records'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(record.id)

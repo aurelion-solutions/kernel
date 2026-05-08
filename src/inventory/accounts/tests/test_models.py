@@ -91,7 +91,7 @@ async def _make_subject_for_account(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='acct-test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='acct-test')
     await session.flush()
     employee = await create_employee(session, person_id=person.id)
     await session.flush()

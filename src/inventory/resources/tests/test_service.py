@@ -427,7 +427,7 @@ async def test_create_resource_emits_inventory_resource_created(
     envelopes = capturing_events.filter_by_type('inventory.resource.created')
     assert len(envelopes) == 1
     envelope = envelopes[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.resources'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(resource.id)

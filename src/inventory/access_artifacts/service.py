@@ -155,15 +155,11 @@ def _build_arrow_table_for_upsert(
 
     now = datetime.now(UTC)
     ts_type = pa.timestamp('us', tz='UTC')
+    now_us = _ts_micros(now)
+    batch_id_str = str(ingest_batch_id)
 
-    id_type = pa_schema.field('id').type
-    app_id_type = pa_schema.field('application_id').type
-    batch_id_type = pa_schema.field('ingest_batch_id').type
-
-    use_uuid_bytes = hasattr(id_type, 'wrap_array')
-
-    row_ids: list[Any] = []
-    application_ids: list[Any] = []
+    row_ids: list[str] = []
+    application_ids: list[str] = []
     artifact_types: list[str] = []
     external_ids: list[str] = []
     payloads: list[str | None] = []
@@ -175,15 +171,11 @@ def _build_arrow_table_for_upsert(
     tombstoned_ats: list[int | None] = []
     observed_ats: list[int | None] = []
     ingested_ats: list[int | None] = []
-    ingest_batch_ids: list[Any] = []
-
-    now_us = _ts_micros(now)
-    batch_id_val: Any = ingest_batch_id.bytes if use_uuid_bytes else str(ingest_batch_id)
+    ingest_batch_ids: list[str] = []
 
     for item in items:
-        new_id = uuid.uuid4()
-        row_ids.append(new_id.bytes if use_uuid_bytes else str(new_id))
-        application_ids.append(item.application_id.bytes if use_uuid_bytes else str(item.application_id))
+        row_ids.append(str(uuid.uuid4()))
+        application_ids.append(str(item.application_id))
         artifact_types.append(item.artifact_type)
         external_ids.append(item.external_id)
         payloads.append(json.dumps(item.payload, sort_keys=True) if item.payload is not None else None)
@@ -195,22 +187,13 @@ def _build_arrow_table_for_upsert(
         tombstoned_ats.append(None)
         observed_ats.append(_ts_micros(item.observed_at) if item.observed_at is not None else now_us)
         ingested_ats.append(now_us)
-        ingest_batch_ids.append(batch_id_val)
-
-    if use_uuid_bytes:
-        id_arr: Any = id_type.wrap_array(pa.array(row_ids, type=pa.binary(16)))
-        app_id_arr: Any = app_id_type.wrap_array(pa.array(application_ids, type=pa.binary(16)))
-        batch_id_arr: Any = batch_id_type.wrap_array(pa.array(ingest_batch_ids, type=pa.binary(16)))
-    else:
-        id_arr = pa.array(row_ids, type=id_type)
-        app_id_arr = pa.array(application_ids, type=app_id_type)
-        batch_id_arr = pa.array(ingest_batch_ids, type=batch_id_type)
+        ingest_batch_ids.append(batch_id_str)
 
     raw: dict[str, Any] = {
-        'id': id_arr,
-        'application_id': app_id_arr,
-        'artifact_type': pa.array(artifact_types),
-        'external_id': pa.array(external_ids),
+        'id': pa.array(row_ids, type=pa.string()),
+        'application_id': pa.array(application_ids, type=pa.string()),
+        'artifact_type': pa.array(artifact_types, type=pa.string()),
+        'external_id': pa.array(external_ids, type=pa.string()),
         'payload': pa.array(payloads, type=pa.string()),
         'raw_name': pa.array(raw_names, type=pa.string()),
         'effect': pa.array(effects, type=pa.string()),
@@ -220,7 +203,7 @@ def _build_arrow_table_for_upsert(
         'tombstoned_at': pa.array(tombstoned_ats, type=ts_type),
         'observed_at': pa.array(observed_ats, type=ts_type),
         'ingested_at': pa.array(ingested_ats, type=ts_type),
-        'ingest_batch_id': batch_id_arr,
+        'ingest_batch_id': pa.array(ingest_batch_ids, type=pa.string()),
     }
 
     return pa.table(raw, schema=pa_schema)
@@ -298,8 +281,7 @@ def _scan_active_partition(
     eq_app: Any = EqualTo('application_id', app_id_val)  # type: ignore[misc, arg-type, call-arg]
     eq_type: Any = EqualTo('artifact_type', artifact_type)  # type: ignore[misc, arg-type, call-arg]
     eq_active: Any = EqualTo('is_active', True)  # type: ignore[misc, arg-type, call-arg]
-    inner_and: Any = And(eq_type, eq_active)
-    row_filter: Any = And(eq_app, inner_and)
+    row_filter: Any = And(eq_app, And(eq_type, eq_active))
     return table.scan(row_filter=row_filter).to_arrow()
 
 
@@ -319,6 +301,10 @@ def _translate_lake_write_error(
     log_service: LogService | NoOpLogService,
 ) -> NoReturn:
     """Wrap any Iceberg / PyArrow exception into AccessArtifactLakeWriteError."""
+    import traceback as _tb
+
+    print(f'\n[LAKE ERROR] op={operation} {type(exc).__name__}: {exc}', flush=True)
+    _tb.print_exc()
     payload: dict[str, Any] = {
         'backend': backend,
         'operation': operation,

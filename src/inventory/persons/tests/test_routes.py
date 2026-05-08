@@ -50,13 +50,13 @@ async def test_post_persons_returns_201(app_with_persons) -> None:
     ) as client:
         response = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-1', 'description': 'Alice'},
+            json={'external_id': 'ext-1', 'full_name': 'Alice'},
         )
     assert response.status_code == 201
     data = response.json()
     assert 'id' in data
     assert data['external_id'] == 'ext-1'
-    assert data['description'] == 'Alice'
+    assert data['full_name'] == 'Alice'
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_get_persons_returns_200(app_with_persons) -> None:
     ) as client:
         await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-list', 'description': 'For list'},
+            json={'external_id': 'ext-list', 'full_name': 'For list'},
         )
         response = await client.get('/api/v0/persons')
     assert response.status_code == 200
@@ -86,7 +86,7 @@ async def test_get_persons_id_returns_200(app_with_persons) -> None:
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-get', 'description': 'For get'},
+            json={'external_id': 'ext-get', 'full_name': 'For get'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']
@@ -120,7 +120,7 @@ async def test_get_persons_id_attributes_returns_200(app_with_persons) -> None:
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-attrs', 'description': 'For attrs'},
+            json={'external_id': 'ext-attrs', 'full_name': 'For attrs'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']
@@ -164,7 +164,7 @@ async def test_post_persons_id_attributes_returns_201(app_with_persons) -> None:
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-postattr', 'description': 'Post attr'},
+            json={'external_id': 'ext-postattr', 'full_name': 'Post attr'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']
@@ -211,7 +211,7 @@ async def test_post_persons_id_attributes_duplicate_key_returns_409(
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-dup', 'description': 'Dup'},
+            json={'external_id': 'ext-dup', 'full_name': 'Dup'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']
@@ -240,7 +240,7 @@ async def test_delete_persons_id_attributes_key_returns_204(app_with_persons) ->
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-del', 'description': 'Del'},
+            json={'external_id': 'ext-del', 'full_name': 'Del'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']
@@ -270,7 +270,7 @@ async def test_delete_persons_id_attributes_key_missing_returns_404(
     ) as client:
         create_resp = await client.post(
             '/api/v0/persons',
-            json={'external_id': 'ext-nodel', 'description': 'No del'},
+            json={'external_id': 'ext-nodel', 'full_name': 'No del'},
         )
     assert create_resp.status_code == 201
     person_id = create_resp.json()['id']

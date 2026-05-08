@@ -44,7 +44,7 @@ async def test_create_nhi_with_required_fields(session_factory) -> None:
 @pytest.mark.asyncio
 async def test_create_nhi_with_optional_owner_employee_id(session_factory) -> None:
     async with session_factory() as session:
-        person = Person(external_id='p-owner', description='Owner person')
+        person = Person(external_id='p-owner', full_name='Owner person')
         session.add(person)
         await session.flush()
         employee = Employee(person_id=person.id, is_locked=False)

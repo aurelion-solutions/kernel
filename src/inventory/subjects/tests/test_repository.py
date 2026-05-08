@@ -29,7 +29,7 @@ async def _make_employee(session):
     from src.inventory.employees.repository import create_employee as _repo_create_employee
     from src.inventory.persons.repository import create_person
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await _repo_create_employee(session, person_id=person.id)
     await session.flush()

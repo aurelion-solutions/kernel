@@ -6,13 +6,20 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.inventory.persons.deps import get_person_service
+from src.inventory.persons.lake_service import (
+    PersonLakeNotConfiguredError,
+    PersonLakeService,
+    PersonLakeWriteError,
+)
 from src.inventory.persons.schemas import (
     PersonAttributeCreate,
     PersonAttributeRead,
+    PersonBulkRequest,
+    PersonBulkResponse,
     PersonCreate,
     PersonRead,
 )
@@ -28,6 +35,23 @@ DependsSession = Depends(get_db)
 DependsService = Depends(get_person_service)
 
 
+@router.post('/bulk', response_model=PersonBulkResponse, status_code=200)
+async def bulk_upsert_persons(
+    body: PersonBulkRequest,
+    request: Request,
+) -> PersonBulkResponse:
+    """Bulk-ingest persons into the lake (raw.persons).  PG is populated later via reconcile+apply."""
+    lake_catalog = getattr(request.app.state, 'lake_catalog', None)
+    service = PersonLakeService(lake_catalog=lake_catalog)
+    try:
+        result = await service.upsert_batch(body.items, ingest_batch_id=uuid.uuid4())
+    except PersonLakeNotConfiguredError:
+        raise HTTPException(status_code=503, detail='Lake backend not configured') from None
+    except PersonLakeWriteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return PersonBulkResponse(row_count=result.row_count, snapshot_id=result.snapshot_id)
+
+
 @router.post('', response_model=PersonRead, status_code=201)
 async def create_person(
     body: PersonCreate,
@@ -38,7 +62,7 @@ async def create_person(
     person = await service.create_person(
         session,
         external_id=body.external_id,
-        description=body.description,
+        full_name=body.full_name,
     )
     await session.commit()
     return PersonRead.model_validate(person)

@@ -55,7 +55,7 @@ async def person_id_for_employees(engine):
         class_=AsyncSession,
     )
     async with session_factory() as session:
-        person = await create_person(session, external_id='ext-emp', description='For employees')
+        person = await create_person(session, external_id='ext-emp', full_name='For employees')
         await session.commit()
         return person.id
 

@@ -16,12 +16,12 @@ from src.platform.secrets.factory import register_default_providers
 register_default_providers()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import src.capabilities.reconciliation.handlers  # noqa: F401 — bootstrap handler registry
 from src.core.config import get_settings
 from src.core.db.session import get_engine
 from src.core.middleware.correlation import CorrelationIdMiddleware
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient
+import src.engines.reconciliation.handlers  # noqa: F401 — bootstrap handler registry
 from src.platform.connectors.client import ConnectorClient
 from src.platform.connectors.registration_consumer import run_connector_registration_consumer
 from src.platform.events.buffer import InMemoryEventBuffer, InMemoryEventBufferSink
@@ -33,7 +33,7 @@ from src.platform.lake.config import build_lake_settings
 from src.platform.lake.duckdb_session import LakeSessionFactory
 from src.platform.lake.provisioning import ensure_tables
 from src.platform.logs.providers.mq import RabbitMQLogSink
-from src.platform.logs.service import LogService
+from src.platform.logs.service import LogService, set_main_loop
 from src.platform.runtime_settings.service import RuntimeSettingsService
 from src.routers.v0 import router as v0_router
 
@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     mq = settings.rabbitmq
     url = mq.url
+
+    set_main_loop(asyncio.get_running_loop())
 
     publisher = AsyncRabbitMQPublisher(url=url)
     await publisher.connect()

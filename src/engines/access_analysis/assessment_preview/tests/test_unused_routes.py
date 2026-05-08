@@ -1,0 +1,321 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+"""HTTP tests for POST /access-analysis/detect-unused."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+import uuid
+
+import pyarrow as pa
+import pytest
+import sqlalchemy as sa
+from src.inventory.access_usage_facts.models import AccessUsageFact
+from src.inventory.assessment.findings.models import Finding
+from src.inventory.employees.repository import create_employee
+from src.inventory.persons.repository import create_person
+from src.inventory.resources.models import Resource
+from src.inventory.subjects.models import Subject, SubjectKind
+from src.platform.applications.models import Application
+
+# ---------------------------------------------------------------------------
+# Seeding helpers
+# ---------------------------------------------------------------------------
+
+_NOW = datetime.now(tz=UTC)
+
+
+async def _seed_application(session) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    app = Application(
+        name=f'app-{uuid.uuid4().hex[:8]}',
+        code=f'code-{uuid.uuid4().hex[:8]}',
+        config={},
+        required_connector_tags=[],
+        is_active=True,
+    )
+    session.add(app)
+    await session.flush()
+    return app.id
+
+
+async def _seed_subject(session) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
+    await session.flush()
+    emp = await create_employee(session, person_id=person.id)
+    await session.flush()
+    subj = Subject(
+        external_id=str(uuid.uuid4()),
+        kind=SubjectKind.employee,
+        principal_employee_id=emp.id,
+        status='active',
+    )
+    session.add(subj)
+    await session.flush()
+    return subj.id
+
+
+async def _seed_resource(session, app_id: uuid.UUID) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    resource = Resource(
+        external_id=str(uuid.uuid4()),
+        application_id=app_id,
+        kind='database',
+        resource_type='database',
+        resource_key=str(uuid.uuid4()),
+    )
+    session.add(resource)
+    await session.flush()
+    return resource.id
+
+
+def _seed_iceberg_fact(
+    app: Any,
+    fact_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    app_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    valid_from: datetime,
+) -> None:
+    """Write one fact row to the test Iceberg table."""
+    catalog = app.state.test_iceberg_catalog
+    tbl = catalog.load_table(('normalized', 'access_facts'))
+    schema = pa.schema(
+        [
+            pa.field('id', pa.string(), nullable=False),
+            pa.field('subject_id', pa.string(), nullable=False),
+            pa.field('account_id', pa.string(), nullable=True),
+            pa.field('resource_id', pa.string(), nullable=False),
+            pa.field('action_id', pa.string(), nullable=False),
+            pa.field('effect', pa.string(), nullable=False),
+            pa.field('valid_from', pa.timestamp('us', tz='UTC'), nullable=False),
+            pa.field('valid_until', pa.timestamp('us', tz='UTC'), nullable=True),
+            pa.field('is_active', pa.bool_(), nullable=False),
+            pa.field('observed_at', pa.timestamp('us', tz='UTC'), nullable=False),
+            pa.field('created_at', pa.timestamp('us', tz='UTC'), nullable=False),
+            pa.field('revoked_at', pa.timestamp('us', tz='UTC'), nullable=True),
+            pa.field('latest_batch_id', pa.string(), nullable=True),
+            pa.field('application_id_denorm', pa.string(), nullable=True),
+            pa.field('subject_kind_denorm', pa.string(), nullable=False),
+            pa.field('reconciliation_delta_item_id', pa.string(), nullable=False),
+            pa.field('natural_key_hash', pa.string(), nullable=False),
+        ]
+    )
+    row = {
+        'id': [str(fact_id)],
+        'subject_id': [str(subject_id)],
+        'account_id': [None],
+        'resource_id': [str(resource_id)],
+        'action_id': ['read'],
+        'effect': ['allow'],
+        'valid_from': [valid_from],
+        'valid_until': [None],
+        'is_active': [True],
+        'observed_at': [_NOW],
+        'created_at': [_NOW],
+        'revoked_at': [None],
+        'latest_batch_id': [None],
+        'application_id_denorm': [str(app_id)],
+        'subject_kind_denorm': ['User'],
+        'reconciliation_delta_item_id': [str(uuid.uuid4())],
+        'natural_key_hash': ['a' * 64],
+    }
+    tbl.append(pa.table(row, schema=schema))
+
+
+async def _seed_stale_fact(session: Any, app_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:  # type: ignore[no-untyped-def]
+    """Create an active access_fact with a usage row last_seen 100 days ago.
+
+    Returns (fact_id, subject_id, resource_id) so caller can seed Iceberg too.
+    """
+    subj_id = await _seed_subject(session)
+    res_id = await _seed_resource(session, app_id)
+    fact_id = uuid.uuid4()
+    usage = AccessUsageFact(
+        access_fact_id=fact_id,
+        last_seen=_NOW - timedelta(days=100),
+        usage_count=1,
+        window_from=_NOW - timedelta(days=101),
+        window_to=_NOW - timedelta(days=100),
+    )
+    session.add(usage)
+    await session.flush()
+    return fact_id, subj_id, res_id
+
+
+# ---------------------------------------------------------------------------
+# A1: empty body, no facts seeded → 200, []
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_empty_body_no_results(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# A2: one stale-usage fact → 200, one UnusedFindingResponse with all fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_returns_finding(client, session_factory, app) -> None:  # type: ignore[no-untyped-def]
+    async with session_factory() as session:
+        app_id = await _seed_application(session)
+        fact_id, subj_id, res_id = await _seed_stale_fact(session, app_id)
+        await session.commit()
+
+    _seed_iceberg_fact(app, fact_id, subj_id, app_id, res_id, _NOW - timedelta(days=150))
+
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+
+    finding = data[0]
+    assert finding['access_fact_id'] == str(fact_id)
+    assert finding['severity'] == 'low'
+    assert finding['unused_for_days'] >= 90
+    assert isinstance(finding['subject_id'], str)
+    assert isinstance(finding['resource_id'], str)
+    assert isinstance(finding['application_id'], str)
+    assert finding['last_seen'] is not None  # usage exists
+
+
+# ---------------------------------------------------------------------------
+# A3: application_id filter → only matching facts returned
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_application_id_filter(client, session_factory, app) -> None:  # type: ignore[no-untyped-def]
+    async with session_factory() as session:
+        app_a = await _seed_application(session)
+        app_b = await _seed_application(session)
+        fact_a, subj_a, res_a = await _seed_stale_fact(session, app_a)
+        _, subj_b, res_b = await _seed_stale_fact(session, app_b)
+        await session.commit()
+
+    # Only seed app_a fact in Iceberg; app_b fact not seeded → filtered by scope
+    _seed_iceberg_fact(app, fact_a, subj_a, app_a, res_a, _NOW - timedelta(days=150))
+
+    resp = await client.post(
+        '/api/v0/access-analysis/detect-unused',
+        json={'application_id': str(app_a)},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]['access_fact_id'] == str(fact_a)
+    assert data[0]['application_id'] == str(app_a)
+
+
+# ---------------------------------------------------------------------------
+# A4: threshold_days=0 → 422 (ge=1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_threshold_zero_422(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={'threshold_days': 0})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A5: threshold_days=10000 → 422 (le=3650)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_threshold_exceeds_cap_422(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={'threshold_days': 10000})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A6: limit=0 → 422 (ge=1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_limit_zero_422(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={'limit': 0})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A7: limit=10000 → 422 (le=5000)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_limit_exceeds_cap_422(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={'limit': 10000})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A8: extra field in body → 422
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_extra_field_422(client) -> None:  # type: ignore[no-untyped-def]
+    resp = await client.post(
+        '/api/v0/access-analysis/detect-unused',
+        json={'extra_field': 'bad'},
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A9: default body {} → uses 90-day threshold and 1000 limit defaults
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_default_body_uses_defaults(client, session_factory) -> None:  # type: ignore[no-untyped-def]
+    """With a fact having last_seen = 89 days ago, default 90-day threshold → no finding."""
+    async with session_factory() as session:
+        fact_id = uuid.uuid4()
+        usage = AccessUsageFact(
+            access_fact_id=fact_id,
+            last_seen=_NOW - timedelta(days=89),
+            usage_count=1,
+            window_from=_NOW - timedelta(days=90),
+            window_to=_NOW - timedelta(days=89),
+        )
+        session.add(usage)
+        await session.flush()
+        await session.commit()
+
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={})
+    assert resp.status_code == 200
+    # 89 days < 90 threshold → no finding
+    assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# A10: no Finding rows written after detection call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_unused_writes_no_findings(client, session_factory, app) -> None:  # type: ignore[no-untyped-def]
+    async with session_factory() as session:
+        app_id = await _seed_application(session)
+        fact_id, subj_id, res_id = await _seed_stale_fact(session, app_id)
+        await session.commit()
+
+    _seed_iceberg_fact(app, fact_id, subj_id, app_id, res_id, _NOW - timedelta(days=150))
+
+    resp = await client.post('/api/v0/access-analysis/detect-unused', json={})
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 1
+
+    async with session_factory() as session:
+        count = await session.scalar(sa.select(sa.func.count()).select_from(Finding))
+    assert count == 0

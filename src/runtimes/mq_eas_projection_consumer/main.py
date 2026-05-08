@@ -35,10 +35,10 @@ register_default_providers()
 import pika
 from pika.adapters.blocking_connection import BlockingChannel
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.capabilities.effective_access.service import EffectiveAccessProjectionService
 from src.core.config import get_settings
 from src.core.db.session import get_session_factory
 from src.core.mq.rabbitmq import declare_consumer_topology
+from src.engines.effective_access.service import EffectiveAccessProjectionService
 from src.platform.events.factory import event_sink_factory
 from src.platform.events.service import EventService
 from src.platform.logs.factory import log_sink_factory

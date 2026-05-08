@@ -6,13 +6,20 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.inventory.employees.deps import get_employee_service
+from src.inventory.employees.lake_service import (
+    EmployeeLakeNotConfiguredError,
+    EmployeeLakeService,
+    EmployeeLakeWriteError,
+)
 from src.inventory.employees.schemas import (
     EmployeeAttributeCreate,
     EmployeeAttributeRead,
+    EmployeeBulkRequest,
+    EmployeeBulkResponse,
     EmployeeCreate,
     EmployeeRead,
 )
@@ -27,6 +34,23 @@ from src.inventory.employees.service import (
 router = APIRouter(prefix='/employees', tags=['employees'])
 DependsSession = Depends(get_db)
 DependsService = Depends(get_employee_service)
+
+
+@router.post('/bulk', response_model=EmployeeBulkResponse, status_code=200)
+async def bulk_upsert_employees(
+    body: EmployeeBulkRequest,
+    request: Request,
+) -> EmployeeBulkResponse:
+    """Bulk-ingest employees into the lake (raw.employees).  PG is populated later via reconcile+apply."""
+    lake_catalog = getattr(request.app.state, 'lake_catalog', None)
+    service = EmployeeLakeService(lake_catalog=lake_catalog)
+    try:
+        result = await service.upsert_batch(body.items, ingest_batch_id=uuid.uuid4())
+    except EmployeeLakeNotConfiguredError:
+        raise HTTPException(status_code=503, detail='Lake backend not configured') from None
+    except EmployeeLakeWriteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return EmployeeBulkResponse(row_count=result.row_count, snapshot_id=result.snapshot_id)
 
 
 @router.post('', response_model=EmployeeRead, status_code=201)

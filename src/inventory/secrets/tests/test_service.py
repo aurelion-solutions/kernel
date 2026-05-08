@@ -93,7 +93,7 @@ async def test_create_secret_emits_inventory_secret_created_event(
     emitted = capturing_events.filter_by_type('inventory.secret.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.secrets'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     # target_id is the provider storage key (namespace/key), NOT a DB UUID —
@@ -122,7 +122,7 @@ async def test_delete_secret_emits_inventory_secret_deleted_event(
     emitted = capturing_events.filter_by_type('inventory.secret.deleted')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.secrets'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     # target_id is the storage key — same divergence as create (see above).

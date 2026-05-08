@@ -12,6 +12,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _register_providers() -> None:
     from src.platform.secrets.factory import register_default_providers
+
     register_default_providers()
 
 

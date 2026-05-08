@@ -128,7 +128,7 @@ async def test_create_customer_emits_inventory_customer_created(
     emitted = capturing_events.filter_by_type('inventory.customer.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.customers'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(customer.id)

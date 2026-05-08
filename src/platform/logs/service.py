@@ -40,6 +40,17 @@ from uuid import UUID
 from src.platform.logs.interface import LogSink
 from src.platform.logs.schemas import LogEvent, LogLevel, LogParticipantKind, new_root_log_event
 
+# Main event loop — set once during app startup so that fire-and-forget log
+# calls from blocking consumer threads can schedule onto the correct loop
+# instead of spawning a fresh one (which breaks aio_pika connections).
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _main_loop  # noqa: PLW0603
+    _main_loop = loop
+
+
 # Keys LogService may take from ``payload`` and forward to :func:`new_root_log_event` only
 # when all are present (mechanical pass-through; no defaults or interpretation).
 _PARTICIPANT_PAYLOAD_KEYS: tuple[str, ...] = (
@@ -60,22 +71,22 @@ def _pop_participants_if_complete(merged: dict[str, Any]) -> dict[str, Any] | No
     return {k: merged.pop(k) for k in _PARTICIPANT_PAYLOAD_KEYS}
 
 
-def merge_emit_capability_trace_fields(
+def merge_emit_component_trace_fields(
     payload: dict[str, Any],
     *,
-    capability_id: str,
+    component_id: str,
     target_id: str,
     target_type: str | None = None,
 ) -> dict[str, Any]:
-    """Participant payload for capability-scoped operations (initiator = actor = capability)."""
+    """Participant payload for component-scoped operations (initiator = actor = component)."""
     cap = LogParticipantKind.CAPABILITY.value
     tgt_type = target_type if target_type is not None else LogParticipantKind.SYSTEM.value
     return {
         **payload,
         'initiator_type': cap,
-        'initiator_id': capability_id,
+        'initiator_id': component_id,
         'actor_type': cap,
-        'actor_id': capability_id,
+        'actor_id': component_id,
         'target_type': tgt_type,
         'target_id': target_id,
     }
@@ -104,7 +115,7 @@ def merge_emit_log_participant_fields(
 
 
 def _schedule_or_run(coro: Any) -> None:
-    """Schedule ``coro`` on the running loop, or run it synchronously if none exists.
+    """Schedule ``coro`` on the running loop, or cross-thread-schedule if none exists.
 
     Used by the safe/fire-and-forget log methods so they remain callable from both
     async HTTP handlers and blocking pika consumer threads.
@@ -113,11 +124,17 @@ def _schedule_or_run(coro: Any) -> None:
         loop = asyncio.get_running_loop()
         loop.create_task(coro)
     except RuntimeError:
-        # No running loop — blocking consumer thread context.
-        try:
-            asyncio.run(coro)
-        except Exception:
-            pass
+        # No running loop — we're in a blocking consumer thread.
+        # Re-use the main app loop so that aio_pika connections (which are bound
+        # to that loop) are not called from a foreign loop.
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, _main_loop)
+        else:
+            # Fallback: no app loop yet (e.g. tests) — swallow silently.
+            try:
+                coro.close()
+            except Exception:
+                pass
 
 
 def _run_fire_and_forget(coro: Coroutine[Any, Any, None]) -> None:

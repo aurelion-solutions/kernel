@@ -12,7 +12,7 @@ from src.core.mq.rabbitmq import run_rabbitmq_consumer
 from src.platform.connectors.registration_schemas import ConnectorRegistrationMessage
 from src.platform.connectors.service import ConnectorInstanceService
 from src.platform.logs.schemas import LogLevel
-from src.platform.logs.service import LogService, merge_emit_capability_trace_fields, noop_log_service
+from src.platform.logs.service import LogService, merge_emit_component_trace_fields, noop_log_service
 
 
 async def handle_connector_registration(
@@ -30,9 +30,9 @@ async def handle_connector_registration(
             level=LogLevel.ERROR,
             message='Invalid connector registration message',
             component='connectors',
-            payload=merge_emit_capability_trace_fields(
+            payload=merge_emit_component_trace_fields(
                 {'errors': exc.errors()},
-                capability_id='connectors',
+                component_id='connectors',
                 target_id='registration',
             ),
         )

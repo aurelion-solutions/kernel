@@ -109,4 +109,7 @@ class Account(Base):
         nullable=False,
     )
 
-    __table_args__ = (Index('ix_ent_accounts_subject_id', 'subject_id'),)
+    __table_args__ = (
+        Index('ix_ent_accounts_subject_id', 'subject_id'),
+        Index('ix_ent_accounts_app_username', 'application_id', 'username', unique=True),
+    )

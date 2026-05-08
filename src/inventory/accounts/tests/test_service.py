@@ -116,7 +116,7 @@ async def test_update_account_status_only_emits_event(
     emitted = capturing_events.filter_by_type('inventory.account.updated')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.accounts'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(account_id)

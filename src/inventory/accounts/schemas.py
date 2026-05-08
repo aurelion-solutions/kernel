@@ -11,7 +11,15 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 from src.inventory.accounts.models import AccountStatus
 
-__all__ = ['AccountDTO', 'AccountStatus', 'AccountRead', 'AccountPatch']
+__all__ = [
+    'AccountDTO',
+    'AccountStatus',
+    'AccountRead',
+    'AccountPatch',
+    'AccountBulkItem',
+    'AccountBulkRequest',
+    'AccountBulkResponse',
+]
 
 
 class AccountDTO(BaseModel):
@@ -53,3 +61,25 @@ class AccountPatch(BaseModel):
 
     status: AccountStatus | None = None
     subject_id: uuid.UUID | None = None
+
+
+class AccountBulkItem(BaseModel):
+    """Single item in a bulk upsert request."""
+
+    application_id: uuid.UUID
+    username: str = Field(..., min_length=1, max_length=255)
+    display_name: str | None = Field(None, max_length=255)
+    email: str | None = Field(None, max_length=255)
+
+
+class AccountBulkRequest(BaseModel):
+    """Request body for bulk account upsert."""
+
+    items: list[AccountBulkItem] = Field(..., min_length=1, max_length=10_000)
+    correlation_id: str | None = None
+
+
+class AccountBulkResponse(BaseModel):
+    """Response for bulk account upsert."""
+
+    upserted: int

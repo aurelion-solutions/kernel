@@ -59,7 +59,7 @@ class EmployeeResolverService:
         person = await create_person(
             self._session,
             external_id=f'resolver-{uuid.uuid4()}',
-            description='resolver-created',
+            full_name='resolver-created',
         )
         employee = await create_employee(self._session, person_id=person.id)
         await create_employee_attribute(

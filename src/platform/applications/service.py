@@ -15,7 +15,7 @@ from src.platform.applications.models import Application
 from src.platform.applications.repository import get_application_by_id
 from src.platform.applications.schemas import ApplicationCreate, ApplicationUpdate
 from src.platform.logs.schemas import LogLevel, LogParticipantKind
-from src.platform.logs.service import LogService, merge_emit_capability_trace_fields, noop_log_service
+from src.platform.logs.service import LogService, merge_emit_component_trace_fields, noop_log_service
 
 
 def _discriminate_integrity_error(exc: IntegrityError, code: str) -> NoReturn:
@@ -57,14 +57,14 @@ async def create_application(
         level=LogLevel.INFO,
         message='Application created',
         component='applications',
-        payload=merge_emit_capability_trace_fields(
+        payload=merge_emit_component_trace_fields(
             {
                 'application_id': str(app.id),
                 'name': app.name,
                 'code': app.code,
                 'required_connector_tags': app.required_connector_tags,
             },
-            capability_id='applications',
+            component_id='applications',
             target_id=str(app.id),
             target_type=LogParticipantKind.APPLICATION.value,
         ),
@@ -86,9 +86,9 @@ async def update_application(
             level=LogLevel.WARNING,
             message=f'Application {application_id} not found',
             component='applications',
-            payload=merge_emit_capability_trace_fields(
+            payload=merge_emit_component_trace_fields(
                 {'application_id': str(application_id)},
-                capability_id='applications',
+                component_id='applications',
                 target_id=str(application_id),
                 target_type=LogParticipantKind.APPLICATION.value,
             ),
@@ -114,12 +114,12 @@ async def update_application(
         level=LogLevel.INFO,
         message='Application updated',
         component='applications',
-        payload=merge_emit_capability_trace_fields(
+        payload=merge_emit_component_trace_fields(
             {
                 'application_id': str(app.id),
                 'code': app.code,
             },
-            capability_id='applications',
+            component_id='applications',
             target_id=str(app.id),
             target_type=LogParticipantKind.APPLICATION.value,
         ),
@@ -140,9 +140,9 @@ async def delete_application(
             level=LogLevel.WARNING,
             message=f'Application {application_id} not found',
             component='applications',
-            payload=merge_emit_capability_trace_fields(
+            payload=merge_emit_component_trace_fields(
                 {'application_id': str(application_id)},
-                capability_id='applications',
+                component_id='applications',
                 target_id=str(application_id),
                 target_type=LogParticipantKind.APPLICATION.value,
             ),
@@ -154,9 +154,9 @@ async def delete_application(
         level=LogLevel.INFO,
         message='Application deleted',
         component='applications',
-        payload=merge_emit_capability_trace_fields(
+        payload=merge_emit_component_trace_fields(
             {'application_id': str(application_id)},
-            capability_id='applications',
+            component_id='applications',
             target_id=str(application_id),
             target_type=LogParticipantKind.APPLICATION.value,
         ),

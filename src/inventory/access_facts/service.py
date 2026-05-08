@@ -11,11 +11,14 @@ Service reads from normalized.access_facts via DuckDB iceberg_scan.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 import uuid
 
-from src.inventory.access_facts.schemas import AccessFactEffect, AccessFactView
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.inventory.access_facts.schemas import AccessFactArtifactRefRead, AccessFactEffect, AccessFactView
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import (
     LogService,
@@ -37,6 +40,18 @@ class AccessFactNotFoundError(Exception):
     def __init__(self, fact_id: uuid.UUID) -> None:
         self.fact_id = fact_id
         super().__init__(f'Access fact not found: {fact_id}')
+
+
+class AccessFactArtifactRefNotFoundError(Exception):
+    """Raised when the artifact reference chain is broken for a given fact_id.
+
+    Any of the three lookups (fact, delta_item, artifact) returning empty
+    raises this error with unified semantics → 404 at the route layer.
+    """
+
+    def __init__(self, fact_id: uuid.UUID) -> None:
+        self.fact_id = fact_id
+        super().__init__(f'Access fact artifact reference not found: {fact_id}')
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +242,61 @@ def _run_list_facts(
     return views
 
 
+def _run_get_delta_item_id(
+    lake_session: Any,
+    *,
+    warehouse_uri: str,
+    fact_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """DuckDB iceberg_scan for reconciliation_delta_item_id by fact id. Blocking."""
+    path = f'{warehouse_uri}/normalized/access_facts'
+    sql = """
+        SELECT reconciliation_delta_item_id
+        FROM iceberg_scan(?)
+        WHERE id = ?::varchar AND id IS NOT NULL
+        LIMIT 1
+    """
+    lake_session.execute(sql, [path, str(fact_id)])
+    rows = lake_session.fetchall()
+    if not rows:
+        return None
+    raw_val = rows[0][0]
+    if raw_val is None:
+        return None
+    try:
+        return uuid.UUID(str(raw_val))
+    except ValueError:
+        return None
+
+
+def _run_get_artifact_from_iceberg(
+    lake_session: Any,
+    *,
+    warehouse_uri: str,
+    artifact_id: uuid.UUID,
+) -> tuple[uuid.UUID, str] | None:
+    """DuckDB iceberg_scan for (application_id, external_id) from raw.access_artifacts. Blocking."""
+    path = f'{warehouse_uri}/raw/access_artifacts'
+    sql = """
+        SELECT application_id, external_id
+        FROM iceberg_scan(?)
+        WHERE id = ?::varchar AND id IS NOT NULL
+        LIMIT 1
+    """
+    lake_session.execute(sql, [path, str(artifact_id)])
+    rows = lake_session.fetchall()
+    if not rows:
+        return None
+    app_id_raw, ext_id = rows[0][0], rows[0][1]
+    if app_id_raw is None or ext_id is None:
+        return None
+    try:
+        app_id = uuid.UUID(str(app_id_raw))
+    except ValueError:
+        return None
+    return app_id, str(ext_id)
+
+
 def _run_get_by_natural_key(
     lake_session: Any,
     *,
@@ -336,8 +406,6 @@ class AccessFactService:
         fact_id: uuid.UUID,
     ) -> AccessFactView | None:
         """Get access fact by id via DuckDB iceberg_scan. Returns DTO or None."""
-        import asyncio
-
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
         self._log.emit_safe(
@@ -385,8 +453,6 @@ class AccessFactService:
         offset: int = 0,
     ) -> list[AccessFactView]:
         """List access facts with optional filters via DuckDB iceberg_scan."""
-        import asyncio
-
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
         self._log.emit_safe(
@@ -431,6 +497,116 @@ class AccessFactService:
         )
         return views
 
+    async def get_artifact_ref(
+        self,
+        lake_session: Any,
+        pg_session: AsyncSession,
+        fact_id: uuid.UUID,
+    ) -> AccessFactArtifactRefRead:
+        """Resolve the drill-down chain: access_fact → delta_item → access_artifact.
+
+        Steps:
+        1. DuckDB iceberg_scan normalized.access_facts WHERE id=fact_id → reconciliation_delta_item_id.
+        2. PG SELECT source_artifact_id FROM reconciliation_delta_items WHERE id=delta_item_id.
+        3. DuckDB iceberg_scan raw.access_artifacts WHERE id=source_artifact_id → (application_id, external_id).
+
+        Raises AccessFactArtifactRefNotFoundError on any broken link (unified 404 semantics).
+        """
+        warehouse_uri = self._get_warehouse_uri(lake_session)
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.artifact_ref_resolve_started',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'fact_id': str(fact_id)},
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+
+        # Step 1: fact → reconciliation_delta_item_id
+        delta_item_id = await asyncio.to_thread(
+            _run_get_delta_item_id,
+            lake_session,
+            warehouse_uri=warehouse_uri,
+            fact_id=fact_id,
+        )
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.artifact_ref_step1_done',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {'fact_id': str(fact_id), 'delta_item_id': str(delta_item_id) if delta_item_id else None},
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+
+        if delta_item_id is None:
+            raise AccessFactArtifactRefNotFoundError(fact_id)
+
+        # Step 2: delta_item_id → source_artifact_id via PG
+        result = await pg_session.execute(
+            sa.text('SELECT source_artifact_id FROM reconciliation_delta_items WHERE id = :id LIMIT 1'),
+            {'id': delta_item_id},
+        )
+        row = result.fetchone()
+
+        self._log.emit_safe(
+            level=LogLevel.DEBUG,
+            message='inventory.access_facts.artifact_ref_step2_done',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {
+                    'delta_item_id': str(delta_item_id),
+                    'source_artifact_id': str(row[0]) if row and row[0] is not None else None,
+                },
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+
+        if row is None or row[0] is None:
+            raise AccessFactArtifactRefNotFoundError(fact_id)
+
+        source_artifact_id: uuid.UUID = row[0]
+
+        # Step 3: source_artifact_id → (application_id, external_id) via Iceberg
+        artifact_fields = await asyncio.to_thread(
+            _run_get_artifact_from_iceberg,
+            lake_session,
+            warehouse_uri=warehouse_uri,
+            artifact_id=source_artifact_id,
+        )
+
+        if artifact_fields is None:
+            raise AccessFactArtifactRefNotFoundError(fact_id)
+
+        application_id, external_id = artifact_fields
+
+        self._log.emit_safe(
+            level=LogLevel.INFO,
+            message='inventory.access_facts.artifact_ref_resolved',
+            component=_COMPONENT,
+            payload=merge_emit_log_participant_fields(
+                {
+                    'fact_id': str(fact_id),
+                    'artifact_id': str(source_artifact_id),
+                    'application_id': str(application_id),
+                },
+                actor_component=_COMPONENT,
+                target_id=str(fact_id),
+            ),
+        )
+
+        return AccessFactArtifactRefRead(
+            artifact_id=source_artifact_id,
+            application_id=application_id,
+            external_id=external_id,
+        )
+
     async def get_fact_by_natural_key(
         self,
         lake_session: Any,
@@ -441,8 +617,6 @@ class AccessFactService:
         action_slug: str,
     ) -> AccessFactView | None:
         """Look up an ACTIVE access fact by natural key via DuckDB iceberg_scan."""
-        import asyncio
-
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
         self._log.emit_safe(

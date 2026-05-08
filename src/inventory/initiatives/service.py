@@ -69,16 +69,12 @@ class InitiativeService:
         valid_until: datetime | None = None,
         correlation_id: str | None = None,
     ) -> Initiative:
-        """Create an initiative. Validates FK existence before insert. Emits inventory.initiative.created."""
-        import sqlalchemy as sa
+        """Create an initiative. Emits inventory.initiative.created.
 
-        result = await session.execute(
-            sa.text('SELECT id FROM access_facts WHERE id = :id'),
-            {'id': access_fact_id},
-        )
-        if result.one_or_none() is None:
-            raise InitiativeForeignKeyError(f'Access fact not found: {access_fact_id}')
-
+        Phase 15: ``access_facts`` was dropped from PG — facts now live in Iceberg
+        ``normalized.access_facts``. ``Initiative.access_fact_id`` is a plain UUID
+        with no FK constraint, so no existence check is performed here.
+        """
         try:
             initiative = await repo_create_initiative(
                 session,
@@ -88,11 +84,8 @@ class InitiativeService:
                 valid_from=valid_from,
                 valid_until=valid_until,
             )
-        except IntegrityError as exc:
+        except IntegrityError:
             await session.rollback()
-            pgcode = getattr(exc.orig, 'pgcode', None) or getattr(exc.orig, 'sqlstate', None)
-            if pgcode == '23503':
-                raise InitiativeForeignKeyError(f'Access fact not found: {access_fact_id}') from exc
             raise
 
         await self._events.emit(
@@ -110,7 +103,7 @@ class InitiativeService:
                     'valid_from': str(initiative.valid_from),
                     'valid_until': str(initiative.valid_until) if initiative.valid_until is not None else None,
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(initiative.id),
@@ -190,7 +183,7 @@ class InitiativeService:
                         'access_fact_id': str(initiative.access_fact_id),
                         'changed_fields': sorted(changed_fields),
                     },
-                    actor_kind=EventParticipantKind.CAPABILITY,
+                    actor_kind=EventParticipantKind.COMPONENT,
                     actor_id=_COMPONENT,
                     target_kind=EventParticipantKind.SYSTEM,
                     target_id=str(initiative.id),
@@ -214,7 +207,7 @@ class InitiativeService:
                             'access_fact_id': str(initiative.access_fact_id),
                             'at': str(new_valid_until),
                         },
-                        actor_kind=EventParticipantKind.CAPABILITY,
+                        actor_kind=EventParticipantKind.COMPONENT,
                         actor_id=_COMPONENT,
                         target_kind=EventParticipantKind.SYSTEM,
                         target_id=str(initiative.id),

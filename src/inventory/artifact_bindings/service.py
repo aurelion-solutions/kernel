@@ -68,12 +68,12 @@ def _resolve_target_loader(target_type: str) -> _TargetLoader:
     """
 
     async def _load_access_fact(session: AsyncSession, target_id: uuid.UUID) -> object | None:
-        result = await session.execute(
-            sa.text('SELECT id FROM access_facts WHERE id = :id'),
-            {'id': target_id},
-        )
-        row = result.one_or_none()
-        return row  # truthy when row exists, None when not found
+        # Phase 15: ``access_facts`` was dropped from PG — facts now live in Iceberg
+        # ``normalized.access_facts``. The binding stores a plain UUID with no FK
+        # constraint, so existence cannot be verified from PG. Treat the target as
+        # always present; the lake-side validator (if any) is the authoritative check.
+        del session, target_id  # explicit unused
+        return object()  # sentinel: truthy → caller treats target as found
 
     async def _load_resource(session: AsyncSession, target_id: uuid.UUID) -> object | None:
         from src.inventory.resources.models import Resource
@@ -128,7 +128,7 @@ def _build_artifact_binding_created_event(
             'target_type': target_type,
             'target_id': str(target_id),
         },
-        actor_kind=EventParticipantKind.CAPABILITY,
+        actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(binding.id),

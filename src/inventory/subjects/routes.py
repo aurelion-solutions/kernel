@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,8 @@ from src.inventory.subjects.deps import get_subject_service
 from src.inventory.subjects.schemas import (
     SubjectAttributeCreate,
     SubjectAttributeRead,
+    SubjectBulkRequest,
+    SubjectBulkResponse,
     SubjectCreate,
     SubjectKind,
     SubjectPatch,
@@ -30,11 +33,54 @@ from src.inventory.subjects.service import (
     SubjectPrincipalAlreadyBoundError,
     SubjectPrincipalNotFoundError,
     SubjectService,
+    UnknownPersonExternalIdsError,
+    UnresolvedEmployeesForPersonsError,
 )
 
 router = APIRouter(prefix='/subjects', tags=['subjects'])
 DependsSession = Depends(get_db)
 DependsService = Depends(get_subject_service)
+
+
+@router.post('/bulk', response_model=SubjectBulkResponse, status_code=200)
+async def bulk_upsert_subjects(
+    body: SubjectBulkRequest,
+    session: AsyncSession = DependsSession,
+    service: SubjectService = DependsService,
+) -> SubjectBulkResponse:
+    """Bulk-upsert employee-kind subjects by (kind, external_id)."""
+    with translate_service_errors(
+        {
+            UnknownPersonExternalIdsError: (
+                422,
+                lambda exc: (
+                    'Unknown person_external_ids: ' + ', '.join(cast(UnknownPersonExternalIdsError, exc).missing[:20])
+                ),
+            ),
+            UnresolvedEmployeesForPersonsError: (
+                422,
+                lambda exc: (
+                    'No employee record for person_external_ids: '
+                    + ', '.join(cast(UnresolvedEmployeesForPersonsError, exc).missing[:20])
+                ),
+            ),
+            SubjectPrincipalAlreadyBoundError: (
+                409,
+                lambda exc: (
+                    'Employee already bound to a different Subject: '
+                    + ', '.join(f'{p}->{s}' for p, s in cast(SubjectPrincipalAlreadyBoundError, exc).conflicts[:20])
+                    if cast(SubjectPrincipalAlreadyBoundError, exc).conflicts
+                    else 'An employee is already bound to a different Subject'
+                ),
+            ),
+        }
+    ):
+        subjects = await service.bulk_upsert_employee_subjects(session, body.items)
+    await session.commit()
+    return SubjectBulkResponse(
+        upserted=len(subjects),
+        ids=[s.id for s in subjects],
+    )
 
 
 @router.post('', response_model=SubjectRead, status_code=201)

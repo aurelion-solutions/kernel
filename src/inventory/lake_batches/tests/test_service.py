@@ -255,7 +255,7 @@ async def test_create_batch_emits_inventory_lake_batch_created_event(
     emitted = capturing_events.filter_by_type('inventory.lake_batch.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.lake_batches'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(batch.id)
@@ -292,7 +292,7 @@ async def test_delete_batch_emits_inventory_lake_batch_deleted_event(
     emitted = capturing_events.filter_by_type('inventory.lake_batch.deleted')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.lake_batches'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(batch_id)

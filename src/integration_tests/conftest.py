@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Local fixtures for Phase 15 integration tests.
+"""Local fixtures for lake pipeline integration tests.
 
 Provides:
-- ``lake_settings_p15``   — SQLite-backed LakeSettings with both tables provisioned
-- ``app_p15``             — FastAPI app with Iceberg DI overridden
-- ``client_p15``          — AsyncClient backed by app_p15
+- ``lake_settings_iceberg``   — SQLite-backed LakeSettings with both tables provisioned
+- ``app_iceberg``             — FastAPI app with Iceberg DI overridden
+- ``client_iceberg``          — AsyncClient backed by app_iceberg
 - ``seeded_inventory``    — async helper that inserts Application + Subjects + Accounts + Resources
 - ``event_history``       — helper that extracts emitted events from InMemoryEventBuffer
 """
@@ -42,9 +42,9 @@ from src.routers.v0 import router
 _FIXTURES_DIR = Path(__file__).parent / 'fixtures'
 
 
-def load_phase15_dataset() -> dict[str, Any]:
-    """Load the phase15_dataset.json fixture."""
-    return json.loads((_FIXTURES_DIR / 'phase15_dataset.json').read_text())
+def load_pipeline_dataset() -> dict[str, Any]:
+    """Load the pipeline_dataset.json fixture."""
+    return json.loads((_FIXTURES_DIR / 'pipeline_dataset.json').read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +53,10 @@ def load_phase15_dataset() -> dict[str, Any]:
 
 
 @pytest.fixture
-def lake_settings_p15(tmp_path: Path) -> LakeSettings:
+def lake_settings_iceberg(tmp_path: Path) -> LakeSettings:
     """LakeSettings backed by an in-process SQLite catalog, tmp warehouse."""
     return LakeSettings(
-        catalog_url=f'sqlite:///{tmp_path}/p15_catalog.db',
+        catalog_url=f'sqlite:///{tmp_path}/lake_catalog.db',
         warehouse_uri=f'file://{tmp_path}/warehouse',
         storage_provider='file',
         artifacts_write_backend='iceberg',
@@ -69,8 +69,8 @@ def lake_settings_p15(tmp_path: Path) -> LakeSettings:
 
 
 @pytest_asyncio.fixture
-async def app_p15(engine: Any, lake_settings_p15: LakeSettings) -> FastAPI:
-    """FastAPI app with Iceberg lake wired for Phase 15 integration tests.
+async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastAPI:
+    """FastAPI app with Iceberg lake wired for lake pipeline integration tests.
 
     Uses the same ``engine`` fixture from root conftest for PG sessions.
     Creates a fresh Iceberg catalog with both lake tables provisioned.
@@ -104,7 +104,7 @@ async def app_p15(engine: Any, lake_settings_p15: LakeSettings) -> FastAPI:
 
     # Bootstrap Iceberg catalog with string-schema tables
     reset_catalog_cache_for_tests()
-    _catalog = get_catalog(lake_settings_p15, log_service=NoOpLogService())
+    _catalog = get_catalog(lake_settings_iceberg, log_service=NoOpLogService())
 
     # Create namespaces
     for ns in [('raw',), ('normalized',)]:
@@ -169,7 +169,7 @@ async def app_p15(engine: Any, lake_settings_p15: LakeSettings) -> FastAPI:
     reset_catalog_cache_for_tests()
 
     _lake_factory = LakeSessionFactory(
-        settings=lake_settings_p15,
+        settings=lake_settings_iceberg,
         log_service=NoOpLogService(),
         pg_dsn=None,
     )
@@ -190,16 +190,16 @@ async def app_p15(engine: Any, lake_settings_p15: LakeSettings) -> FastAPI:
     _app.state.lake_session_factory = _lake_factory
     _app.state.lake_catalog = _catalog
     _app.state.test_iceberg_catalog = _catalog
-    _app.state.test_lake_settings = lake_settings_p15
+    _app.state.test_lake_settings = lake_settings_iceberg
 
     return _app
 
 
 @pytest_asyncio.fixture
-async def client_p15(app_p15: FastAPI) -> AsyncGenerator[AsyncClient]:
-    """AsyncClient backed by app_p15."""
+async def client_iceberg(app_iceberg: FastAPI) -> AsyncGenerator[AsyncClient]:
+    """AsyncClient backed by app_iceberg."""
     async with AsyncClient(
-        transport=ASGITransport(app=app_p15),
+        transport=ASGITransport(app=app_iceberg),
         base_url='http://testserver',
     ) as ac:
         yield ac
@@ -210,7 +210,7 @@ async def client_p15(app_p15: FastAPI) -> AsyncGenerator[AsyncClient]:
 # ---------------------------------------------------------------------------
 
 
-async def seed_inventory_for_p15(
+async def seed_pipeline_inventory(
     session: AsyncSession,
     dataset: dict[str, Any],
 ) -> dict[str, Any]:
@@ -246,9 +246,7 @@ async def seed_inventory_for_p15(
     for s in seed['subjects']:
         kind = s['kind']
         if kind == 'employee':
-            person = await create_person(
-                session, external_id=f'{s["external_id"]}-{app_suffix}', description='p15 test'
-            )
+            person = await create_person(session, external_id=f'{s["external_id"]}-{app_suffix}', full_name='p15 test')
             await session.flush()
             emp = await create_employee(session, person_id=person.id)
             await session.flush()

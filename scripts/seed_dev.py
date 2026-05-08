@@ -39,27 +39,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # Import all model modules so SQLAlchemy can resolve cross-slice FK references
 import importlib
 
-import src.capabilities
+import src.engines
 import src.inventory
 import src.platform
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-for _pkg in (src.inventory, src.capabilities, src.platform):
+for _pkg in (src.inventory, src.engines, src.platform):
     for _root in map(Path, _pkg.__path__):
         for _p in _root.rglob('models.py'):
             importlib.import_module('.'.join(_p.relative_to(_PROJECT_ROOT).with_suffix('').parts))
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from src.capabilities.access_analysis.capabilities.models import Capability
-from src.capabilities.access_analysis.capability_grants.models import CapabilityGrant
-from src.capabilities.access_analysis.capability_mappings.models import CapabilityMapping
-from src.capabilities.access_analysis.sod_rule_conditions.models import (
+from src.core.config import settings
+from src.engines.access_analysis.capabilities.models import Capability
+from src.engines.access_analysis.capability_grants.models import CapabilityGrant
+from src.engines.access_analysis.capability_mappings.models import CapabilityMapping
+from src.engines.access_analysis.sod_rule_conditions.models import (
     SodRuleCondition,
     sod_rule_condition_capabilities,
 )
-from src.capabilities.access_analysis.sod_rules.models import SodRule, SodRuleScope, SodSeverity
-from src.core.config import settings
+from src.engines.access_analysis.sod_rules.models import SodRule, SodRuleScope, SodSeverity
 from src.inventory.accounts.models import Account, AccountStatus
 from src.inventory.employees.models import Employee
 from src.inventory.nhi.models import NHI

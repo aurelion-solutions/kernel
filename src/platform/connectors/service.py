@@ -17,7 +17,7 @@ from src.platform.connectors.repository import (
 )
 from src.platform.connectors.selector import select_connector_instance_by_tags
 from src.platform.logs.schemas import LogLevel, LogParticipantKind
-from src.platform.logs.service import LogService, merge_emit_capability_trace_fields, noop_log_service
+from src.platform.logs.service import LogService, merge_emit_component_trace_fields, noop_log_service
 
 
 class ConnectorInstanceService:
@@ -53,12 +53,12 @@ class ConnectorInstanceService:
                 level=LogLevel.INFO,
                 message='Deleted stale connector instances',
                 component='connectors',
-                payload=merge_emit_capability_trace_fields(
+                payload=merge_emit_component_trace_fields(
                     {
                         'deleted_count': deleted,
                         'offline_for_seconds': int(offline_for.total_seconds()),
                     },
-                    capability_id='connectors',
+                    component_id='connectors',
                     target_id='connector_registry',
                 ),
             )
@@ -91,12 +91,12 @@ class ConnectorInstanceService:
                 level=LogLevel.INFO,
                 message='Connector instance registered',
                 component='connectors',
-                payload=merge_emit_capability_trace_fields(
+                payload=merge_emit_component_trace_fields(
                     {
                         'instance_id': instance.instance_id,
                         'tags': instance.tags,
                     },
-                    capability_id='connectors',
+                    component_id='connectors',
                     target_id=instance.instance_id,
                     target_type=LogParticipantKind.CONNECTOR.value,
                 ),
@@ -107,12 +107,12 @@ class ConnectorInstanceService:
                 level=LogLevel.INFO,
                 message='Connector instance updated from registration',
                 component='connectors',
-                payload=merge_emit_capability_trace_fields(
+                payload=merge_emit_component_trace_fields(
                     {
                         'instance_id': instance.instance_id,
                         'tags': instance.tags,
                     },
-                    capability_id='connectors',
+                    component_id='connectors',
                     target_id=instance.instance_id,
                     target_type=LogParticipantKind.CONNECTOR.value,
                 ),

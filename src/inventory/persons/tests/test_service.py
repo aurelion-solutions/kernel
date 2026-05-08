@@ -50,19 +50,19 @@ async def test_create_person(service: PersonService, session_factory) -> None:
         person = await service.create_person(
             session,
             external_id='ext-svc',
-            description='Test Person',
+            full_name='Test Person',
         )
         await session.commit()
     assert person.id is not None
     assert person.external_id == 'ext-svc'
-    assert person.description == 'Test Person'
+    assert person.full_name == 'Test Person'
 
 
 @pytest.mark.asyncio
 async def test_get_person(service: PersonService, session_factory) -> None:
     """get_person returns person when found."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-get', description='Get')
+        person = await service.create_person(session, external_id='ext-get', full_name='Get')
         await session.commit()
         person_id = person.id
 
@@ -87,8 +87,8 @@ async def test_get_person_returns_none_when_missing(
 async def test_list_persons(service: PersonService, session_factory) -> None:
     """list_persons returns all persons."""
     async with session_factory() as session:
-        await service.create_person(session, external_id='ext-1', description='One')
-        await service.create_person(session, external_id='ext-2', description='Two')
+        await service.create_person(session, external_id='ext-1', full_name='One')
+        await service.create_person(session, external_id='ext-2', full_name='Two')
         await session.commit()
 
     async with session_factory() as session:
@@ -100,7 +100,7 @@ async def test_list_persons(service: PersonService, session_factory) -> None:
 async def test_list_attributes(service: PersonService, session_factory) -> None:
     """list_attributes returns attributes for person."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-la', description='List')
+        person = await service.create_person(session, external_id='ext-la', full_name='List')
         await session.flush()
         await service.add_attribute(session, person.id, 'attr1', 'val1')
         await session.commit()
@@ -128,7 +128,7 @@ async def test_list_attributes_raises_when_person_missing(
 async def test_add_attribute(service: PersonService, session_factory) -> None:
     """add_attribute adds and returns attribute."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-add', description='Add')
+        person = await service.create_person(session, external_id='ext-add', full_name='Add')
         await session.flush()
         attr = await service.add_attribute(session, person.id, 'newkey', 'newval')
         await session.commit()
@@ -144,7 +144,7 @@ async def test_add_attribute_duplicate_key_raises(
 ) -> None:
     """add_attribute raises DuplicatePersonAttributeError on duplicate key."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-dup', description='Dup')
+        person = await service.create_person(session, external_id='ext-dup', full_name='Dup')
         await session.flush()
         await service.add_attribute(session, person.id, 'same', 'v1')
         await session.commit()
@@ -161,7 +161,7 @@ async def test_add_attribute_duplicate_key_raises(
 async def test_remove_attribute(service: PersonService, session_factory) -> None:
     """remove_attribute removes attribute."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-rm', description='Rm')
+        person = await service.create_person(session, external_id='ext-rm', full_name='Rm')
         await session.flush()
         await service.add_attribute(session, person.id, 'todel', 'x')
         await session.commit()
@@ -183,7 +183,7 @@ async def test_remove_attribute_raises_when_missing(
 ) -> None:
     """remove_attribute raises PersonAttributeNotFoundError when attribute missing."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-norm', description='No')
+        person = await service.create_person(session, external_id='ext-norm', full_name='No')
         await session.commit()
         person_id = person.id
 
@@ -209,14 +209,14 @@ async def test_create_person_emits_inventory_person_created(
         person = await service.create_person(
             session,
             external_id='ext-emit-c',
-            description='Alice',
+            full_name='Alice',
         )
         await session.commit()
 
     emitted = capturing_events.filter_by_type('inventory.person.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.persons'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(person.id)
@@ -235,7 +235,7 @@ async def test_add_attribute_emits_inventory_person_attribute_added(
 ) -> None:
     """add_attribute emits inventory.person.attribute_added with correct envelope fields."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-emit-a', description='Emit')
+        person = await service.create_person(session, external_id='ext-emit-a', full_name='Emit')
         await session.flush()
         capturing_events.clear()
         attr = await service.add_attribute(session, person.id, 'k1', 'v1')
@@ -261,7 +261,7 @@ async def test_remove_attribute_emits_inventory_person_attribute_removed(
 ) -> None:
     """remove_attribute emits inventory.person.attribute_removed with correct envelope fields."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-emit-r', description='Emit')
+        person = await service.create_person(session, external_id='ext-emit-r', full_name='Emit')
         await session.flush()
         await service.add_attribute(session, person.id, 'key_to_remove', 'x')
         await session.commit()
@@ -294,7 +294,7 @@ async def test_get_person_does_not_emit_event(
 ) -> None:
     """get_person emits no events (Q1 — person.retrieved dropped)."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='ext-noevt', description='NoEvt')
+        person = await service.create_person(session, external_id='ext-noevt', full_name='NoEvt')
         await session.commit()
         person_id = person.id
 
@@ -325,7 +325,7 @@ async def test_create_person_propagates_explicit_correlation_id(
         await service.create_person(
             session,
             external_id='p-corr1',
-            description='Corr',
+            full_name='Corr',
             correlation_id='corr-person-xyz',
         )
         await session.commit()
@@ -343,7 +343,7 @@ async def test_create_person_generates_correlation_id_when_missing(
 ) -> None:
     """create_person auto-generates a 32-char hex correlation_id when none is supplied."""
     async with session_factory() as session:
-        await service.create_person(session, external_id='p-corr2', description='Corr')
+        await service.create_person(session, external_id='p-corr2', full_name='Corr')
         await session.commit()
 
     emitted = capturing_events.filter_by_type('inventory.person.created')
@@ -362,7 +362,7 @@ async def test_add_attribute_propagates_explicit_correlation_id(
 ) -> None:
     """add_attribute passes caller-supplied correlation_id through to envelope."""
     async with session_factory() as session:
-        person = await service.create_person(session, external_id='p-corr3', description='Corr')
+        person = await service.create_person(session, external_id='p-corr3', full_name='Corr')
         await session.flush()
         capturing_events.clear()
         await service.add_attribute(

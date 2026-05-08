@@ -10,15 +10,24 @@ from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.core.db.deps import get_db
+from src.core.http.errors import translate_service_errors
 from src.inventory.access_facts.deps import get_access_fact_service
-from src.inventory.access_facts.schemas import AccessFactEffect, AccessFactRead, AccessFactView
-from src.inventory.access_facts.service import AccessFactService
+from src.inventory.access_facts.schemas import (
+    AccessFactArtifactRefRead,
+    AccessFactEffect,
+    AccessFactRead,
+    AccessFactView,
+)
+from src.inventory.access_facts.service import AccessFactArtifactRefNotFoundError, AccessFactService
 from src.platform.lake.deps import get_lake_session
 from src.platform.lake.duckdb_session import LakeSession
 
 router = APIRouter(prefix='/access-facts', tags=['access-facts'])
 DependsService = Depends(get_access_fact_service)
 DependsLakeSession = Depends(get_lake_session)
+DependsDB = Depends(get_db)
 
 
 @router.get('', response_model=list[AccessFactRead])
@@ -66,6 +75,26 @@ async def get_access_fact(
     if view is None:
         raise HTTPException(status_code=404, detail='Access fact not found')
     return _view_to_read(view)
+
+
+@router.get('/{fact_id}/artifact-ref', response_model=AccessFactArtifactRefRead)
+async def get_access_fact_artifact_ref(
+    fact_id: uuid.UUID,
+    lake_session: LakeSession = DependsLakeSession,
+    pg_session: AsyncSession = DependsDB,
+    service: AccessFactService = DependsService,
+) -> AccessFactArtifactRefRead:
+    """Resolve the drill-down chain: access_fact → delta_item → access_artifact.
+
+    Returns { artifact_id, application_id, external_id }.
+    Returns 404 if any link in the chain is missing or orphaned.
+    """
+    with translate_service_errors(
+        {
+            AccessFactArtifactRefNotFoundError: (404, 'Access fact artifact reference not found'),
+        }
+    ):
+        return await service.get_artifact_ref(lake_session, pg_session, fact_id)
 
 
 def _view_to_read(view: AccessFactView) -> AccessFactRead:

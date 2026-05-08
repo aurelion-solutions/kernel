@@ -12,12 +12,30 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.inventory.accounts.deps import get_account_service
-from src.inventory.accounts.schemas import AccountPatch, AccountRead, AccountStatus
+from src.inventory.accounts.schemas import (
+    AccountBulkRequest,
+    AccountBulkResponse,
+    AccountPatch,
+    AccountRead,
+    AccountStatus,
+)
 from src.inventory.accounts.service import AccountNotFoundError, AccountService, AccountSubjectNotFoundError
 
 router = APIRouter(prefix='/accounts', tags=['accounts'])
 DependsSession = Depends(get_db)
 DependsService = Depends(get_account_service)
+
+
+@router.post('/bulk', response_model=AccountBulkResponse, status_code=200)
+async def bulk_upsert_accounts(
+    body: AccountBulkRequest,
+    session: AsyncSession = DependsSession,
+    service: AccountService = DependsService,
+) -> AccountBulkResponse:
+    """Bulk upsert accounts — insert or update by (application_id, username)."""
+    upserted = await service.upsert_bulk(session, body.items, correlation_id=body.correlation_id)
+    await session.commit()
+    return AccountBulkResponse(upserted=upserted)
 
 
 @router.get('', response_model=list[AccountRead])

@@ -50,7 +50,7 @@ async def _make_subject(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await create_employee(session, person_id=person.id)
     await session.flush()
@@ -82,6 +82,8 @@ async def _make_resource(session) -> uuid.UUID:
         external_id=str(uuid.uuid4()),
         application_id=app.id,
         kind='database',
+        resource_type='database',
+        resource_key=f'db-{uuid.uuid4().hex[:8]}',
     )
     session.add(resource)
     await session.flush()
@@ -304,7 +306,7 @@ async def test_create_assignment_emits_inventory_ownership_assignment_created(
     emitted = capturing_events.filter_by_type('inventory.ownership_assignment.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.ownership_assignments'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(assignment.id)

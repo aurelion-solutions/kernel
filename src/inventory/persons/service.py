@@ -13,6 +13,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.persons.models import Person, PersonAttribute
 from src.inventory.persons.repository import (
+    bulk_upsert_persons as repo_bulk_upsert_persons,
+)
+from src.inventory.persons.repository import (
     create_person as repo_create_person,
 )
 from src.inventory.persons.repository import (
@@ -30,6 +33,7 @@ from src.inventory.persons.repository import (
 from src.inventory.persons.repository import (
     list_persons as repo_list_persons,
 )
+from src.inventory.persons.schemas import PersonBulkItem
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
 
@@ -72,14 +76,14 @@ class PersonService:
         self,
         session: AsyncSession,
         external_id: str,
-        description: str,
+        full_name: str,
         correlation_id: str | None = None,
     ) -> Person:
         """Create a person and emit inventory.person.created."""
         person = await repo_create_person(
             session,
             external_id=external_id,
-            description=description,
+            full_name=full_name,
         )
         await self._events.emit(
             EventEnvelope(
@@ -92,7 +96,7 @@ class PersonService:
                     'person_id': str(person.id),
                     'external_id': person.external_id,
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(person.id),
@@ -157,13 +161,42 @@ class PersonService:
                     'key': key,
                     'value': value,
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(person.id),
             )
         )
         return attr
+
+    async def bulk_upsert_persons(
+        self,
+        session: AsyncSession,
+        items: list[PersonBulkItem],
+        correlation_id: str | None = None,
+    ) -> list[Person]:
+        """Bulk-upsert persons by external_id and emit a single domain event."""
+        pairs = [(item.external_id, item.full_name) for item in items]
+        persons = await repo_bulk_upsert_persons(session, pairs)
+        await session.flush()
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.person.bulk_upserted',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'count': len(persons),
+                    'external_ids': [p.external_id for p in persons],
+                },
+                actor_kind=EventParticipantKind.COMPONENT,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id='persons',
+            )
+        )
+        return persons
 
     async def remove_attribute(
         self,
@@ -190,7 +223,7 @@ class PersonService:
                     'person_id': str(person_id),
                     'key': key,
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(person.id),

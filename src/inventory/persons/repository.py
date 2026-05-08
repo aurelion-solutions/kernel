@@ -7,6 +7,7 @@
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.persons.models import Person, PersonAttribute
 
@@ -15,10 +16,10 @@ async def create_person(
     session: AsyncSession,
     *,
     external_id: str,
-    description: str,
+    full_name: str,
 ) -> Person:
     """Create and persist a person."""
-    person = Person(external_id=external_id, description=description)
+    person = Person(external_id=external_id, full_name=full_name)
     session.add(person)
     await session.flush()
     await session.refresh(person)
@@ -101,3 +102,36 @@ async def delete_person_attribute(
         return False
     await session.delete(attr)
     return True
+
+
+async def bulk_upsert_persons(
+    session: AsyncSession,
+    items: list[tuple[str, str]],
+) -> list[Person]:
+    """Upsert persons by external_id.
+
+    Args:
+        session: SQLAlchemy async session.
+        items: list of (external_id, full_name) tuples, in input order.
+
+    Returns:
+        Persons in the same order as items.
+
+    """
+    if not items:
+        return []
+
+    values = [{'external_id': ext_id, 'full_name': name} for ext_id, name in items]
+
+    insert_stmt = pg_insert(Person).values(values)
+    stmt = insert_stmt.on_conflict_do_update(
+        index_elements=['external_id'],
+        set_={'full_name': insert_stmt.excluded.full_name},
+    ).returning(Person)
+
+    result = await session.execute(stmt)
+    rows: list[Person] = list(result.scalars().all())
+
+    # Re-order to match input order — RETURNING order is not guaranteed.
+    index: dict[str, Person] = {row.external_id: row for row in rows}
+    return [index[ext_id] for ext_id, _ in items]

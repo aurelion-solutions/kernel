@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -32,6 +32,9 @@ __all__ = [
     'SubjectPatch',
     'SubjectAttributeCreate',
     'SubjectAttributeRead',
+    'SubjectBulkItem',
+    'SubjectBulkRequest',
+    'SubjectBulkResponse',
 ]
 
 _EMPLOYEE_STATUSES = frozenset(v.value for v in SubjectEmployeeStatus)
@@ -136,3 +139,39 @@ class SubjectAttributeRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SubjectBulkItem(BaseModel):
+    """Single item in a bulk-upsert request. Employee subjects only."""
+
+    external_id: Annotated[str, Field(min_length=1, max_length=255)]
+    person_external_id: Annotated[str, Field(min_length=1, max_length=255)]
+    status: SubjectEmployeeStatus = SubjectEmployeeStatus.active
+
+    # kind is fixed at 'employee' for this step — encode as a Literal so
+    # callers cannot accidentally send 'nhi' / 'customer' and get a
+    # confusing 500 from the resolver.
+    kind: Literal['employee'] = 'employee'
+
+
+class SubjectBulkRequest(BaseModel):
+    """Request body for POST /subjects/bulk."""
+
+    items: list[SubjectBulkItem] = Field(..., min_length=1, max_length=500)
+
+    @model_validator(mode='after')
+    def _check_unique_business_keys(self) -> SubjectBulkRequest:
+        seen: set[tuple[str, str]] = set()
+        for item in self.items:
+            key = (item.kind, item.external_id)
+            if key in seen:
+                raise ValueError(f'Duplicate (kind, external_id) in request: {item.kind}/{item.external_id}')
+            seen.add(key)
+        return self
+
+
+class SubjectBulkResponse(BaseModel):
+    """Response for POST /subjects/bulk."""
+
+    upserted: int
+    ids: list[uuid.UUID]

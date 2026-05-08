@@ -28,6 +28,7 @@ class EventParticipantKind(str, Enum):
     USER = 'user'
     CONNECTOR = 'connector'
     CAPABILITY = 'capability'
+    COMPONENT = 'component'
     APPLICATION = 'application'
 
 

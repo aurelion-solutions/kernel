@@ -42,7 +42,7 @@ async def _make_access_artifact(session, application_id: uuid.UUID) -> uuid.UUID
         sa.text(
             'INSERT INTO access_artifacts '
             '(id, application_id, artifact_type, external_id, payload, observed_at) '
-            'VALUES (:id, :application_id, :artifact_type, :external_id, :payload::jsonb, :observed_at)'
+            'VALUES (:id, :application_id, :artifact_type, :external_id, CAST(:payload AS jsonb), :observed_at)'
         ),
         {
             'id': artifact_id,

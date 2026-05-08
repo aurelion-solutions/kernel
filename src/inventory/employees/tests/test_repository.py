@@ -25,7 +25,7 @@ from src.inventory.persons.repository import create_person
 async def test_create_employee(session_factory) -> None:
     """create_employee persists an employee."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-1', description='Alice')
+        person = await create_person(session, external_id='p-1', full_name='Alice')
         await session.flush()
         employee = await create_employee(
             session,
@@ -40,7 +40,7 @@ async def test_create_employee(session_factory) -> None:
 async def test_get_employee_by_id(session_factory) -> None:
     """get_employee_by_id returns employee when found."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-2', description='Bob')
+        person = await create_person(session, external_id='p-2', full_name='Bob')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.commit()
@@ -64,10 +64,11 @@ async def test_get_employee_by_id_returns_none_when_missing(session_factory) -> 
 async def test_list_employees(session_factory) -> None:
     """list_employees returns all employees."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-4', description='Dave')
+        person1 = await create_person(session, external_id='p-4a', full_name='Dave')
+        person2 = await create_person(session, external_id='p-4b', full_name='Dave2')
         await session.flush()
-        await create_employee(session, person_id=person.id)
-        await create_employee(session, person_id=person.id)
+        await create_employee(session, person_id=person1.id)
+        await create_employee(session, person_id=person2.id)
         await session.commit()
 
     async with session_factory() as session:
@@ -79,7 +80,7 @@ async def test_list_employees(session_factory) -> None:
 async def test_add_attribute(session_factory) -> None:
     """create_employee_attribute persists an attribute."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-5', description='Eve')
+        person = await create_person(session, external_id='p-5', full_name='Eve')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.flush()
@@ -100,7 +101,7 @@ async def test_add_attribute(session_factory) -> None:
 async def test_list_attributes(session_factory) -> None:
     """list_employee_attributes returns attributes for employee."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-6', description='Frank')
+        person = await create_person(session, external_id='p-6', full_name='Frank')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.flush()
@@ -120,7 +121,7 @@ async def test_list_attributes(session_factory) -> None:
 async def test_delete_attribute(session_factory) -> None:
     """delete_employee_attribute removes attribute."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-7', description='Gina')
+        person = await create_person(session, external_id='p-7', full_name='Gina')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.flush()
@@ -142,7 +143,7 @@ async def test_delete_attribute(session_factory) -> None:
 async def test_delete_attribute_nonexistent_returns_false(session_factory) -> None:
     """delete_employee_attribute returns False when attribute not found."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-8', description='Hank')
+        person = await create_person(session, external_id='p-8', full_name='Hank')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.commit()
@@ -157,7 +158,7 @@ async def test_delete_attribute_nonexistent_returns_false(session_factory) -> No
 async def test_uniqueness_on_employee_id_key_enforced(session_factory) -> None:
     """Duplicate (employee_id, key) is rejected."""
     async with session_factory() as session:
-        person = await create_person(session, external_id='p-9', description='Ivan')
+        person = await create_person(session, external_id='p-9', full_name='Ivan')
         await session.flush()
         employee = await create_employee(session, person_id=person.id)
         await session.flush()

@@ -4,11 +4,25 @@
 
 """Employee repository for PostgreSQL access."""
 
+from dataclasses import dataclass, field
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.employees.models import Employee, EmployeeAttribute
+from src.inventory.persons.models import Person
+
+
+@dataclass
+class EmployeeUpsertData:
+    """Input row for bulk_upsert_employees."""
+
+    person_id: uuid.UUID
+    is_locked: bool
+    description: str | None
+    org_unit_id: uuid.UUID | None
+    attributes: dict[str, str] = field(default_factory=dict)
 
 
 async def create_employee(
@@ -137,3 +151,73 @@ async def delete_employee_attribute(
         return False
     await session.delete(attr)
     return True
+
+
+async def resolve_persons_by_external_ids(
+    session: AsyncSession,
+    external_ids: list[str],
+) -> dict[str, uuid.UUID]:
+    """Batch SELECT persons by external_id. Returns {external_id -> person_id} mapping."""
+    if not external_ids:
+        return {}
+    result = await session.execute(select(Person.id, Person.external_id).where(Person.external_id.in_(external_ids)))
+    return {row.external_id: row.id for row in result}
+
+
+async def bulk_upsert_employees(
+    session: AsyncSession,
+    items: list[EmployeeUpsertData],
+) -> list[Employee]:
+    """Upsert employees by person_id (ON CONFLICT person_id DO UPDATE).
+
+    Also batch-upserts any attributes provided in each item.
+
+    Returns:
+        Employees in the same order as items.
+
+    """
+    if not items:
+        return []
+
+    values = [
+        {
+            'person_id': row.person_id,
+            'is_locked': row.is_locked,
+            'description': row.description,
+            'org_unit_id': row.org_unit_id,
+        }
+        for row in items
+    ]
+
+    insert_stmt = pg_insert(Employee).values(values)
+    stmt = insert_stmt.on_conflict_do_update(
+        constraint='uq_employees_person_id',
+        set_={
+            'is_locked': insert_stmt.excluded.is_locked,
+            'description': insert_stmt.excluded.description,
+            'org_unit_id': insert_stmt.excluded.org_unit_id,
+        },
+    ).returning(Employee)
+
+    result = await session.execute(stmt)
+    rows: list[Employee] = list(result.scalars().all())
+
+    index: dict[uuid.UUID, Employee] = {row.person_id: row for row in rows}
+    employees = [index[row.person_id] for row in items]
+
+    # Batch-upsert attributes for employees that have them.
+    attr_values = [
+        {'employee_id': emp.id, 'key': key, 'value': val}
+        for emp, data in zip(employees, items)
+        for key, val in data.attributes.items()
+        if val
+    ]
+    if attr_values:
+        attr_stmt = pg_insert(EmployeeAttribute).values(attr_values)
+        attr_stmt = attr_stmt.on_conflict_do_update(
+            constraint='uq_employee_attributes_employee_id_key',
+            set_={'value': attr_stmt.excluded.value},
+        )
+        await session.execute(attr_stmt)
+
+    return employees

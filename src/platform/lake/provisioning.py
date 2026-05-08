@@ -32,6 +32,15 @@ from src.platform.lake.schemas import (
     RAW_ACCESS_ARTIFACTS_PARTITION_SPEC,
     RAW_ACCESS_ARTIFACTS_SCHEMA,
     RAW_ACCESS_ARTIFACTS_TABLE,
+    RAW_EMPLOYEES_PARTITION_SPEC,
+    RAW_EMPLOYEES_SCHEMA,
+    RAW_EMPLOYEES_TABLE,
+    RAW_ORG_UNITS_PARTITION_SPEC,
+    RAW_ORG_UNITS_SCHEMA,
+    RAW_ORG_UNITS_TABLE,
+    RAW_PERSONS_PARTITION_SPEC,
+    RAW_PERSONS_SCHEMA,
+    RAW_PERSONS_TABLE,
 )
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import LogService, merge_emit_log_participant_fields
@@ -70,16 +79,11 @@ class EnsureTablesResult:
 # ---------------------------------------------------------------------------
 
 _TABLE_SPECS: tuple[tuple[tuple[str, ...], Schema, PartitionSpec], ...] = (
-    (
-        RAW_ACCESS_ARTIFACTS_TABLE,
-        RAW_ACCESS_ARTIFACTS_SCHEMA,
-        RAW_ACCESS_ARTIFACTS_PARTITION_SPEC,
-    ),
-    (
-        NORMALIZED_ACCESS_FACTS_TABLE,
-        NORMALIZED_ACCESS_FACTS_SCHEMA,
-        NORMALIZED_ACCESS_FACTS_PARTITION_SPEC,
-    ),
+    (RAW_ACCESS_ARTIFACTS_TABLE, RAW_ACCESS_ARTIFACTS_SCHEMA, RAW_ACCESS_ARTIFACTS_PARTITION_SPEC),
+    (NORMALIZED_ACCESS_FACTS_TABLE, NORMALIZED_ACCESS_FACTS_SCHEMA, NORMALIZED_ACCESS_FACTS_PARTITION_SPEC),
+    (RAW_PERSONS_TABLE, RAW_PERSONS_SCHEMA, RAW_PERSONS_PARTITION_SPEC),
+    (RAW_ORG_UNITS_TABLE, RAW_ORG_UNITS_SCHEMA, RAW_ORG_UNITS_PARTITION_SPEC),
+    (RAW_EMPLOYEES_TABLE, RAW_EMPLOYEES_SCHEMA, RAW_EMPLOYEES_PARTITION_SPEC),
 )
 
 
@@ -88,28 +92,41 @@ _TABLE_SPECS: tuple[tuple[tuple[str, ...], Schema, PartitionSpec], ...] = (
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _DriftResult:
+    now_optional: list[str]
+    has_type_change: bool
+
+
 def _check_schema_drift(
     identifier: tuple[str, ...],
     existing_fields: tuple[NestedField, ...],
     declared_fields: tuple[NestedField, ...],
     log_service: LogService,
-) -> None:
+) -> _DriftResult:
     """Compare field id+name+type+required against the declared schema constant.
 
-    On mismatch emits one ``platform.lake.table_schema_drift_detected`` WARNING.
+    Returns a :class:`_DriftResult` with:
+    - ``now_optional``: field names that safely evolved from required=True → False
+      (apply via ``make_column_optional``).
+    - ``has_type_change``: True when any field changed its Iceberg type
+      (requires drop-and-recreate).
+
+    On any mismatch emits one ``platform.lake.table_schema_drift_detected`` WARNING.
     Does NOT raise and does NOT mutate the table.
     """
     existing_triples = {(f.field_id, f.name, str(f.field_type), f.required) for f in existing_fields}
     declared_triples = {(f.field_id, f.name, str(f.field_type), f.required) for f in declared_fields}
 
     if existing_triples == declared_triples:
-        return
+        return _DriftResult(now_optional=[], has_type_change=False)
 
     extra = existing_triples - declared_triples
     missing = declared_triples - existing_triples
     type_mismatches: list[dict[str, Any]] = []
+    now_optional: list[str] = []
+    has_type_change = False
 
-    # Surface fields present in both sets but with differing types/required
     existing_by_id = {f.field_id: f for f in existing_fields}
     declared_by_id = {f.field_id: f for f in declared_fields}
     for fid in set(existing_by_id) & set(declared_by_id):
@@ -126,6 +143,11 @@ def _check_schema_drift(
                     'declared_required': df.required,
                 }
             )
+            if str(ef.field_type) != str(df.field_type):
+                has_type_change = True
+            elif ef.required and not df.required:
+                # required → optional: safe Iceberg schema evolution
+                now_optional.append(ef.name)
 
     namespace = identifier[:-1]
     table = identifier[-1]
@@ -140,11 +162,14 @@ def _check_schema_drift(
                 'extra_fields': [str(t) for t in extra],
                 'missing_fields': [str(t) for t in missing],
                 'type_mismatches': type_mismatches,
+                'auto_evolve_optional': now_optional,
+                'has_type_change': has_type_change,
             },
             actor_component=_COMPONENT,
             target_id=f'{".".join(namespace)}.{table}',
         ),
     )
+    return _DriftResult(now_optional=now_optional, has_type_change=has_type_change)
 
 
 # ---------------------------------------------------------------------------
@@ -173,12 +198,34 @@ def _provision_one(
     # Step 1: try loading an existing table first (idempotent check).
     try:
         existing = catalog.load_table(identifier)
-        _check_schema_drift(
+        drift = _check_schema_drift(
             identifier,
             existing.schema().fields,
             schema.fields,
             log_service,
         )
+        if drift.has_type_change:
+            # Field type changed — incompatible with existing data.
+            # Drop from the catalog and recreate immediately.
+            catalog.drop_table(identifier)
+            catalog.create_table(
+                identifier=identifier,
+                schema=schema,
+                partition_spec=partition_spec,
+            )
+            return EnsuredTable(
+                namespace=namespace,
+                name=table_name,
+                identifier=identifier,
+                created=True,
+                current_snapshot_id=None,
+            )
+        # Auto-evolve: required→optional changes are backwards-compatible; apply them.
+        if drift.now_optional:
+            upd = existing.update_schema()
+            for col_name in drift.now_optional:
+                upd.make_column_optional(col_name)
+            upd.commit()
         snapshot_id: int | None = existing.metadata.current_snapshot_id
         return EnsuredTable(
             namespace=namespace,

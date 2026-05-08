@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /api/v0/policies/catalog` — product-neutral, read-only unified policy catalog. One row per policy across two sources: DB-backed SoD rules (`sod_rules`) and file-backed Lens cartridges (`cartridges/lens/**/*.yaml`). Each row carries the three policy axes (`policy_type`, `definition_source`, `assessment_strategy`) plus `status` (`active`/`inactive` for SoD; `available` for cartridges) and optional cartridge `version`. Read-only — no events, no mutation, does not change scan or assessment behaviour.
+- `AssessmentStrategy` enum extended with `heuristic` and `hybrid` to match the catalog axis vocabulary; existing `deterministic` and `semantic_assisted` values are unchanged. New enums `DefinitionSource` (`db`/`file`) and `PolicyStatus` (`active`/`inactive`/`available`) introduced for the catalog projection.
+
+### Fixed
+
+- `access_analysis` engine: `iter_unused_access_fact_views` now skips rows with `subject_id IS NULL` instead of attempting to parse them and crashing the whole scan with `ValueError: badly formed hexadecimal UUID string`. Iceberg schema declares `subject_id` as `required=False`, so orphan-fact rows (account present, subject not matched) can legitimately appear; they are out of scope for the unused-access detector (covered by `orphan_access`). Symmetric to the existing null-`application_id_denorm` filter; emits a DEBUG log per skipped row.
+
+- `GET /api/v0/analytics/top-risks` and `GET /api/v0/analytics/risk-by-application`: `severity_breakdown` now includes the `informational` key. Previously the dict had only four keys while `open_findings_count` summed all five severities — `sum(severity_breakdown.values())` could be less than `open_findings_count` when informational findings existed. Both endpoints now return all five `SodSeverity` keys, zero-filled for absent severities. `informational` is counted but contributes 0 to `risk_score`. Aligns the shape with `findings-summary.findings_by_severity`.
+
+### Added
+
+- `GET /api/v0/reports/deterministic` — product-neutral deterministic report payload combining `FindingsSummary`, top findings with evidence, rule-based recommendations, and five fixed executive summary blocks. No LLM, no PDF — JSON only. Designed as input for Lens AI summary (Phase 16 Step 22) and any future renderer.
+
+- `GET /api/v0/analytics/findings-summary` — counts open findings, breaks them down by severity and kind, and lists top applications, top subjects, and quick-win candidates. Pure PG; no DuckDB or Iceberg dependency.
+
+- `POST /api/v0/accounts/bulk` — bulk upsert accounts by `(application_id, username)`. Inserts new rows or updates `display_name` and `email` on conflict. Returns `{upserted: N}`. Accepts 1–10000 items.
+- Unique index `ix_ent_accounts_app_username` on `ent_accounts(application_id, username)` (migration `cf1a266d2661`). Enables idempotent bulk upsert via `INSERT ON CONFLICT DO UPDATE`.
+
+- `GET /api/v0/org-units` — returns all org units (id, external_id, name) sorted by external_id ascending. No pagination, no filtering. Intended for Lens lookup use.
+- `POST /api/v0/org-units/bulk` — upsert org_units by `external_id` with two-pass parent resolution (supports child-before-parent CSV ordering). Returns `{upserted, ids}`. Emits `inventory.org_unit.bulk_upserted`. 422 on unknown `parent_external_id`.
+- Extended `POST /api/v0/employees/bulk` — optional `org_unit_external_id` field links employees to org units; returns 422 if referenced org_unit not found. Resolves via one batched `SELECT ... WHERE external_id IN (...)`.
+- Migration `2026_05_02_2000_phase_16_step_15_org_units`: creates `org_units` table + adds `employees.org_unit_id` nullable FK column.
+
+- `POST /api/v0/subjects/bulk` — bulk upsert employee-kind subjects by `(kind, external_id)`, resolving `person_external_id → employee_id`
+- `UNIQUE` constraint `uq_subjects_kind_external_id` on `(subjects.kind, subjects.external_id)` (migration `2026_05_02_1620`)
+
+- `POST /api/v0/employees/bulk` — bulk upsert employees by `person_external_id` (idempotent, up to 500 items).
+  Request: `{items: [{person_external_id, is_locked, description}]}`.
+  Response: `{upserted: N, ids: [...]}` in input order.
+  Returns 422 if any `person_external_id` is unknown, or if duplicates appear within a single payload.
+  Event: `inventory.employee.bulk_upserted` with `count` and `person_ids`.
+- `UNIQUE` constraint `uq_employees_person_id` on `employees.person_id` (migration `9555ec2e84da`).
+  Pre-flight: verify no duplicate `person_id` rows before applying in production.
+
+- `POST /api/v0/persons/bulk` — bulk upsert persons by `external_id` (idempotent, up to 500 items)
+- `UNIQUE` constraint `uq_persons_external_id` on `persons.external_id` (migration `9372cefb0a63`)
+
+- Analytics slice with `GET /api/v0/analytics/top-risks?limit=N` and `GET /api/v0/analytics/risk-by-application` — DuckDB over Iceberg `normalized.access_facts` joined with PG `findings`
+- `GET /api/v0/access-facts/{fact_id}/artifact-ref` resolver — closes drill-down chain `access_fact → reconciliation_delta_item → access_artifact`; 404 if any link is broken
+- `AccessFactArtifactRefRead` schema and `AccessFactArtifactRefNotFoundError` in access_facts slice
+- Named severity weight constants (`critical=100`, `high=50`, `medium=20`, `low=5`) in analytics schemas
+- Test bootstrap fix: secrets provider registration and NHI/subjects model imports in conftest
+
 - `src/platform/runtime_settings/` slice with `GET /api/v0/runtime-settings`, `GET /api/v0/runtime-settings/{key}`, and `PUT /api/v0/runtime-settings/{key}` endpoints
 - `RuntimeSettingsConfig` typed snapshot with operational knobs for lake, LLM, and log buffer
 - `src/core/config/` bootstrap layer — `get_settings()` with `lru_cache`, `PostgresSettings`, `RabbitMQSettings`, `AppSettings`, `LakeStaticSettings`

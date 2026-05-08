@@ -18,7 +18,7 @@ from src.inventory.persons.models import Person
 async def test_create_employee_with_required_fields(session_factory) -> None:
     """Employee can be created with required fields."""
     async with session_factory() as session:
-        person = Person(external_id='ext-emp1', description='Alice')
+        person = Person(external_id='ext-emp1', full_name='Alice')
         session.add(person)
         await session.flush()
 
@@ -38,7 +38,7 @@ async def test_create_employee_with_required_fields(session_factory) -> None:
 async def test_create_employee_linked_to_existing_person(session_factory) -> None:
     """Employee can be created linked to existing Person."""
     async with session_factory() as session:
-        person = Person(external_id='ext-emp2', description='Bob')
+        person = Person(external_id='ext-emp2', full_name='Bob')
         session.add(person)
         await session.commit()
         person_id = person.id
@@ -59,7 +59,7 @@ async def test_create_employee_linked_to_existing_person(session_factory) -> Non
 async def test_create_employee_attribute_linked_to_employee(session_factory) -> None:
     """EmployeeAttribute can be created linked to Employee."""
     async with session_factory() as session:
-        person = Person(external_id='ext-ea', description='Carol')
+        person = Person(external_id='ext-ea', full_name='Carol')
         session.add(person)
         await session.flush()
         employee = Employee(
@@ -86,7 +86,7 @@ async def test_create_employee_attribute_linked_to_employee(session_factory) -> 
 async def test_employee_belongs_to_person(session_factory) -> None:
     """Employee belongs to Person; relationship works."""
     async with session_factory() as session:
-        person = Person(external_id='ext-rel', description='Dave')
+        person = Person(external_id='ext-rel', full_name='Dave')
         session.add(person)
         await session.flush()
         employee = Employee(
@@ -111,7 +111,7 @@ async def test_employee_belongs_to_person(session_factory) -> None:
 async def test_employee_attribute_belongs_to_employee(session_factory) -> None:
     """EmployeeAttribute belongs to Employee; relationship works both ways."""
     async with session_factory() as session:
-        person = Person(external_id='ext-ea2', description='Eve')
+        person = Person(external_id='ext-ea2', full_name='Eve')
         session.add(person)
         await session.flush()
         employee = Employee(
@@ -144,7 +144,7 @@ async def test_employee_attribute_belongs_to_employee(session_factory) -> None:
 async def test_uniqueness_on_employee_id_key_enforced(session_factory) -> None:
     """Duplicate (employee_id, key) pair is rejected."""
     async with session_factory() as session:
-        person = Person(external_id='ext-dup', description='Frank')
+        person = Person(external_id='ext-dup', full_name='Frank')
         session.add(person)
         await session.flush()
         employee = Employee(
@@ -180,7 +180,7 @@ async def test_required_field_behavior_employee_attribute_missing_value(
 ) -> None:
     """EmployeeAttribute requires value; missing raises IntegrityError."""
     async with session_factory() as session:
-        person = Person(external_id='ext-eareq', description='Hank')
+        person = Person(external_id='ext-eareq', full_name='Hank')
         session.add(person)
         await session.flush()
         employee = Employee(
@@ -206,7 +206,7 @@ async def test_required_field_behavior_employee_attribute_missing_key(
 ) -> None:
     """EmployeeAttribute requires key; missing raises IntegrityError."""
     async with session_factory() as session:
-        person = Person(external_id='ext-eareq2', description='Ivan')
+        person = Person(external_id='ext-eareq2', full_name='Ivan')
         session.add(person)
         await session.flush()
         employee = Employee(

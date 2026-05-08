@@ -87,14 +87,9 @@ class AccessUsageFactService:
         if window_to is not None and window_to <= window_from:
             raise AccessUsageFactWindowOrderError('window_to must be strictly greater than window_from')
 
-        from sqlalchemy import text as sa_text
-
-        fact_row = await session.execute(
-            sa_text('SELECT id FROM access_facts WHERE id = :id'),
-            {'id': access_fact_id},
-        )
-        if fact_row.one_or_none() is None:
-            raise AccessUsageFactForeignKeyError(f'AccessFact not found: {access_fact_id}')
+        # Phase 15: ``access_facts`` was dropped from PG — facts now live in Iceberg
+        # ``normalized.access_facts``. ``access_fact_id`` is a plain UUID with no FK
+        # constraint, so no existence check is performed here.
 
         try:
             usage_fact = await repo_create(
@@ -108,8 +103,6 @@ class AccessUsageFactService:
         except IntegrityError as exc:
             await session.rollback()
             pgcode = getattr(exc.orig, 'pgcode', None) or getattr(exc.orig, 'sqlstate', None)
-            if pgcode == '23503':
-                raise AccessUsageFactForeignKeyError('Referenced AccessFact not found (concurrent delete)') from exc
             if pgcode == '23505':
                 raise AccessUsageFactDuplicateError(
                     'Usage fact already exists for this (access_fact_id, window_from, window_to)'
@@ -135,7 +128,7 @@ class AccessUsageFactService:
                     'window_from': window_from.isoformat(),
                     'window_to': window_to.isoformat() if window_to is not None else None,
                 },
-                actor_kind=EventParticipantKind.CAPABILITY,
+                actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
                 target_id=str(usage_fact.id),

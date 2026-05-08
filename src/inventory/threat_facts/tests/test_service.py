@@ -53,7 +53,7 @@ async def _make_subject(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await create_employee(session, person_id=person.id)
     await session.flush()
@@ -129,7 +129,7 @@ async def test_upsert_first_time_emits_created_event(
     emitted = capturing_events.filter_by_type('inventory.threat_fact.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.threat_facts'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(fact.id)

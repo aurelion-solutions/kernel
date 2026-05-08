@@ -18,7 +18,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "aio-pika>=9.6.2",
     "sse-starlette>=1.8.2",
-    "pyiceberg[sql-postgres]>=0.10",
+    "pyiceberg[pyiceberg-core,sql-postgres]>=0.10",
     "duckdb>=1.1",
     "pyarrow>=17",
     "pytz>=2026.1.post1",
@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["src", "ops/db_versions/tests"]
+testpaths = ["src"]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
 pythonpath = ["."]

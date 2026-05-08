@@ -6,7 +6,7 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EmployeeCreate(BaseModel):
@@ -44,3 +44,36 @@ class EmployeeAttributeRead(BaseModel):
     value: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EmployeeBulkItem(BaseModel):
+    """Single item in a bulk-upsert request."""
+
+    person_external_id: str = Field(..., min_length=1, max_length=255)
+    is_locked: bool = Field(default=False)
+    description: str | None = Field(default=None, max_length=255)
+    org_unit_external_id: str | None = Field(default=None, max_length=255)
+    attributes: dict[str, str] | None = Field(default=None)
+
+
+class EmployeeBulkRequest(BaseModel):
+    """Request body for POST /employees/bulk."""
+
+    items: list[EmployeeBulkItem] = Field(..., min_length=1, max_length=500)
+
+    @model_validator(mode='after')
+    def _check_unique_person_external_ids(self) -> 'EmployeeBulkRequest':
+        seen: set[str] = set()
+        for item in self.items:
+            if item.person_external_id in seen:
+                raise ValueError(f'Duplicate person_external_id in request: {item.person_external_id}')
+            seen.add(item.person_external_id)
+        return self
+
+
+class EmployeeBulkResponse(BaseModel):
+    """Response for POST /employees/bulk (lake-first path)."""
+
+    row_count: int
+    snapshot_id: int | None
+    backend: str = 'iceberg'

@@ -45,86 +45,29 @@ def app_with_access_usage_facts(engine):
 
 
 async def _make_access_fact(engine) -> uuid.UUID:
-    """Create minimal subject + resource + access_fact via raw SQL; return access_fact.id."""
-    import sqlalchemy as sa
-    from src.inventory.employees.repository import create_employee
-    from src.inventory.persons.repository import create_person
-    from src.inventory.resources.models import Resource
-    from src.inventory.subjects.models import Subject, SubjectKind
-    from src.platform.applications.models import Application
+    """Synthesize an access_fact UUID.
 
-    sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
-    async with sf() as session:
-        person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
-        await session.flush()
-        emp = await create_employee(session, person_id=person.id)
-        await session.flush()
-        subj = Subject(
-            external_id=str(uuid.uuid4()),
-            kind=SubjectKind.employee,
-            principal_employee_id=emp.id,
-            status='active',
-        )
-        session.add(subj)
-        await session.flush()
-
-        app = Application(
-            name=f'test-app-{uuid.uuid4()}',
-            code=f'app-{uuid.uuid4().hex[:8]}',
-            config={},
-            required_connector_tags=[],
-            is_active=True,
-        )
-        session.add(app)
-        await session.flush()
-        resource = Resource(
-            external_id=str(uuid.uuid4()),
-            application_id=app.id,
-            kind='database',
-            resource_type='database',
-            resource_key=str(uuid.uuid4()),
-        )
-        session.add(resource)
-        await session.flush()
-
-        from sqlalchemy import select
-        from src.inventory.actions.models import Action as RefAction
-
-        action_id_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
-        action_id = action_id_row.scalar_one()
-
-        fact_id = uuid.uuid4()
-        await session.execute(
-            sa.text(
-                'INSERT INTO access_facts '
-                '(id, subject_id, resource_id, action_id, effect, observed_at) '
-                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
-            ),
-            {
-                'id': fact_id,
-                'subject_id': subj.id,
-                'resource_id': resource.id,
-                'action_id': action_id,
-                'effect': 'allow',
-                'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
-            },
-        )
-        await session.commit()
-        return fact_id
+    Phase 15 Step 16: PG ``access_facts`` table was dropped — facts now live in
+    Iceberg. ``AccessUsageFact.access_fact_id`` is a plain UUID with no FK, so
+    we just return a fresh id without seeding any prerequisites.
+    """
+    return uuid.uuid4()
 
 
 async def _make_access_fact_with_subject(engine) -> tuple[uuid.UUID, uuid.UUID]:
-    """Return (subject_id, access_fact_id) — raw SQL."""
-    import sqlalchemy as sa
+    """Return (subject_id, access_fact_id).
+
+    Phase 15 Step 16: PG ``access_facts`` table was dropped. We still need to
+    create a subject for tests that filter by subject_id, but the access_fact
+    id itself is just a fresh UUID.
+    """
     from src.inventory.employees.repository import create_employee
     from src.inventory.persons.repository import create_person
-    from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
-    from src.platform.applications.models import Application
 
     sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
     async with sf() as session:
-        person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
         await session.flush()
         emp = await create_employee(session, person_id=person.id)
         await session.flush()
@@ -136,50 +79,8 @@ async def _make_access_fact_with_subject(engine) -> tuple[uuid.UUID, uuid.UUID]:
         )
         session.add(subj)
         await session.flush()
-
-        app = Application(
-            name=f'test-app-{uuid.uuid4()}',
-            code=f'app-{uuid.uuid4().hex[:8]}',
-            config={},
-            required_connector_tags=[],
-            is_active=True,
-        )
-        session.add(app)
-        await session.flush()
-        resource = Resource(
-            external_id=str(uuid.uuid4()),
-            application_id=app.id,
-            kind='database',
-            resource_type='database',
-            resource_key=str(uuid.uuid4()),
-        )
-        session.add(resource)
-        await session.flush()
-
-        from sqlalchemy import select
-        from src.inventory.actions.models import Action as RefAction
-
-        action_id_row = await session.execute(select(RefAction.id).where(RefAction.slug == 'read'))
-        action_id = action_id_row.scalar_one()
-
-        fact_id = uuid.uuid4()
-        await session.execute(
-            sa.text(
-                'INSERT INTO access_facts '
-                '(id, subject_id, resource_id, action_id, effect, observed_at) '
-                'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
-            ),
-            {
-                'id': fact_id,
-                'subject_id': subj.id,
-                'resource_id': resource.id,
-                'action_id': action_id,
-                'effect': 'allow',
-                'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
-            },
-        )
         await session.commit()
-        return subj.id, fact_id
+        return subj.id, uuid.uuid4()
 
 
 @pytest.mark.asyncio

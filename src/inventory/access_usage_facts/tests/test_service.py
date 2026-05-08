@@ -50,7 +50,7 @@ async def _make_subject(session) -> uuid.UUID:
     from src.inventory.persons.repository import create_person
     from src.inventory.subjects.models import Subject, SubjectKind
 
-    person = await create_person(session, external_id=str(uuid.uuid4()), description='test')
+    person = await create_person(session, external_id=str(uuid.uuid4()), full_name='test')
     await session.flush()
     emp = await create_employee(session, person_id=person.id)
     await session.flush()
@@ -99,29 +99,13 @@ async def _get_read_action_id(session) -> int:
 
 
 async def _make_access_fact(session) -> uuid.UUID:
-    import sqlalchemy as sa
+    """Synthesize an access_fact UUID.
 
-    subject_id = await _make_subject(session)
-    resource_id = await _make_resource(session)
-    action_id = await _get_read_action_id(session)
-    fact_id = uuid.uuid4()
-    await session.execute(
-        sa.text(
-            'INSERT INTO access_facts '
-            '(id, subject_id, resource_id, action_id, effect, observed_at) '
-            'VALUES (:id, :subject_id, :resource_id, :action_id, :effect, :observed_at)'
-        ),
-        {
-            'id': fact_id,
-            'subject_id': subject_id,
-            'resource_id': resource_id,
-            'action_id': action_id,
-            'effect': 'allow',
-            'observed_at': datetime(2026, 1, 1, tzinfo=UTC),
-        },
-    )
-    await session.flush()
-    return fact_id
+    Phase 15 Step 16: PG ``access_facts`` table was dropped — facts now live in
+    Iceberg. ``AccessUsageFact.access_fact_id`` is a plain UUID with no FK, so
+    we just return a fresh id without seeding any prerequisites.
+    """
+    return uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +142,7 @@ async def test_create_usage_fact_happy_path_closed_window(
     emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
     assert len(emitted) == 1
     envelope = emitted[0]
-    assert envelope.actor_kind == EventParticipantKind.CAPABILITY
+    assert envelope.actor_kind == EventParticipantKind.COMPONENT
     assert envelope.actor_id == 'inventory.access_usage_facts'
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(usage_fact.id)

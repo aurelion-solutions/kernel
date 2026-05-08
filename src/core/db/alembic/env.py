@@ -27,11 +27,11 @@ from src.core.db.base import Base  # noqa: E402
 
 
 def import_all_model_modules() -> None:
-    import src.capabilities
+    import src.engines
     import src.inventory
     import src.platform
 
-    for pkg in (src.inventory, src.capabilities, src.platform):
+    for pkg in (src.inventory, src.engines, src.platform):
         for root in map(Path, pkg.__path__):
             for path in root.rglob('models.py'):
                 rel = path.relative_to(PROJECT_ROOT)
