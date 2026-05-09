@@ -281,7 +281,7 @@ async def _handle_message_async(
                     causation_event_id=envelope.event_id,
                 )
                 await session.commit()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 # allowed-broad: task-loop guard
                 await session.rollback()
                 log_service.emit_safe(
                     level=LogLevel.ERROR,
@@ -293,7 +293,7 @@ async def _handle_message_async(
                         'exception_type': type(exc).__name__,
                     },
                 )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: task-loop guard
         # Session factory itself failed (e.g. DB unreachable)
         log_service.emit_safe(
             level=LogLevel.ERROR,

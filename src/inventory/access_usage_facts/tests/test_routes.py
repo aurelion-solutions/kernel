@@ -34,7 +34,7 @@ def app_with_access_usage_facts(engine):
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
 

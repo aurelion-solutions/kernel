@@ -108,9 +108,10 @@ async def _dispatch_artifacts_bulk(
 
     try:
         bulk_payload = ArtifactsBulkPayload.model_validate(request.payload)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         raise ValueError(f'artifacts_bulk payload is invalid: {exc}') from exc
 
+    # allowed-emit-safe: observability
     log.emit_safe(
         level=LogLevel.INFO,
         message='engines.ingest.artifacts_bulk_started',
@@ -150,6 +151,7 @@ async def _dispatch_artifacts_bulk(
             correlation_id=request.code,
         )
     except AccessArtifactLakeWriteError:
+        # allowed-emit-safe: best-effort warning
         log.emit_safe(
             level=LogLevel.ERROR,
             message='engines.ingest.artifacts_bulk_failed',
@@ -191,6 +193,7 @@ async def _dispatch_artifacts_bulk(
         )
     )
 
+    # allowed-emit-safe: observability
     log.emit_safe(
         level=LogLevel.INFO,
         message='engines.ingest.artifacts_bulk_completed',
@@ -234,6 +237,7 @@ async def ingest_connector_result(
     if validate_application:
         app = await get_application_by_id(session, application_id)
         if app is None:
+            # allowed-emit-safe: best-effort warning
             log.emit_safe(
                 level=LogLevel.ERROR,
                 message=f'Application {application_id} not found',
@@ -280,6 +284,7 @@ async def ingest_connector_result(
         result_id=result_id,
         payload=payload_to_store,
     )
+    # allowed-emit-safe: observability
     log.emit_safe(
         level=LogLevel.INFO,
         message='Connector result ingested',

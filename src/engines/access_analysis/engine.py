@@ -466,7 +466,7 @@ class ScanEngine:
                     findings_status_changed.append(sc)
                 findings_by_severity = _rollup_severity(severity, findings_by_severity)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             return EngineResult(
                 findings_created=[],
                 findings_reused=[],

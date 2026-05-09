@@ -45,6 +45,7 @@ class RuntimeSettingsConfig(BaseModel):
     lake_acquire_timeout_seconds: float = 5.0
     lake_pg_any_array_max_size: int = 25000
     lake_read_page_size: int = Field(default=1000, ge=1, le=5000)
+    reconciliation_fetch_batch_size: int = Field(default=5000, ge=1, le=50000)
     llm_max_loaded_models: int = Field(default=2, ge=1)
     llm_max_messages: int = Field(default=32, ge=1)
     llm_max_chars_per_message: int = Field(default=32000, ge=1)

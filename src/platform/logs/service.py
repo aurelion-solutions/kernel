@@ -130,10 +130,12 @@ def _schedule_or_run(coro: Any) -> None:
         if _main_loop is not None and _main_loop.is_running():
             asyncio.run_coroutine_threadsafe(coro, _main_loop)
         else:
-            # Fallback: no app loop yet (e.g. tests) — swallow silently.
+            # Fallback: no running loop, no app loop registered (e.g. sync tests,
+            # one-off scripts before lifespan). Run synchronously via asyncio.run
+            # so the log actually reaches the sink.
             try:
-                coro.close()
-            except Exception:
+                asyncio.run(coro)
+            except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
                 pass
 
 
@@ -148,7 +150,7 @@ def _run_fire_and_forget(coro: Coroutine[Any, Any, None]) -> None:
     async def _runner() -> None:
         try:
             await coro
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
             pass
 
     _schedule_or_run(_runner())
@@ -162,10 +164,6 @@ class NoOpLogService:
 
     def emit_safe(
         self,
-        # NOTE: This is a mechanical kwarg-shape refactor (Step 23 Phase 10).
-        # The call sites still emit on aurelion.logs — NOT migrated to aurelion.events bus.
-        # `event_type` was removed from this signature; use new_root_log_event(event_type=...)
-        # + emit_event_safe(...) for legacy slices that need the field in the LogEvent body.
         level: LogLevel = LogLevel.INFO,
         message: str = '',
         component: str = '',
@@ -214,8 +212,6 @@ class LogService:
 
     def emit_safe(
         self,
-        # NOTE: `event_type` parameter removed (Step 23 Phase 10 — kwarg-shape refactor).
-        # This is NOT a migration to aurelion.events bus; aurelion.logs semantics unchanged.
         level: LogLevel = LogLevel.INFO,
         message: str = '',
         component: str = '',
@@ -256,10 +252,6 @@ class LogService:
 
     async def emit_log(
         self,
-        # NOTE: `event_type` parameter removed (Step 23 Phase 10 — kwarg-shape refactor).
-        # This is NOT a migration to aurelion.events bus; aurelion.logs semantics unchanged.
-        # Legacy slices that need event_type in the LogEvent body call new_root_log_event(event_type=...)
-        # + emit_event_safe(...) directly.
         level: LogLevel = LogLevel.INFO,
         message: str = '',
         component: str = '',

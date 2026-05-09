@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""AccessFact service — lake-read-only facade.
+"""AccessFact service — domain-facing façade for normalized.access_facts.
+
+Phase 17 Step 19: Physical DuckDB read paths extracted to
+``src/platform/lake/access_facts_reader.py``. This module is now a thin
+façade: input validation, observability ``emit_safe`` lines, multi-store
+``get_artifact_ref`` orchestration (lake → PG → lake), and the
+``_row_to_view(AccessFactRow) → AccessFactView`` inventory-boundary mapping.
 
 Phase 15 Step 16: PG write methods removed (create_fact, revoke_fact,
 refresh_fact_fields were dead since Step 12). ORM imports removed.
@@ -19,6 +25,14 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.access_facts.schemas import AccessFactArtifactRefRead, AccessFactEffect, AccessFactView
+from src.platform.lake.access_facts_reader import (
+    AccessFactRow,
+    run_get_artifact_from_iceberg,
+    run_get_by_natural_key,
+    run_get_delta_item_id,
+    run_get_fact,
+    run_list_facts,
+)
 from src.platform.logs.schemas import LogLevel
 from src.platform.logs.service import (
     LogService,
@@ -55,85 +69,32 @@ class AccessFactArtifactRefNotFoundError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Backward-compat stubs (Phase 15 Step 16)
-# These error classes were removed when write methods were deleted.
-# They are retained here as stubs so that external callers (normalization/acl)
-# that import them by name don't break before those slices are migrated.
-# TODO: remove after normalization/acl is migrated away from AccessFact PG writes.
+# Inventory-boundary DTO mapper
 # ---------------------------------------------------------------------------
 
 
-class DuplicateActiveAccessFactError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
+def _row_to_view(row: AccessFactRow) -> AccessFactView:
+    """Convert a lake-level :class:`~src.platform.lake.access_facts_reader.AccessFactRow`
+    to an inventory-level :class:`AccessFactView`.
 
-    def __init__(self, detail: str = '') -> None:
-        self.detail = detail
-        super().__init__(detail)
-
-
-class AccessFactForeignKeyError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
-
-    def __init__(self, detail: str = '') -> None:
-        self.detail = detail
-        super().__init__(detail)
-
-
-class AccessFactActionSlugUnknownError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
-
-    def __init__(self, slug: str = '') -> None:
-        self.slug = slug
-        super().__init__(f'Unknown action slug: {slug!r}')
-
-
-class AccessFactApplicationScopeMismatchError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
-
-    def __init__(self, account_id: uuid.UUID | None = None, resource_id: uuid.UUID | None = None) -> None:
-        super().__init__(f'Scope mismatch: account={account_id}, resource={resource_id}')
-
-
-class AccessFactNotRevokedError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
-
-    def __init__(self, fact_id: uuid.UUID | None = None) -> None:
-        self.fact_id = fact_id
-        super().__init__(f'Access fact {fact_id} is already revoked')
-
-
-class AccessFactNotActiveError(Exception):
-    """Stub — raised in legacy PG write path (removed in Step 16). Do not use."""
-
-    def __init__(self, fact_id: uuid.UUID | None = None) -> None:
-        self.fact_id = fact_id
-        super().__init__(f'Access fact {fact_id} is not active')
-
-
-# ---------------------------------------------------------------------------
-# SQL helpers (blocking — called via asyncio.to_thread)
-# ---------------------------------------------------------------------------
-
-_FACT_COLUMNS = (
-    'id',
-    'subject_id',
-    'account_id',
-    'resource_id',
-    'action_id',
-    'action_slug',
-    'effect',
-    'valid_from',
-    'valid_until',
-    'is_active',
-    'revoked_at',
-    'observed_at',
-    'created_at',
-)
-
-
-def _row_to_view(row: tuple[Any, ...]) -> AccessFactView:
-    """Convert a DuckDB result row to AccessFactView."""
-    d = dict(zip(_FACT_COLUMNS, row, strict=True))
+    UUID coercion and action_id casting remain here — this is the inventory
+    boundary contract, not a lake-layer concern.
+    """
+    d: dict[str, Any] = {
+        'id': row.id,
+        'subject_id': row.subject_id,
+        'account_id': row.account_id,
+        'resource_id': row.resource_id,
+        'action_id': row.action_id,
+        'action_slug': row.action_slug,
+        'effect': row.effect,
+        'valid_from': row.valid_from,
+        'valid_until': row.valid_until,
+        'is_active': row.is_active,
+        'revoked_at': row.revoked_at,
+        'observed_at': row.observed_at,
+        'created_at': row.created_at,
+    }
     # Cast action_id to int (stored as string in some lake schemas)
     if d.get('action_id') is not None:
         d['action_id'] = int(d['action_id'])
@@ -146,216 +107,22 @@ def _row_to_view(row: tuple[Any, ...]) -> AccessFactView:
     return AccessFactView.model_validate(d, strict=False)
 
 
-def _run_get_fact(
-    lake_session: Any,
-    *,
-    warehouse_uri: str,
-    fact_id: uuid.UUID,
-) -> AccessFactView | None:
-    """DuckDB iceberg_scan for a single fact by id. Blocking."""
-    sql = f"""
-        SELECT
-            f.id, f.subject_id, f.account_id, f.resource_id,
-            f.action_id, r.slug AS action_slug, f.effect,
-            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
-            f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
-        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
-        WHERE f.id = ?::uuid AND f.id IS NOT NULL
-        LIMIT 1
-    """
-    lake_session.execute(sql, [str(fact_id)])
-    rows = lake_session.fetchmany(1)
-    if not rows:
-        return None
-    return _row_to_view(rows[0])
-
-
-def _run_list_facts(
-    lake_session: Any,
-    *,
-    warehouse_uri: str,
-    subject_id: uuid.UUID | None,
-    resource_id: uuid.UUID | None,
-    account_id: uuid.UUID | None,
-    action_slug: str | None,
-    effect: AccessFactEffect | None,
-    is_active: bool | None,
-    valid_at: datetime | None,
-    limit: int,
-    offset: int,
-) -> list[AccessFactView]:
-    """DuckDB iceberg_scan for access facts with filters. Blocking."""
-    predicates: list[str] = ['f.id IS NOT NULL']
-    params: list[Any] = []
-
-    if subject_id is not None:
-        predicates.append('f.subject_id = ?::uuid')
-        params.append(str(subject_id))
-    if resource_id is not None:
-        predicates.append('f.resource_id = ?::uuid')
-        params.append(str(resource_id))
-    if account_id is not None:
-        predicates.append('f.account_id = ?::uuid')
-        params.append(str(account_id))
-    if action_slug is not None:
-        predicates.append('r.slug = ?')
-        params.append(action_slug)
-    if effect is not None:
-        predicates.append('f.effect = ?')
-        params.append(effect.value)
-    if is_active is not None:
-        predicates.append('f.is_active = ?')
-        params.append(is_active)
-    if valid_at is not None:
-        predicates.append('f.valid_from <= ?')
-        params.append(valid_at)
-        predicates.append('(f.valid_until IS NULL OR f.valid_until >= ?)')
-        params.append(valid_at)
-
-    where_clause = 'WHERE ' + ' AND '.join(predicates)
-
-    sql = f"""
-        SELECT
-            f.id, f.subject_id, f.account_id, f.resource_id,
-            f.action_id, r.slug AS action_slug, f.effect,
-            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
-            f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
-        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
-        {where_clause}
-        ORDER BY f.id
-        LIMIT ?
-        OFFSET ?
-    """
-    params.append(min(limit, 200))
-    params.append(offset)
-
-    lake_session.execute(sql, params)
-    views: list[AccessFactView] = []
-    while True:
-        batch = lake_session.fetchmany(500)
-        if not batch:
-            break
-        for row in batch:
-            views.append(_row_to_view(row))
-    return views
-
-
-def _run_get_delta_item_id(
-    lake_session: Any,
-    *,
-    warehouse_uri: str,
-    fact_id: uuid.UUID,
-) -> uuid.UUID | None:
-    """DuckDB iceberg_scan for reconciliation_delta_item_id by fact id. Blocking."""
-    path = f'{warehouse_uri}/normalized/access_facts'
-    sql = """
-        SELECT reconciliation_delta_item_id
-        FROM iceberg_scan(?)
-        WHERE id = ?::varchar AND id IS NOT NULL
-        LIMIT 1
-    """
-    lake_session.execute(sql, [path, str(fact_id)])
-    rows = lake_session.fetchall()
-    if not rows:
-        return None
-    raw_val = rows[0][0]
-    if raw_val is None:
-        return None
-    try:
-        return uuid.UUID(str(raw_val))
-    except ValueError:
-        return None
-
-
-def _run_get_artifact_from_iceberg(
-    lake_session: Any,
-    *,
-    warehouse_uri: str,
-    artifact_id: uuid.UUID,
-) -> tuple[uuid.UUID, str] | None:
-    """DuckDB iceberg_scan for (application_id, external_id) from raw.access_artifacts. Blocking."""
-    path = f'{warehouse_uri}/raw/access_artifacts'
-    sql = """
-        SELECT application_id, external_id
-        FROM iceberg_scan(?)
-        WHERE id = ?::varchar AND id IS NOT NULL
-        LIMIT 1
-    """
-    lake_session.execute(sql, [path, str(artifact_id)])
-    rows = lake_session.fetchall()
-    if not rows:
-        return None
-    app_id_raw, ext_id = rows[0][0], rows[0][1]
-    if app_id_raw is None or ext_id is None:
-        return None
-    try:
-        app_id = uuid.UUID(str(app_id_raw))
-    except ValueError:
-        return None
-    return app_id, str(ext_id)
-
-
-def _run_get_by_natural_key(
-    lake_session: Any,
-    *,
-    warehouse_uri: str,
-    subject_id: uuid.UUID,
-    account_id: uuid.UUID | None,
-    resource_id: uuid.UUID,
-    action_slug: str,
-) -> AccessFactView | None:
-    """DuckDB iceberg_scan for active fact by natural key. Blocking."""
-    predicates = [
-        'f.subject_id = ?::uuid',
-        'f.resource_id = ?::uuid',
-        'r.slug = ?',
-        'f.is_active = true',
-        'f.id IS NOT NULL',
-    ]
-    params: list[Any] = [str(subject_id), str(resource_id), action_slug]
-
-    if account_id is None:
-        predicates.append('f.account_id IS NULL')
-    else:
-        predicates.append('f.account_id = ?::uuid')
-        params.append(str(account_id))
-
-    where_clause = 'WHERE ' + ' AND '.join(predicates)
-
-    sql = f"""
-        SELECT
-            f.id, f.subject_id, f.account_id, f.resource_id,
-            f.action_id, r.slug AS action_slug, f.effect,
-            f.valid_from, f.valid_until, f.is_active, f.revoked_at,
-            f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
-        LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
-        {where_clause}
-        LIMIT 1
-    """
-
-    lake_session.execute(sql, params)
-    rows = lake_session.fetchmany(1)
-    if not rows:
-        return None
-    return _row_to_view(rows[0])
-
-
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
 
 class AccessFactService:
-    """Lake-read-only facade for normalized.access_facts.
+    """Domain-facing façade for normalized.access_facts.
+
+    Phase 17 Step 19: DuckDB read paths delegated to
+    ``src/platform/lake/access_facts_reader.py``.
 
     Phase 15 Step 16: write methods removed (create_fact, revoke_fact,
     refresh_fact_fields). event_service param removed. Reads go via DuckDB.
 
     NOTE: event_service and session-based constructor params are accepted for
-    backward-compat with callers (normalization/acl, effective_access tests)
+    backward-compat with callers (effective_access tests)
     that have not yet been migrated. They are ignored.
     """
 
@@ -384,12 +151,11 @@ class AccessFactService:
     async def create_fact(self, *args: Any, **kwargs: Any) -> Any:
         """Removed in Phase 15 Step 16. Fact mutation flows through SyncApplyService.
 
-        This stub exists for backward compatibility with normalization/acl callers
-        that have not yet been migrated. Raises NotImplementedError at runtime.
+        This stub raises NotImplementedError at runtime.
         """
         raise NotImplementedError(
             'AccessFactService.create_fact was removed in Phase 15 Step 16. '
-            'Fact mutation must flow through SyncApplyService + lake_writer.'
+            'Fact mutation must flow through SyncApplyService Iceberg writer.'
         )
 
     async def revoke_fact(self, *args: Any, **kwargs: Any) -> Any:
@@ -408,6 +174,7 @@ class AccessFactService:
         """Get access fact by id via DuckDB iceberg_scan. Returns DTO or None."""
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.get_started',
@@ -419,13 +186,16 @@ class AccessFactService:
             ),
         )
 
-        view = await asyncio.to_thread(
-            _run_get_fact,
+        row = await asyncio.to_thread(
+            run_get_fact,
             lake_session,
             warehouse_uri=warehouse_uri,
             fact_id=fact_id,
         )
 
+        view = _row_to_view(row) if row is not None else None
+
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.get_completed',
@@ -455,6 +225,7 @@ class AccessFactService:
         """List access facts with optional filters via DuckDB iceberg_scan."""
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.list_started',
@@ -470,21 +241,24 @@ class AccessFactService:
             ),
         )
 
-        views = await asyncio.to_thread(
-            _run_list_facts,
+        rows = await asyncio.to_thread(
+            run_list_facts,
             lake_session,
             warehouse_uri=warehouse_uri,
             subject_id=subject_id,
             resource_id=resource_id,
             account_id=account_id,
             action_slug=action_slug,
-            effect=effect,
+            effect_value=effect.value if effect is not None else None,
             is_active=is_active,
             valid_at=valid_at,
             limit=limit,
             offset=offset,
         )
 
+        views = [_row_to_view(r) for r in rows]
+
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.list_completed',
@@ -514,6 +288,7 @@ class AccessFactService:
         """
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.artifact_ref_resolve_started',
@@ -527,12 +302,13 @@ class AccessFactService:
 
         # Step 1: fact → reconciliation_delta_item_id
         delta_item_id = await asyncio.to_thread(
-            _run_get_delta_item_id,
+            run_get_delta_item_id,
             lake_session,
             warehouse_uri=warehouse_uri,
             fact_id=fact_id,
         )
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.artifact_ref_step1_done',
@@ -554,6 +330,7 @@ class AccessFactService:
         )
         row = result.fetchone()
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.artifact_ref_step2_done',
@@ -575,7 +352,7 @@ class AccessFactService:
 
         # Step 3: source_artifact_id → (application_id, external_id) via Iceberg
         artifact_fields = await asyncio.to_thread(
-            _run_get_artifact_from_iceberg,
+            run_get_artifact_from_iceberg,
             lake_session,
             warehouse_uri=warehouse_uri,
             artifact_id=source_artifact_id,
@@ -586,6 +363,7 @@ class AccessFactService:
 
         application_id, external_id = artifact_fields
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='inventory.access_facts.artifact_ref_resolved',
@@ -619,6 +397,7 @@ class AccessFactService:
         """Look up an ACTIVE access fact by natural key via DuckDB iceberg_scan."""
         warehouse_uri = self._get_warehouse_uri(lake_session)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.get_by_natural_key_started',
@@ -634,8 +413,8 @@ class AccessFactService:
             ),
         )
 
-        view = await asyncio.to_thread(
-            _run_get_by_natural_key,
+        row = await asyncio.to_thread(
+            run_get_by_natural_key,
             lake_session,
             warehouse_uri=warehouse_uri,
             subject_id=subject_id,
@@ -644,6 +423,9 @@ class AccessFactService:
             action_slug=action_slug,
         )
 
+        view = _row_to_view(row) if row is not None else None
+
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.DEBUG,
             message='inventory.access_facts.get_by_natural_key_completed',

@@ -60,7 +60,7 @@ def _make_async_test_url() -> str:
         from src.core.config import get_settings  # noqa: PLC0415
 
         raw = get_settings().postgres.dsn
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         raw = os.getenv('DATABASE_URL')
     if not raw:
         raise RuntimeError('Cannot resolve database URL: no secrets file and DATABASE_URL not set')
@@ -201,20 +201,37 @@ async def migration_engine() -> AsyncEngine:  # type: ignore[misc]
     tables_to_create = [t for t in Base.metadata.sorted_tables if t not in excluded]
 
     async with engine.begin() as conn:
-        # Full teardown first (handles dirty state from prior runs)
+        # Full teardown first (handles dirty state from prior runs).  The
+        # session-scoped ``_provision_test_database`` fixture in
+        # ``src/conftest.py`` adds two raw shim tables (``access_facts``,
+        # ``access_artifacts``) that are NOT in ``Base.metadata`` and carry
+        # FKs INTO ORM tables (``subjects``, ``ref_actions``, ``resources``,
+        # ``applications``).  ``Base.metadata.drop_all`` cannot remove them
+        # and would fail with ``DependentObjectsStillExistError``, so drop
+        # them manually first.
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_facts CASCADE'))
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_artifacts CASCADE'))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
+        await conn.execute(sa.text('DROP TYPE IF EXISTS access_fact_effect CASCADE'))
         await conn.run_sync(_sync_drop_recon_schema)
         # Recreate prerequisite types and tables
         await conn.execute(sa.text("CREATE TYPE llm_provider AS ENUM ('llama_cpp', 'openai', 'ollama')"))
+        await conn.execute(sa.text("CREATE TYPE access_fact_effect AS ENUM ('allow', 'deny')"))
         await conn.run_sync(Base.metadata.create_all, tables=tables_to_create)
 
     yield engine  # type: ignore[misc]
 
-    # Module teardown
+    # Module teardown — same shim drop dance, then leave the DB cleaned out.
+    # The session-scoped provisioner will repopulate the shim tables at the
+    # next session start, but mid-session the unit-test ``engine`` fixture
+    # also auto-recovers via ``_ensure_schema_intact`` (see src/conftest.py).
     async with engine.begin() as conn:
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_facts CASCADE'))
+        await conn.execute(sa.text('DROP TABLE IF EXISTS access_artifacts CASCADE'))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.execute(sa.text('DROP TYPE IF EXISTS llm_provider CASCADE'))
+        await conn.execute(sa.text('DROP TYPE IF EXISTS access_fact_effect CASCADE'))
         await conn.run_sync(_sync_drop_recon_schema)
 
     await engine.dispose()

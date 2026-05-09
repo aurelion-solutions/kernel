@@ -14,7 +14,6 @@ from src.inventory.initiatives.models import InitiativeType
 from src.inventory.initiatives.schemas import InitiativePatch
 from src.inventory.initiatives.service import (
     InitiativeEmptyPatchError,
-    InitiativeForeignKeyError,
     InitiativeService,
 )
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
@@ -99,25 +98,6 @@ async def test_create_initiative_happy_path(
     assert env.payload['access_fact_id'] == str(fact_id)
     assert env.payload['type'] == initiative_type.value
     assert 'origin' in env.payload
-
-
-@pytest.mark.asyncio
-async def test_create_initiative_bad_access_fact_raises(
-    service: InitiativeService,
-    capturing_events: CapturingEventService,
-    session_factory,
-) -> None:
-    """create_initiative raises InitiativeForeignKeyError for unknown access_fact_id."""
-    async with session_factory() as session:
-        with pytest.raises(InitiativeForeignKeyError):
-            await service.create_initiative(
-                session,
-                access_fact_id=uuid.uuid4(),
-                type_=InitiativeType.birthright,
-                origin='should fail',
-            )
-
-    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio

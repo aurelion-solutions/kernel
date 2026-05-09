@@ -50,7 +50,7 @@ def get_catalog(settings: LakeSettings, log_service: LogService) -> Catalog:
                     'warehouse': settings.warehouse_uri,
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             log_service.emit_safe(
                 level=LogLevel.ERROR,
                 message='platform.lake.catalog_init_failed',
@@ -97,7 +97,7 @@ def _bootstrap_namespaces(catalog: Catalog, log_service: LogService) -> None:
         if ns not in existing:
             try:
                 catalog.create_namespace(ns)
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 # Namespace may have been created concurrently; idempotent.
                 pass
 

@@ -339,52 +339,6 @@ async def test_storage_resolution_failure_logs_without_event_type_and_re_raises(
     failed = error_records[0]
     assert failed['component'] == 'data-lake'
     assert failed['payload']['storage_provider'] == 'unknown'
-    # KEEP-variant anti-dual-emit: operational log must NOT carry event_type
-    assert 'event_type' not in failed
-
-
-@pytest.mark.asyncio
-async def test_create_batch_does_not_emit_legacy_log_event_types(
-    tmp_path: Path,
-    session_factory,
-) -> None:
-    """KEEP-variant anti-dual-emit guard: create_batch log records have no event_type key."""
-    lake_path = tmp_path / 'lake'
-    log_path = tmp_path / 'logs.jsonl'
-    storage_factory = DataLakeStorageFactory()
-    storage_factory.register('file', lambda: FileDataLakeStorage(base_path=lake_path))
-    log_factory = LogSinkFactory()
-    log_factory.register('file', lambda: FileLogSink(path=log_path))
-    log_service = LogService(sink=log_factory.get('file'))
-
-    capturing = CapturingEventService()
-    event_svc = EventService(sink=capturing)
-    svc = LakeBatchService(
-        storage_factory=storage_factory,
-        log_service=log_service,
-        event_service=event_svc,
-    )
-
-    async with session_factory() as session:
-        await svc.create_batch(
-            session,
-            storage_provider='file',
-            dataset_type='accounts',
-            records=[{'id': '1'}],
-        )
-        await session.commit()
-
-    # New event emitted on event bus
-    assert len(capturing.filter_by_type('inventory.lake_batch.created')) == 1
-
-    # Log records must not carry any event_type (KEEP-variant guard)
-    assert log_path.exists()
-    log_records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    for record in log_records:
-        assert 'event_type' not in record, f'Unexpected event_type in log record: {record}'
-    # Confirm neither legacy nor new event_type leaked into log bus
-    assert [r for r in log_records if r.get('event_type') == 'lake.batch.created'] == []
-    assert [r for r in log_records if r.get('event_type') == 'inventory.lake_batch.created'] == []
 
 
 @pytest.mark.asyncio
@@ -484,8 +438,6 @@ async def test_record_lake_write_emits_log_event(
     assert rec['payload']['iceberg_table'] == 'access_artifacts'
     assert rec['payload']['snapshot_id'] == 7777
     assert rec['payload']['row_count'] == 10
-    # KEEP-variant guard: no event_type in log record
-    assert 'event_type' not in rec
     # No domain event emitted by record_lake_write
     assert len(capturing.emitted) == 0
 

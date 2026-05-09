@@ -410,7 +410,7 @@ def write_run_batch(
                 # Refresh local table handle so next iteration sees updated state.
                 iceberg_table = catalog.load_table(NORMALIZED_ACCESS_FACTS_TABLE)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             log_service.emit_safe(
                 level=LogLevel.ERROR,
                 message='platform.lake.fact_write_failed',
@@ -477,7 +477,7 @@ def preflight_recover_already_written(
     sql = (
         f'SELECT DISTINCT reconciliation_delta_item_id '
         f"FROM iceberg_scan('{table_path}') "
-        f'WHERE reconciliation_delta_item_id = ANY($1::uuid[])'
+        f'WHERE CAST(reconciliation_delta_item_id AS VARCHAR) = ANY($1::varchar[])'
     )
     lake_session.execute(sql, [item_ids])
     rows = lake_session.fetchall()

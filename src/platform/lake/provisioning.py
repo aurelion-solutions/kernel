@@ -262,7 +262,7 @@ def _provision_one(
             created=False,
             current_snapshot_id=recovered.metadata.current_snapshot_id,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         # Step 4: unexpected failure — emit ERROR and re-raise as LakeCatalogError.
         log_service.emit_safe(
             level=LogLevel.ERROR,

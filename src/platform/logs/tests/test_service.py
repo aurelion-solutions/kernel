@@ -5,7 +5,6 @@
 """Tests for LogService."""
 
 from datetime import datetime
-import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -252,47 +251,6 @@ async def test_emit_log_passes_through_participants_from_payload(
     assert event.target_type == LogParticipantKind.SYSTEM
     assert event.target_id == 'db'
     assert event.payload == {'extra': 1}
-
-
-# ---------------------------------------------------------------------------
-# Two-bus separation structural checks (Step 23)
-# ---------------------------------------------------------------------------
-
-
-async def test_emit_safe_produces_record_without_event_type(tmp_path: Path) -> None:
-    """emit_log produces a log record with no event_type key (LogService API has no such param)."""
-    log_path = tmp_path / 'test.jsonl'
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    service = LogService(sink=factory.get('file'))
-    await service.emit_log(
-        level=LogLevel.INFO,
-        message='operational message',
-        component='data-lake',
-        payload=_contract_participants(),
-    )
-    assert log_path.exists()
-    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    assert len(records) == 1
-    assert 'event_type' not in records[0]
-
-
-async def test_emit_log_produces_record_without_event_type(tmp_path: Path) -> None:
-    """emit_log produces a log record with no event_type key (LogService API has no such param)."""
-    log_path = tmp_path / 'test.jsonl'
-    factory = LogSinkFactory()
-    factory.register('file', lambda: FileLogSink(path=log_path))
-    service = LogService(sink=factory.get('file'))
-    await service.emit_log(
-        level=LogLevel.WARNING,
-        message='another operational message',
-        component='batch-worker',
-        payload=_contract_participants(),
-    )
-    assert log_path.exists()
-    records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-    assert len(records) == 1
-    assert 'event_type' not in records[0]
 
 
 async def test_emit_log_passes_event_to_sink_byte_identical(

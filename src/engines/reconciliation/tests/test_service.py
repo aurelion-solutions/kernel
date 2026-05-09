@@ -82,6 +82,8 @@ async def test_run_delegates_to_pipeline_and_emits_completed(
     """run() calls pipeline, emits reconciliation.run.completed event."""
     summary = _make_summary()
 
+    from src.platform.lake.config import LakeSettings
+
     session_mock = _make_session()
     svc = ReconciliationService(
         session=session_mock,
@@ -89,6 +91,7 @@ async def test_run_delegates_to_pipeline_and_emits_completed(
         catalog=MagicMock(),
         events=event_service,
         logs=NoOpLogService(),
+        lake_settings=LakeSettings(),
     )
 
     with patch(
@@ -107,6 +110,8 @@ async def test_run_raises_application_not_found_when_session_get_returns_none(
     event_service: EventService,
 ):
     """run() raises ApplicationNotFoundError when session.get(Application) returns None."""
+    from src.platform.lake.config import LakeSettings
+
     session_mock = _make_session(app_exists=False)
     svc = ReconciliationService(
         session=session_mock,
@@ -114,6 +119,7 @@ async def test_run_raises_application_not_found_when_session_get_returns_none(
         catalog=MagicMock(),
         events=event_service,
         logs=NoOpLogService(),
+        lake_settings=LakeSettings(),
     )
 
     with pytest.raises(ApplicationNotFoundError):
@@ -126,6 +132,8 @@ async def test_emit_completed_uses_correct_routing_key(
     capturing_events: CapturingEventService,
 ):
     """run() produces event_type='reconciliation.run.completed' (3-segment)."""
+    from src.platform.lake.config import LakeSettings
+
     summary = _make_summary()
     session_mock = _make_session()
     svc = ReconciliationService(
@@ -134,6 +142,7 @@ async def test_emit_completed_uses_correct_routing_key(
         catalog=MagicMock(),
         events=event_service,
         logs=NoOpLogService(),
+        lake_settings=LakeSettings(),
     )
 
     with patch(

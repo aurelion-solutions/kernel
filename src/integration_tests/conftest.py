@@ -69,7 +69,7 @@ def lake_settings_iceberg(tmp_path: Path) -> LakeSettings:
 
 
 @pytest_asyncio.fixture
-async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastAPI:
+async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> AsyncGenerator[FastAPI]:
     """FastAPI app with Iceberg lake wired for lake pipeline integration tests.
 
     Uses the same ``engine`` fixture from root conftest for PG sessions.
@@ -83,6 +83,21 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
     from pyiceberg.types import BooleanType, NestedField, StringType, TimestamptzType
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from src.core.db.deps import get_db
+
+    # S2: restore production handler registry (defensive — no-op when already correct)
+    from src.engines.reconciliation.handlers.acl_entry import AclEntryHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.db_grant import DbGrantHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.privilege import PrivilegeHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.role import RoleHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.sap_role import SapRoleHandler  # noqa: PLC0415
+    from src.engines.reconciliation.registry import _reset_registry_for_tests, register_handler  # noqa: PLC0415
+
+    _reset_registry_for_tests()
+    register_handler('role', RoleHandler())
+    register_handler('acl_entry', AclEntryHandler())
+    register_handler('privilege', PrivilegeHandler())
+    register_handler('db_grant', DbGrantHandler())
+    register_handler('sap_role', SapRoleHandler())
 
     # PG session factory (from root conftest engine)
     session_factory = async_sessionmaker(
@@ -98,7 +113,7 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
 
@@ -110,7 +125,7 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
     for ns in [('raw',), ('normalized',)]:
         try:
             _catalog.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     # raw.access_artifacts — string-partitioned (artifact_type instead of UUID)
@@ -135,7 +150,7 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
     )
     try:
         _catalog.create_table(('raw', 'access_artifacts'), schema=_raw_schema, partition_spec=_raw_spec)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     # normalized.access_facts — string-based UUIDs, partitioned by subject_kind_denorm
@@ -146,7 +161,7 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
         NestedField(4, 'resource_id', StringType(), required=True),
         NestedField(5, 'action_id', StringType(), required=True),
         NestedField(6, 'effect', StringType(), required=True),
-        NestedField(7, 'valid_from', TimestamptzType(), required=True),
+        NestedField(7, 'valid_from', TimestamptzType(), required=False),
         NestedField(8, 'valid_until', TimestamptzType(), required=False),
         NestedField(9, 'is_active', BooleanType(), required=True),
         NestedField(10, 'observed_at', TimestamptzType(), required=True),
@@ -163,15 +178,21 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
     )
     try:
         _catalog.create_table(('normalized', 'access_facts'), schema=_norm_schema, partition_spec=_norm_spec)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     reset_catalog_cache_for_tests()
 
+    # Build a DuckDB-compatible (libpq) DSN from the test DB URL.
+    # Root conftest TEST_DATABASE_URL uses asyncpg scheme; strip the driver suffix.
+    from src.conftest import TEST_DATABASE_URL  # noqa: PLC0415
+
+    _pg_dsn = TEST_DATABASE_URL.replace('postgresql+asyncpg://', 'postgresql://', 1)
+
     _lake_factory = LakeSessionFactory(
         settings=lake_settings_iceberg,
         log_service=NoOpLogService(),
-        pg_dsn=None,
+        pg_dsn=_pg_dsn,
     )
 
     def override_get_lake_session() -> Generator[Any]:
@@ -181,18 +202,36 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> FastA
         finally:
             session.__exit__(None, None, None)
 
+    # S4: wire event buffer as a tap on the 'noop' provider so emitted events land in buffer
+    from src.platform.events.buffer import InMemoryEventBufferSink  # noqa: PLC0415
+    from src.platform.events.factory import event_sink_factory  # noqa: PLC0415
+    from src.platform.events.service import _NoOpEventSink  # noqa: PLC0415
+    from src.platform.events.tee_sink import TeeEventSink  # noqa: PLC0415
+
+    event_buffer = InMemoryEventBuffer()
+    event_sink_factory.register(
+        'noop',
+        lambda: TeeEventSink(_NoOpEventSink(), InMemoryEventBufferSink(event_buffer)),
+    )
+
     _app = FastAPI()
     _app.include_router(router, prefix='/api/v0')
     _app.dependency_overrides[get_db] = override_get_db
     _app.dependency_overrides[get_lake_session] = override_get_lake_session
     _app.state.log_service = NoOpLogService()
-    _app.state.event_buffer = InMemoryEventBuffer()
+    _app.state.event_buffer = event_buffer
     _app.state.lake_session_factory = _lake_factory
     _app.state.lake_catalog = _catalog
+    _app.state.lake_settings = lake_settings_iceberg
     _app.state.test_iceberg_catalog = _catalog
     _app.state.test_lake_settings = lake_settings_iceberg
 
-    return _app
+    try:
+        yield _app
+    finally:
+        # Restore default 'noop' provider so other tests are not affected
+        event_sink_factory.register('noop', lambda: _NoOpEventSink())
+        reset_catalog_cache_for_tests()
 
 
 @pytest_asyncio.fixture
@@ -222,6 +261,7 @@ async def seed_pipeline_inventory(
     from src.inventory.accounts.models import Account
     from src.inventory.actions.models import Action as RefAction
     from src.inventory.employees.repository import create_employee
+    from src.inventory.nhi.repository import create_nhi
     from src.inventory.persons.repository import create_person
     from src.inventory.resources.models import Resource
     from src.inventory.subjects.models import Subject, SubjectKind
@@ -257,10 +297,18 @@ async def seed_pipeline_inventory(
                 status='active',
             )
         else:
-            # NHI subject — no principal needed for test purposes
+            # NHI subject — create NHI row first (mirrors employee branch pattern)
+            nhi = await create_nhi(
+                session,
+                external_id=f'{s["external_id"]}-{app_suffix}',
+                name=f'{s["external_id"]}-{app_suffix}',
+                kind='service_account',
+            )
+            await session.flush()
             subj = Subject(
                 external_id=f'{s["external_id"]}-{app_suffix}',
                 kind=SubjectKind.nhi,
+                principal_nhi_id=nhi.id,
                 status='active',
                 nhi_kind='service_account',
             )
@@ -282,6 +330,8 @@ async def seed_pipeline_inventory(
 
     # Resources
     resource_ids: list[uuid.UUID] = []
+    resource_keys: list[str] = []
+    resource_types: list[str] = []
     for r in seed['resources']:
         res = Resource(
             external_id=f'{r["external_id"]}-{app_suffix}',
@@ -293,6 +343,8 @@ async def seed_pipeline_inventory(
         session.add(res)
         await session.flush()
         resource_ids.append(res.id)
+        resource_keys.append(f'{r["resource_key"]}-{app_suffix}')
+        resource_types.append(r['resource_type'])
 
     # Resolve ref_action IDs
     action_ids: dict[str, int] = {}
@@ -306,6 +358,8 @@ async def seed_pipeline_inventory(
         'subject_ids': subject_ids,
         'account_ids': account_ids,
         'resource_ids': resource_ids,
+        'resource_keys': resource_keys,
+        'resource_types': resource_types,
         'action_ids': action_ids,
         'app_suffix': app_suffix,
     }
@@ -323,7 +377,8 @@ def build_artifact_items(
     items = []
     for art in dataset['artifacts']:
         subject_id = refs['subject_ids'][art['subject_idx']]
-        resource_id = refs['resource_ids'][art['resource_idx']]
+        resource_key = refs['resource_keys'][art['resource_idx']]
+        resource_type = refs['resource_types'][art['resource_idx']]
         action_slug = art['action_slug']
         items.append(
             {
@@ -332,9 +387,11 @@ def build_artifact_items(
                 'external_id': f'{art["external_id"]}-{refs["app_suffix"]}',
                 'payload': {
                     'subject_id': str(subject_id),
-                    'resource_id': str(resource_id),
+                    'resource_type': resource_type,
+                    'resource_key': resource_key,
                     'action_slug': action_slug,
                     'effect': art['effect'],
+                    'valid_from': now_iso,
                 },
                 'raw_name': art['external_id'],
                 'effect': art['effect'],

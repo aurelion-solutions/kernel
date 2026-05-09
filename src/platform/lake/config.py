@@ -57,6 +57,9 @@ class LakeSettings(BaseModel):
     read_page_size: int = Field(default=1000, ge=1, le=5000)
     """Default page size for cursor-paginated lake reads. Maximum 5000."""
 
+    reconciliation_fetch_batch_size: int = Field(default=5000, ge=1, le=50000)
+    """Batch size for DuckDB fetchmany iterations during reconciliation. Default 5000."""
+
 
 def build_lake_settings(
     postgres: PostgresSettings,
@@ -85,4 +88,5 @@ def build_lake_settings(
         acquire_timeout_seconds=runtime.lake_acquire_timeout_seconds,
         pg_any_array_max_size=runtime.lake_pg_any_array_max_size,
         read_page_size=runtime.lake_read_page_size,
+        reconciliation_fetch_batch_size=runtime.reconciliation_fetch_batch_size,
     )

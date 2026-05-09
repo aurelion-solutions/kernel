@@ -277,6 +277,7 @@ class AnalyticsService:
             for r in rows
         ]
         generated_at = datetime.now(tz=UTC)
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='engines.access_analysis.analytics.top_risks_computed',
@@ -319,6 +320,7 @@ class AnalyticsService:
             for r in rows
         ]
         generated_at = datetime.now(tz=UTC)
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='engines.access_analysis.analytics.risk_by_application_computed',
@@ -455,6 +457,7 @@ class AnalyticsService:
         ]
 
         generated_at = datetime.now(tz=UTC)
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='engines.access_analysis.analytics.findings_summary_computed',

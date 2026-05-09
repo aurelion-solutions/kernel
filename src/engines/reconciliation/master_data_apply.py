@@ -151,7 +151,7 @@ async def apply_persons_delta(
                 )
                 ignored += 1
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             await _mark_item(item, ReconciliationDeltaItemStatus.failed, reason=str(exc), session=session)
             failed += 1
 
@@ -229,7 +229,7 @@ async def apply_org_units_delta(
                 )
                 ignored += 1
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             await _mark_item(item, ReconciliationDeltaItemStatus.failed, reason=str(exc), session=session)
             failed += 1
 
@@ -333,7 +333,7 @@ async def apply_employees_delta(
                 )
                 ignored += 1
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             await _mark_item(item, ReconciliationDeltaItemStatus.failed, reason=str(exc), session=session)
             failed += 1
 
@@ -442,7 +442,7 @@ async def apply_master_data_delta(
 
     try:
         result = await apply_fn(session, run_id=run_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
         await update_run_status(session, run_id, status=ReconciliationRunStatus.failed, error=str(exc))
         raise
 

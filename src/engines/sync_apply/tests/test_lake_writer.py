@@ -156,7 +156,7 @@ def catalog(lake_settings: LakeSettings) -> Any:  # noqa: ANN401
     for ns in (('raw',), ('normalized',)):
         try:
             cat.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     # All UUID fields stored as StringType to avoid PyArrow 24 group_by limitation.
@@ -185,7 +185,7 @@ def catalog(lake_settings: LakeSettings) -> Any:  # noqa: ANN401
     identifier = ('normalized', 'access_facts')
     try:
         cat.drop_table(identifier)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     cat.create_table(identifier, schema=test_schema, partition_spec=test_spec)
     return cat
@@ -515,7 +515,7 @@ def test_lake_writer_imported_only_from_sync_apply() -> None:
         if line.strip() and '__pycache__' not in line and '.ruff_cache' not in line
     ]
 
-    sync_apply_path = str(kernel_src / 'capabilities' / 'sync_apply')
+    sync_apply_path = str(kernel_src / 'engines' / 'sync_apply')
     for filepath in hitting_files:
         assert filepath.startswith(sync_apply_path), (
             f'lake_writer imported outside sync_apply/: {filepath}\nAll importing files: {hitting_files}'

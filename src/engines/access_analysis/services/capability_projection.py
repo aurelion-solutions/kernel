@@ -60,7 +60,7 @@ async def _load_resource_attributes(session: AsyncSession, resource_id: UUID) ->
         stmt = sa.text('SELECT key, value FROM resource_attributes WHERE resource_id = :rid')
         result = await session.execute(stmt, {'rid': str(resource_id)})
         return {row.key: row.value for row in result.all()}
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 # allowed-broad: provider boundary
         return {}
 
 

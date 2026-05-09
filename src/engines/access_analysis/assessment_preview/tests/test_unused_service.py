@@ -100,7 +100,7 @@ def lake_session() -> Any:  # noqa: ANN401
     )
     try:
         catalog.create_namespace(('normalized',))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     iceberg_table = catalog.create_table(('normalized', 'access_facts'), schema=schema, partition_spec=spec)
     reset_catalog_cache_for_tests()

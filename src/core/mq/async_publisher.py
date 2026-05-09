@@ -58,14 +58,14 @@ class AsyncRabbitMQPublisher:
         if self._channel is not None:
             try:
                 await self._channel.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
             self._channel = None
 
         if self._connection is not None:
             try:
                 await self._connection.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
             self._connection = None
 
@@ -113,7 +113,7 @@ class AsyncRabbitMQPublisher:
                 )
                 await exc_obj.publish(message, routing_key=routing_key)
                 return
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 # allowed-broad: task-loop guard
                 last_exc = exc
                 logger.warning(
                     'AsyncRabbitMQPublisher publish attempt %d/%d failed: %s',

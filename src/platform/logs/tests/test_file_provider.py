@@ -32,13 +32,11 @@ def sink(log_path: Path) -> FileLogSink:
 
 def _minimal(
     *,
-    event_type: str = 'test',
     message: str = 'm',
     payload: dict | None = None,
     ts: datetime | None = None,
 ) -> LogEvent:
     return new_root_log_event(
-        event_type=event_type,
         level=LogLevel.INFO,
         message=message,
         component='test',
@@ -56,7 +54,6 @@ def _minimal(
 async def test_emit_writes_one_json_line_to_file(sink: FileLogSink, log_path: Path) -> None:
     """emit writes one JSON line to file."""
     event = _minimal(
-        event_type='test.emit',
         message='Hello',
         payload={'key': 'value'},
     )
@@ -65,7 +62,6 @@ async def test_emit_writes_one_json_line_to_file(sink: FileLogSink, log_path: Pa
     lines = content.strip().split('\n')
     assert len(lines) == 1
     record = json.loads(lines[0])
-    assert record['event_type'] == 'test.emit'
     assert record['message'] == 'Hello'
 
 
@@ -74,7 +70,6 @@ async def test_repeated_emit_appends_multiple_lines(sink: FileLogSink, log_path:
     base_ts = datetime.now(UTC)
     for i in range(3):
         event = _minimal(
-            event_type='test.append',
             message=f'Line {i}',
             payload={'index': i},
             ts=base_ts,
@@ -98,7 +93,6 @@ def test_file_path_configurable_via_env(monkeypatch: pytest.MonkeyPatch) -> None
 async def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path: Path) -> None:
     """emitted JSON contains expected fields."""
     event = new_root_log_event(
-        event_type='connector.command.published',
         level=LogLevel.INFO,
         message='Command sent',
         component='connector-instance',
@@ -113,7 +107,6 @@ async def test_emitted_json_contains_expected_fields(sink: FileLogSink, log_path
     )
     await sink.emit(event)
     record = json.loads(log_path.read_text(encoding='utf-8').strip())
-    assert record['event_type'] == 'connector.command.published'
     assert record['level'] == 'info'
     assert record['message'] == 'Command sent'
     assert 'timestamp' in record
@@ -140,7 +133,6 @@ async def test_payload_extras_serialized(sink: FileLogSink, log_path: Path) -> N
     app_id = uuid4()
     result_id = uuid4()
     event = new_root_log_event(
-        event_type='test.optional',
         level=LogLevel.WARNING,
         message='With payload extras',
         component='test',

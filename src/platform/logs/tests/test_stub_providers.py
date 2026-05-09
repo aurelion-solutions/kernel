@@ -47,7 +47,6 @@ _PROVIDER_NAMES = [
 
 def _make_event() -> LogEvent:
     return new_root_log_event(
-        event_type='test',
         level=LogLevel.INFO,
         message='test',
         component='test',

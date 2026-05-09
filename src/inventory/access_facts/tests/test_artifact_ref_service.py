@@ -148,7 +148,7 @@ def iceberg_catalog(lake_settings: LakeSettings) -> Catalog:
     for ns in (('normalized',), ('raw',)):
         try:
             cat.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
     cat.create_table(
         ('normalized', 'access_facts'),

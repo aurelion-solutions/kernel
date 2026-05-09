@@ -42,7 +42,6 @@ async def create_account(
 
     target_scope = str(application_id)
     started = new_root_log_event(
-        event_type='provisioning.operation_started',
         level=LogLevel.INFO,
         message='Provisioning operation started',
         component='provisioning',
@@ -62,7 +61,6 @@ async def create_account(
 
     enqueued = new_downstream_log_event(
         started,
-        event_type='connector.command.enqueued',
         level=LogLevel.INFO,
         message='Connector command enqueued',
         component='connector_client',

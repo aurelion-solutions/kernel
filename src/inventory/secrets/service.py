@@ -41,6 +41,7 @@ class SecretService:
         try:
             return self._factory.get(provider)
         except UnsupportedProviderError:
+            # allowed-emit-safe: provider boundary
             self._log.emit_safe(
                 level=LogLevel.ERROR,
                 message=f'Secret provider resolution failed: {provider!r}',
@@ -92,6 +93,7 @@ class SecretService:
         manager = self._get_manager(provider)
         storage_key = _build_storage_key(namespace, key)
         value = manager.get_secret(storage_key)
+        # allowed-emit-safe: provider boundary
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='Secret retrieved',

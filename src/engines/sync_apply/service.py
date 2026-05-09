@@ -297,6 +297,7 @@ class SyncApplyService:
         items = await self._load_items(reconciliation_run_id, mode, item_ids)
 
         # --- 5. Log: run started ---
+        # allowed-emit-safe: observability
         self._logs.emit_safe(
             level=LogLevel.INFO,
             message='sync_apply.run_started',
@@ -336,7 +337,7 @@ class SyncApplyService:
                     correlation_id=cid,
                 )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             # Update run to failed
             await update_apply_run_status(
                 self._session,
@@ -373,6 +374,7 @@ class SyncApplyService:
             )
 
         # --- 9. Log: run completed ---
+        # allowed-emit-safe: observability
         self._logs.emit_safe(
             level=LogLevel.INFO,
             message='sync_apply.run_completed',
@@ -549,7 +551,8 @@ class SyncApplyService:
 
             try:
                 await self._emit_event_for_item(item, item_snap_id, correlation_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 # allowed-broad: event handler swallow
+                # allowed-emit-safe: best-effort warning
                 self._logs.emit_safe(
                     level=LogLevel.ERROR,
                     message='sync_apply.item_failed',

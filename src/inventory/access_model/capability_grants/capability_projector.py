@@ -17,8 +17,6 @@ Scope value NULL semantics:
 Subject attribute source:
 - subject_attribute kind silently returns None if the attribute is not present in the payload.
   This is forward-compatible stub behaviour — subject attributes are a future-phase concept.
-  # TODO: wire subject attribute store when available (future phase)
-  # For now, subject attributes are not a first-class store → returns None
 
 Scope value normalization:
 - Trimmed, lowercased, truncated to 255 chars.
@@ -172,17 +170,13 @@ def _resolve_scope_value(grant: EffectiveGrantView, mapping: CapabilityMappingVi
     - 'constant': source['value']
     - Unknown kind: raises ValueError (corrupted mapping data)
 
-    # TODO: wire subject attribute store when available (future phase)
-    # For now, subject attributes are not a first-class store → returns None
-
     Result is passed through _normalize_scope_value.
     """
     source = mapping.scope_value_source
     kind = source.get('kind')
 
     if kind == 'subject_attribute':
-        # TODO: wire subject attribute store when available (future phase)
-        # For now, subject attributes are not a first-class store → returns None
+        # TODO(housekeeping-backlog): subject attribute store not wired — returns None
         raw = grant.subject_attributes.get(source['key'])
         return _normalize_scope_value(raw)
 

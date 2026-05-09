@@ -168,7 +168,7 @@ def compact_table(
             files_after = files_before
             bytes_after = bytes_before
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         log_service.emit_safe(
             level=LogLevel.ERROR,
             message='platform.lake.compaction_failed',
@@ -271,7 +271,7 @@ def expire_old_snapshots(
         current = table.current_snapshot()
         latest_snapshot_id = current.snapshot_id if current is not None else None
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         log_service.emit_safe(
             level=LogLevel.ERROR,
             message='platform.lake.snapshots_expire_failed',
@@ -425,7 +425,7 @@ def clean_orphan_files(
             files_removed += 1
             bytes_freed += file_size
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         log_service.emit_safe(
             level=LogLevel.ERROR,
             message='platform.lake.orphan_files_clean_failed',

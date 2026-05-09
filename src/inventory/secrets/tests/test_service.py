@@ -182,10 +182,6 @@ async def test_secret_retrieved_emits_info_log_without_event_type(
     ]
     assert len(retrieved) >= 1
 
-    # (b) no record carries event_type (KEEP-variant anti-dual-emit guard)
-    for record in records:
-        assert 'event_type' not in record, f'Unexpected event_type in log record: {record}'
-
     # (c) event bus received nothing for the retrieval path
     assert capturing.emitted == []
 
@@ -227,8 +223,6 @@ async def test_provider_resolution_failure_emits_error_log_without_event_type_an
     failed = error_records[0]
     assert 'Secret provider resolution failed' in failed['message']
     assert failed['payload']['provider'] == 'unknown'
-    # KEEP-variant anti-dual-emit: operational log must NOT carry event_type
-    assert 'event_type' not in failed
     # Provider-failure branch never reaches the event emit site
     assert capturing.emitted == []
 
@@ -263,12 +257,9 @@ async def test_create_secret_does_not_dual_emit_on_log_and_event_bus(
     # Event bus received the domain event
     assert len(capturing.filter_by_type('inventory.secret.created')) == 1
 
-    # Log records must not carry any event_type key
+    # Legacy 'Secret created' log must not exist
     if log_path.exists():
         log_records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-        for record in log_records:
-            assert 'event_type' not in record, f'Unexpected event_type in log: {record}'
-        # Legacy 'Secret created' log must not exist
         assert [r for r in log_records if r.get('message') == 'Secret created'] == []
 
 
@@ -299,12 +290,9 @@ async def test_delete_secret_does_not_dual_emit_on_log_and_event_bus(
     # Event bus received the domain event
     assert len(capturing.filter_by_type('inventory.secret.deleted')) == 1
 
-    # Log records must not carry any event_type key
+    # Legacy 'Secret deleted' log must not exist
     if log_path.exists():
         log_records = [json.loads(line) for line in log_path.read_text().strip().split('\n')]
-        for record in log_records:
-            assert 'event_type' not in record, f'Unexpected event_type in log: {record}'
-        # Legacy 'Secret deleted' log must not exist
         assert [r for r in log_records if r.get('message') == 'Secret deleted'] == []
 
 

@@ -280,6 +280,7 @@ class ReportService:
         recommendations = _build_recommendations(summary, kind_severity_counts)
         executive_summary = _build_executive_summary(summary, top_findings)
         generated_at = datetime.now(tz=UTC)
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='engines.access_analysis.reports.deterministic_report_computed',

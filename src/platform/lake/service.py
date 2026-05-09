@@ -59,7 +59,7 @@ def _redact_catalog_uri(uri: str) -> str:
             # Verify the password is gone; fall back to regex if not.
             if parts.password not in sanitised:
                 return sanitised
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
         pass
 
     # Regex fallback: strip :<anything>@ from the authority section.

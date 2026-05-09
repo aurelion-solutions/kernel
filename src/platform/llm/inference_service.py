@@ -199,7 +199,7 @@ async def _drive_inference(
         status = 'aborted'
         try:
             await provider.abort()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
             pass
         _emit_inference_log(
             log_service,
@@ -216,7 +216,7 @@ async def _drive_inference(
             causation_id=causation_id,
         )
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         latency_ms = (monotonic() - t0) * 1000
         status = 'error'
         error_code = type(exc).__name__
@@ -360,7 +360,7 @@ async def stream_inference(
             if is_disconnected is not None:
                 try:
                     disconnected = await is_disconnected()
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                     disconnected = False
                 if disconnected:
                     raise asyncio.CancelledError('client disconnected')
@@ -395,7 +395,7 @@ async def stream_inference(
         # Cannot yield after CancelledError in an async generator — the error
         # event is omitted on abort; the aborted log entry is enough.
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: event handler swallow
         error_code = type(exc).__name__
         yield {'data': json.dumps({'error': error_code, 'done': True})}
         # Do NOT re-raise: provider errors are surfaced via the SSE error event.

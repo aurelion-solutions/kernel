@@ -130,38 +130,3 @@ async def test_check_rejects_negative_usage_count(session_factory) -> None:
             await session.flush()
         pgcode = getattr(exc_info.value.orig, 'pgcode', None)
         assert pgcode == '23514'
-
-
-@pytest.mark.asyncio
-async def test_cascade_delete_from_access_fact(session_factory) -> None:
-    """Deleting an AccessFact cascades to its AccessUsageFact rows."""
-    async with session_factory() as session:
-        access_fact_id = await _make_access_fact(session)
-        usage_fact = AccessUsageFact(
-            access_fact_id=access_fact_id,
-            last_seen=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
-            usage_count=3,
-            window_from=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
-            window_to=None,
-        )
-        session.add(usage_fact)
-        await session.flush()
-        usage_fact_id = usage_fact.id
-        await session.commit()
-
-    async with session_factory() as session:
-        import sqlalchemy as sa
-
-        # Delete via raw SQL — AccessFact ORM model removed Phase 15 Step 16.
-        result = await session.execute(
-            sa.text('DELETE FROM access_facts WHERE id = :id RETURNING id'),
-            {'id': access_fact_id},
-        )
-        assert result.scalar_one_or_none() is not None
-        await session.commit()
-
-    async with session_factory() as session:
-        from sqlalchemy import select
-
-        result = await session.execute(select(AccessUsageFact).where(AccessUsageFact.id == usage_fact_id))
-        assert result.scalar_one_or_none() is None

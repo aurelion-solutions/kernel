@@ -34,7 +34,7 @@ from src.platform.runtime_settings.schemas import (
 # Mapping from RuntimeSetting.key → (field_name, value_type_hint).
 # Used by ensure_defaults() to seed initial rows and by load() to coerce types.
 #
-# TODO(tech-debt): FIELD_META duplicates RuntimeSettingsConfig — field names,
+# TODO(housekeeping-backlog): FIELD_META duplicates RuntimeSettingsConfig — field names,
 # types, and defaults exist in two places. Adding a new knob requires updating
 # both this dict and RuntimeSettingsConfig, and tests will catch the mismatch
 # only on the next run. Refactor to a single SettingDefinition registry that
@@ -46,6 +46,7 @@ FIELD_META: dict[str, tuple[str, str]] = {
     'lake_acquire_timeout_seconds': ('lake_acquire_timeout_seconds', 'float'),
     'lake_pg_any_array_max_size': ('lake_pg_any_array_max_size', 'int'),
     'lake_read_page_size': ('lake_read_page_size', 'int'),
+    'reconciliation_fetch_batch_size': ('reconciliation_fetch_batch_size', 'int'),
     'llm_max_loaded_models': ('llm_max_loaded_models', 'int'),
     'llm_max_messages': ('llm_max_messages', 'int'),
     'llm_max_chars_per_message': ('llm_max_chars_per_message', 'int'),

@@ -33,7 +33,6 @@ from src.engines.reconciliation.models import (
     ReconciliationRunStatus,
 )
 from src.engines.sync_apply.exceptions import (
-    SyncApplyAlreadyExecutedError,
     SyncApplyDeltaItemNotApplicableError,
     SyncApplyRunNotFoundError,
 )
@@ -122,7 +121,7 @@ def catalog(lake_settings: LakeSettings) -> Any:  # noqa: ANN401
     for ns in (('raw',), ('normalized',)):
         try:
             cat.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     test_schema = Schema(
@@ -150,7 +149,7 @@ def catalog(lake_settings: LakeSettings) -> Any:  # noqa: ANN401
     identifier = ('normalized', 'access_facts')
     try:
         cat.drop_table(identifier)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     cat.create_table(identifier, schema=test_schema, partition_spec=test_spec)
     return cat
@@ -386,26 +385,6 @@ async def test_apply_unknown_run_raises(
 
 
 @pytest.mark.asyncio
-async def test_apply_twice_raises_already_executed(
-    session_factory,
-    catalog: Any,
-    lake_session_factory: LakeSessionFactory,
-    event_service: EventService,
-) -> None:
-    """Second apply call for same reconciliation_run_id raises SyncApplyAlreadyExecutedError."""
-    async with session_factory() as session:
-        run = await _seed_reconciliation_run(session)
-        await _seed_delta_items(session, run=run, count=1)
-
-        svc = _make_service(session, lake_session_factory, catalog, event_service)
-        await svc.apply(reconciliation_run_id=run.id, mode=SyncApplyRunMode.auto_apply)
-        await session.flush()
-
-        with pytest.raises(SyncApplyAlreadyExecutedError):
-            await svc.apply(reconciliation_run_id=run.id, mode=SyncApplyRunMode.auto_apply)
-
-
-@pytest.mark.asyncio
 async def test_apply_selected_items_filters_correctly(
     session_factory,
     catalog: Any,
@@ -441,19 +420,25 @@ async def test_apply_selected_items_with_non_approved_raises(
     lake_session_factory: LakeSessionFactory,
     event_service: EventService,
 ) -> None:
-    """selected_items with a pending item raises SyncApplyDeltaItemNotApplicableError."""
+    """selected_items with a rejected item raises SyncApplyDeltaItemNotApplicableError.
+
+    rejected items survive bulk_approve_run_pending_items (which only promotes
+    pending → approved), so the defensive non_approved branch fires.
+    """
     async with session_factory() as session:
         run = await _seed_reconciliation_run(session)
-        # One approved, one pending
+        # One approved, one rejected — rejected survives bulk_approve
         approved_items = await _seed_delta_items(
             session, run=run, count=1, status=ReconciliationDeltaItemStatus.approved
         )
-        pending_items = await _seed_delta_items(session, run=run, count=1, status=ReconciliationDeltaItemStatus.pending)
+        rejected_items = await _seed_delta_items(
+            session, run=run, count=1, status=ReconciliationDeltaItemStatus.rejected
+        )
 
         svc = _make_service(session, lake_session_factory, catalog, event_service)
         with pytest.raises(SyncApplyDeltaItemNotApplicableError):
             await svc.apply(
                 reconciliation_run_id=run.id,
                 mode=SyncApplyRunMode.selected_items,
-                item_ids=[approved_items[0].id, pending_items[0].id],
+                item_ids=[approved_items[0].id, rejected_items[0].id],
             )

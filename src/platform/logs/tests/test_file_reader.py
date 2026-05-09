@@ -44,15 +44,15 @@ def test_read_empty_file_returns_empty_list() -> None:
 def test_read_parses_jsonl_records() -> None:
     """read parses JSONL lines into dict objects."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
-        f.write('{"event_type":"test","level":"info","message":"hi"}\n')
-        f.write('{"event_type":"test2","level":"info","message":"bye"}\n')
+        f.write('{"level":"info","message":"hi"}\n')
+        f.write('{"level":"info","message":"bye"}\n')
         path = Path(f.name)
     try:
         reader = FileLogReader(path=path)
         records = reader.read(limit=100)
         assert len(records) == 2
-        assert records[0]['event_type'] == 'test'
-        assert records[1]['event_type'] == 'test2'
+        assert records[0]['message'] == 'hi'
+        assert records[1]['message'] == 'bye'
     finally:
         path.unlink(missing_ok=True)
 

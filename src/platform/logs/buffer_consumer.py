@@ -82,7 +82,7 @@ async def commit_buffer_delivery_async(
             else:
                 await session.rollback()
             return outcome
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
             await session.rollback()
             return 'commit_failed'
 

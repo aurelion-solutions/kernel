@@ -33,7 +33,7 @@ def app_with_initiatives(engine):
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
 
@@ -131,26 +131,6 @@ async def test_post_initiative_201(app_with_initiatives, engine) -> None:
     assert data['access_fact_id'] == str(fact_id)
     assert data['type'] == 'delegated'
     assert data['origin'] == 'Delegated by manager'
-
-
-@pytest.mark.asyncio
-async def test_post_initiative_422_bad_access_fact(app_with_initiatives) -> None:
-    """POST /initiatives with unknown access_fact_id returns 422."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app_with_initiatives),
-        base_url='http://testserver',
-    ) as client:
-        response = await client.post(
-            '/api/v0/initiatives',
-            json={
-                'access_fact_id': str(uuid.uuid4()),
-                'type': 'invited',
-                'origin': 'Should fail',
-            },
-        )
-
-    assert response.status_code == 422
-    assert 'Access fact not found' in response.json()['detail']
 
 
 @pytest.mark.asyncio

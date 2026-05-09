@@ -84,7 +84,7 @@ def translate_service_errors(mapping: ErrorMap) -> Iterator[None]:
     """
     try:
         yield
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         for exc_type, (status_code, detail) in mapping.items():
             if isinstance(exc, exc_type):
                 msg = detail(exc) if callable(detail) else detail

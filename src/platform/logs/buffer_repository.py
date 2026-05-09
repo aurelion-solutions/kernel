@@ -17,7 +17,6 @@ def log_event_to_buffer_row(event: LogEvent) -> LogEventBufferRow:
     """Map a validated :class:`LogEvent` to a buffer ORM row (no I/O)."""
     return LogEventBufferRow(
         event_id=event.event_id,
-        event_type=event.event_type,
         timestamp=event.timestamp,
         level=event.level.value,
         message=event.message,
@@ -50,7 +49,6 @@ async def query_buffered_log_events(
     initiator_id: str | None = None,
     actor_type: str | None = None,
     actor_id: str | None = None,
-    event_type: str | None = None,
     level: str | None = None,
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
@@ -74,8 +72,6 @@ async def query_buffered_log_events(
         conditions.append(LogEventBufferRow.actor_type == actor_type)
     if actor_id is not None:
         conditions.append(LogEventBufferRow.actor_id == actor_id)
-    if event_type is not None:
-        conditions.append(LogEventBufferRow.event_type == event_type)
     if level is not None:
         conditions.append(LogEventBufferRow.level == level)
     if from_ts is not None:

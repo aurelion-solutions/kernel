@@ -19,7 +19,6 @@ from src.platform.logs.schemas import LogEvent, LogLevel, LogParticipantKind, ne
 
 def _event(*, ts: datetime, suffix: str = '') -> LogEvent:
     return new_root_log_event(
-        event_type=f'cleanup.test{suffix}',
         level=LogLevel.INFO,
         message='m',
         component='c',

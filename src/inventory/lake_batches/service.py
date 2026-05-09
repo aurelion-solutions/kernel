@@ -49,7 +49,7 @@ def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
         ts_str, uuid_hex = raw.split('|', 1)
         return datetime.fromisoformat(ts_str), uuid.UUID(uuid_hex)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         raise ValueError(f'Invalid cursor: {cursor!r}') from exc
 
 
@@ -87,6 +87,7 @@ class LakeBatchService:
             payload: dict[str, Any] = {'storage_provider': storage_provider}
             if batch_id:
                 payload['batch_id'] = batch_id
+            # allowed-emit-safe: provider boundary
             self._log.emit_safe(
                 level=LogLevel.ERROR,
                 message=f'Unsupported storage provider: {storage_provider!r}',
@@ -112,6 +113,7 @@ class LakeBatchService:
         correlation_id: str | None = None,
     ) -> LakeBatch:
         """Write records to lake, create metadata row, return LakeBatch."""
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='Lake batch write started',
@@ -205,6 +207,7 @@ class LakeBatchService:
         if task_id is not None:
             log_payload['task_id'] = str(task_id)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='Lake batch recorded for Iceberg write',
@@ -239,6 +242,7 @@ class LakeBatchService:
         if batch.storage_provider is None or batch.storage_key is None:
             raise BatchNotFoundError(batch_id)
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='Lake batch read requested',

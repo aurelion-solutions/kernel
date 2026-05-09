@@ -72,7 +72,7 @@ async def test_snapshot_id_int_round_trip_via_get_id(engine, tmp_path: Path) -> 
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
 

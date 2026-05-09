@@ -79,7 +79,7 @@ class EmployeeLakeService:
                 snap = latest_snapshot_id(table)
         except (EmployeeLakeNotConfiguredError, EmployeeLakeWriteError):
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             raise EmployeeLakeWriteError(f'raw.employees write failed: {exc}', cause=exc) from exc
 
         return MasterDataBatchResult(row_count=len(items), snapshot_id=snap, backend='iceberg')

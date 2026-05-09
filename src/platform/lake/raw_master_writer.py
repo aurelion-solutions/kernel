@@ -135,7 +135,7 @@ def retire_and_commit(
 
     try:
         return table.metadata.current_snapshot_id  # type: ignore[no-any-return]
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
         return None
 
 
@@ -153,7 +153,7 @@ def scan_active_by_keys(table: Any, *, key_column: str, keys: list[str]) -> Any:
 def latest_snapshot_id(table: Any) -> int | None:
     try:
         return table.metadata.current_snapshot_id  # type: ignore[no-any-return]
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
         return None
 
 

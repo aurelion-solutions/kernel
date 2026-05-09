@@ -188,7 +188,7 @@ def _build_event_service() -> EventService | NoOpEventService:
     try:
         sink = event_sink_factory.get(provider)
         return EventService(sink=sink)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: provider boundary
         return NoOpEventService()
 
 

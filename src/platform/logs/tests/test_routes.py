@@ -31,7 +31,7 @@ def log_file(tmp_path: Path) -> Path:
 @pytest.mark.asyncio
 async def test_get_logs_file_returns_recent_records(logs_app, log_file: Path) -> None:
     """GET /api/v0/logs returns recent log records as JSON array for file provider."""
-    log_file.write_text('{"event_type":"test","level":"info","message":"hi"}\n')
+    log_file.write_text('{"level":"info","message":"hi"}\n')
     env_before = os.environ.copy()
     try:
         os.environ['AURELION_LOG_PROVIDER'] = 'file'
@@ -45,7 +45,6 @@ async def test_get_logs_file_returns_recent_records(logs_app, log_file: Path) ->
         data = response.json()
         assert isinstance(data, list)
         assert len(data) == 1
-        assert data[0]['event_type'] == 'test'
         assert data[0]['message'] == 'hi'
     finally:
         os.environ.clear()

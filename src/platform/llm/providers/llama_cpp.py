@@ -171,7 +171,7 @@ class LlamaCppProvider(AbstractLLMProvider):
         load_kwargs = self._extract_load_params(self._config.default_params)
         try:
             self._llm: Any = _llama_cpp_mod.Llama(model_path=local_path, **load_kwargs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             raise LlamaCppLoadError('failed to load model') from exc
 
     @staticmethod
@@ -248,7 +248,7 @@ class LlamaCppProvider(AbstractLLMProvider):
                 )
             except (LlamaCppGenerationError, _StopSentinel):
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
                 raise LlamaCppGenerationError('generation failed') from exc
 
     async def abort(self) -> None:

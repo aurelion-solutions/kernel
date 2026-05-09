@@ -18,7 +18,6 @@ class LogBufferEventRead(BaseModel):
 
     id: UUID
     event_id: UUID
-    event_type: str
     timestamp: datetime
     level: str
     message: str

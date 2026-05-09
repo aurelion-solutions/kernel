@@ -151,7 +151,7 @@ def seeded_lake_catalog(
     for ns in (('raw',), ('normalized',)):
         try:
             catalog.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     app_id = uuid.uuid4()
@@ -161,7 +161,7 @@ def seeded_lake_catalog(
     art_schema, art_spec = _make_string_schema_artifacts()
     try:
         catalog.drop_table(('raw', 'access_artifacts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     art_table = catalog.create_table(('raw', 'access_artifacts'), schema=art_schema, partition_spec=art_spec)
 
@@ -219,7 +219,7 @@ def seeded_lake_catalog(
     fact_schema, fact_spec = _make_string_schema_facts()
     try:
         catalog.drop_table(('normalized', 'access_facts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     fact_table = catalog.create_table(('normalized', 'access_facts'), schema=fact_schema, partition_spec=fact_spec)
 
@@ -506,20 +506,20 @@ async def test_pipeline_delta_unchanged_count(
     for ns in (('raw',), ('normalized',)):
         try:
             catalog.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     art_schema, art_spec = _make_string_schema_artifacts()
     try:
         catalog.drop_table(('raw', 'access_artifacts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     art_table = catalog.create_table(('raw', 'access_artifacts'), schema=art_schema, partition_spec=art_spec)
 
     fact_schema, fact_spec = _make_string_schema_facts()
     try:
         catalog.drop_table(('normalized', 'access_facts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     fact_table = catalog.create_table(('normalized', 'access_facts'), schema=fact_schema, partition_spec=fact_spec)
 

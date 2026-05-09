@@ -68,8 +68,7 @@ def test_handler_contract_uses_access_artifact_view() -> None:
 def test_access_fact_service_write_methods_raise_not_implemented() -> None:
     """AccessFactService write methods are stubs that raise NotImplementedError (Iceberg lake migration).
 
-    They exist for backward compat with not-yet-migrated callers (normalization/acl)
-    but MUST raise NotImplementedError at runtime to prevent silent data corruption.
+    They MUST raise NotImplementedError at runtime to prevent silent data corruption.
     """
     import asyncio
 

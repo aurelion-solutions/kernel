@@ -147,6 +147,31 @@ def test_greater_than_accepts_float_context_value() -> None:
     assert _eval_node(node, {'score': 0.95}) is True
 
 
+def test_greater_than_string_ish_numbers_and_none() -> None:
+    """Production coercion behaviour for greater_than against non-numeric inputs.
+
+    Production short-circuits ``None`` to ``False`` (cartridge_evaluator.py lines 66–67)
+    and catches ``TypeError|ValueError`` from ``float()`` (lines 70–71).
+    Non-numeric strings → ``False``.
+    Numeric strings (``'123'``) coerce via ``float()`` and compare numerically.
+    Do NOT modify cartridge_evaluator.py to change this behaviour; any change
+    is a production code mutation out of scope for Phase 17 Step 15.
+    """
+    node = {'greater_than': {'fact': 'x', 'value': 100}}
+
+    # (a) String-ish numeric above threshold: float('123') = 123.0 > 100 → True
+    assert _eval_node(node, {'x': '123'}) is True
+
+    # (b) String-ish numeric below threshold: float('50') = 50.0 > 100 → False
+    assert _eval_node(node, {'x': '50'}) is False
+
+    # (c) Non-numeric string → ValueError caught by float() → False
+    assert _eval_node(node, {'x': 'abc'}) is False
+
+    # (d) None value → explicit short-circuit at line 66–67 → False
+    assert _eval_node(node, {'x': None}) is False
+
+
 # ---------------------------------------------------------------------------
 # _eval_node — all / any combinators
 # ---------------------------------------------------------------------------
@@ -210,6 +235,93 @@ def test_nested_all_inside_any() -> None:
     assert _eval_node(node, {'x': 1, 'y': 2, 'z': 99}) is True
     assert _eval_node(node, {'x': 1, 'y': 99, 'z': 3}) is True
     assert _eval_node(node, {'x': 1, 'y': 99, 'z': 99}) is False
+
+
+def test_deeply_nested_mixed_all_any() -> None:
+    """4-level DSL tree: all → any → all → any, mixing equals/greater_than/is_null.
+
+    Tree shape (real operator keys from cartridge_evaluator.py — no equal_to/less_than):
+
+        all([
+          any([
+            all([
+              any([
+                {equals: subject.status == "terminated"},
+                {is_null: "subject.owner"}
+              ]),
+              {greater_than: days_inactive > 90}
+            ]),
+            {equals: account_status == "active"}
+          ]),
+          {is_null: "subject.deletion_blocked_at"}
+        ])
+
+    Hand-verified truth tables for three input combinations; assertions use
+    boolean identity (``is True`` / ``is False``), not smoke checks.
+    """
+    node: dict = {
+        'all': [
+            {
+                'any': [
+                    {
+                        'all': [
+                            {
+                                'any': [
+                                    {'equals': {'fact': 'subject.status', 'value': 'terminated'}},
+                                    {'is_null': 'subject.owner'},
+                                ]
+                            },
+                            {'greater_than': {'fact': 'days_inactive', 'value': 90}},
+                        ]
+                    },
+                    {'equals': {'fact': 'account_status', 'value': 'active'}},
+                ]
+            },
+            {'is_null': 'subject.deletion_blocked_at'},
+        ]
+    }
+
+    # Combination 1 — all-true path:
+    #   innermost any: equals(status=="terminated") → True (short-circuit)
+    #   inner all: True AND greater_than(120 > 90)=True → True
+    #   outer any: inner all=True (short-circuit) → True
+    #   is_null(deletion_blocked_at missing) → True
+    #   outer all → True
+    ctx1 = {
+        'subject': {'status': 'terminated', 'owner': 'emp-1'},
+        'days_inactive': 120,
+        'account_status': 'active',
+    }
+    assert _eval_node(node, ctx1) is True
+
+    # Combination 2 — mid-tree short-circuit via outer any branch 2:
+    #   innermost any: equals(status=="terminated")=False; is_null(owner=None)=True → True
+    #   inner all: True AND greater_than(30 > 90)=False → False
+    #   outer any: inner all=False → try branch 2: equals(account_status=="active")=True → True
+    #   is_null(deletion_blocked_at missing) → True
+    #   outer all → True
+    ctx2 = {
+        'subject': {'status': 'active', 'owner': None},
+        'days_inactive': 30,
+        'account_status': 'active',
+    }
+    assert _eval_node(node, ctx2) is True
+
+    # Combination 3 — all-false path (deletion_blocked_at present, account_status disabled):
+    #   inner all: innermost any False (status not terminated, owner present) AND
+    #              greater_than(10 > 90)=False → False
+    #   outer any: inner all=False; equals(account_status=="disabled"!="active")=False → False
+    #   outer all: outer any=False → short-circuit → False
+    ctx3 = {
+        'subject': {
+            'status': 'active',
+            'owner': 'emp-1',
+            'deletion_blocked_at': '2026-01-01',
+        },
+        'days_inactive': 10,
+        'account_status': 'disabled',
+    }
+    assert _eval_node(node, ctx3) is False
 
 
 def test_unknown_node_raises() -> None:

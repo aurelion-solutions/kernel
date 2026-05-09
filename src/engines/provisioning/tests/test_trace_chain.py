@@ -68,14 +68,12 @@ async def test_create_account_emits_trace_and_invoke_carries_trace_context(sessi
 
     assert len(captured) == 2
     started, enqueued = captured
-    assert started.event_type == 'provisioning.operation_started'
     assert started.causation_id is None
     assert started.initiator_type == LogParticipantKind.CAPABILITY
     assert started.actor_type == LogParticipantKind.CAPABILITY
     assert started.actor_id == 'provisioning'
     assert started.target_id == str(app_id)
 
-    assert enqueued.event_type == 'connector.command.enqueued'
     assert enqueued.causation_id == started.event_id
     assert enqueued.correlation_id == started.correlation_id
     assert enqueued.actor_type == LogParticipantKind.CAPABILITY
@@ -94,7 +92,6 @@ async def test_create_account_emits_trace_and_invoke_carries_trace_context(sessi
 def test_simulated_connector_logs_chain_causation_and_preserves_initiator() -> None:
     """Mirror connector handler semantics: received → completed with preserved initiator/target."""
     started = new_root_log_event(
-        event_type='provisioning.operation_started',
         level=LogLevel.INFO,
         message='s',
         component='provisioning',
@@ -109,7 +106,6 @@ def test_simulated_connector_logs_chain_causation_and_preserves_initiator() -> N
     )
     enqueued = new_downstream_log_event(
         started,
-        event_type='connector.command.enqueued',
         level=LogLevel.INFO,
         message='e',
         component='connector_client',
@@ -124,7 +120,6 @@ def test_simulated_connector_logs_chain_causation_and_preserves_initiator() -> N
     received = new_downstream_log_event_from_parent_id(
         parent_event_id=enqueued.event_id,
         correlation_id=enqueued.correlation_id,
-        event_type='connector.command.received',
         level=LogLevel.INFO,
         message='r',
         component='connector',
@@ -138,7 +133,6 @@ def test_simulated_connector_logs_chain_causation_and_preserves_initiator() -> N
     )
     completed = new_downstream_log_event(
         received,
-        event_type='connector.command.completed',
         level=LogLevel.INFO,
         message='c',
         component='connector',
@@ -152,7 +146,6 @@ def test_simulated_connector_logs_chain_causation_and_preserves_initiator() -> N
     )
     failed = new_downstream_log_event(
         received,
-        event_type='connector.command.failed',
         level=LogLevel.ERROR,
         message='f',
         component='connector',

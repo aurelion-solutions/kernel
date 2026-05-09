@@ -515,7 +515,7 @@ async def run_master_data_reconciliation(
                 unchanged=result.unchanged_count,
             ),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
         await update_run_status(session, run.id, status=ReconciliationRunStatus.failed, error=str(exc))
         raise
 

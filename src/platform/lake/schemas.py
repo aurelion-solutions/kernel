@@ -55,7 +55,7 @@ RAW_ACCESS_ARTIFACTS_SCHEMA = Schema(
 RAW_ACCESS_ARTIFACTS_PARTITION_SPEC = PartitionSpec(
     PartitionField(
         source_id=3,
-        field_id=1001,
+        field_id=1000,
         transform=IdentityTransform(),
         name='artifact_type',
     ),

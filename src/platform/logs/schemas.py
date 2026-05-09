@@ -59,10 +59,6 @@ class LogEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
 
     event_id: UUID = Field(description='Unique id of this event.')
-    # DEPRECATED: retained for legacy interop only; do not populate in new code.
-    # LogService.emit_log / emit_safe no longer accept an event_type parameter.
-    # Removal is scheduled for the dedicated legacy-migration phase after Phase 10 closes.
-    event_type: str | None = None
     timestamp: datetime
     level: LogLevel
     message: str
@@ -87,15 +83,6 @@ class LogEvent(BaseModel):
     def _non_empty_trimmed(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError('must be a non-empty string')
-        return v
-
-    @field_validator('event_type')
-    @classmethod
-    def _event_type_non_empty_if_set(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        if not v.strip():
-            raise ValueError('must be a non-empty string when provided')
         return v
 
     @field_validator('initiator_id', 'actor_id', 'target_id')
@@ -126,7 +113,6 @@ class LogEvent(BaseModel):
 
 def new_root_log_event(
     *,
-    event_type: str | None = None,
     level: LogLevel,
     message: str,
     component: str,
@@ -153,7 +139,6 @@ def new_root_log_event(
         event_id=eid,
         correlation_id=cid,
         causation_id=None,
-        event_type=event_type,
         timestamp=ts,
         level=level,
         message=message,
@@ -172,7 +157,6 @@ def new_downstream_log_event_from_parent_id(
     *,
     parent_event_id: UUID,
     correlation_id: str,
-    event_type: str | None = None,
     level: LogLevel,
     message: str,
     component: str,
@@ -191,7 +175,6 @@ def new_downstream_log_event_from_parent_id(
         event_id=event_id if event_id is not None else uuid.uuid4(),
         correlation_id=correlation_id,
         causation_id=parent_event_id,
-        event_type=event_type,
         timestamp=timestamp if timestamp is not None else datetime.now(UTC),
         level=level,
         message=message,
@@ -209,7 +192,6 @@ def new_downstream_log_event_from_parent_id(
 def new_downstream_log_event(
     parent: LogEvent,
     *,
-    event_type: str | None = None,
     level: LogLevel,
     message: str,
     component: str,
@@ -231,7 +213,6 @@ def new_downstream_log_event(
         event_id=event_id if event_id is not None else uuid.uuid4(),
         correlation_id=parent.correlation_id,
         causation_id=parent.event_id,
-        event_type=event_type,
         timestamp=timestamp if timestamp is not None else datetime.now(UTC),
         level=level,
         message=message,

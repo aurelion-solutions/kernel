@@ -30,7 +30,6 @@ class LogEventBufferRow(Base):
         default=uuid.uuid4,
     )
     event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(255), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     level: Mapped[str] = mapped_column(String(32), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)

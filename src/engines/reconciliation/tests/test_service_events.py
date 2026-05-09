@@ -64,6 +64,8 @@ def _make_session(*, lock_acquired: bool = True, app_exists: bool = True):
 
 
 def _make_service(session, capturing: CapturingEventService) -> ReconciliationService:
+    from src.platform.lake.config import LakeSettings
+
     event_svc = EventService(sink=capturing)
     return ReconciliationService(
         session=session,
@@ -71,6 +73,7 @@ def _make_service(session, capturing: CapturingEventService) -> ReconciliationSe
         catalog=MagicMock(),
         events=event_svc,
         logs=NoOpLogService(),
+        lake_settings=LakeSettings(),
     )
 
 

@@ -104,13 +104,13 @@ def artifacts_table_fixture(
     # Create 'raw' namespace if absent
     try:
         catalog.create_namespace(('raw',))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     # Drop the table if it already exists (idempotent fixture)
     try:
         catalog.drop_table(('raw', 'access_artifacts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     test_schema = Schema(

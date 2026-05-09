@@ -132,7 +132,7 @@ class LLMFactory:
 
             try:
                 provider = await self._construct(session, model_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 # Clean up the per-model lock so the next caller can retry.
                 async with self._cache_lock:
                     self._load_locks.pop(model_id, None)
@@ -151,12 +151,12 @@ class LLMFactory:
         for p in evicted:
             try:
                 await p.abort()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
         if stale is not None:
             try:
                 await stale.abort()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
 
         if stale is not None:
@@ -180,7 +180,7 @@ class LLMFactory:
         if removed is not None:
             try:
                 await removed.abort()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
 
     async def invalidate_all(self) -> None:
@@ -192,7 +192,7 @@ class LLMFactory:
         for p in removed:
             try:
                 await p.abort()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
 
     # ------------------------------------------------------------------

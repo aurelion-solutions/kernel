@@ -12,6 +12,8 @@ import uuid
 import pytest
 from src.engines.reconciliation.handlers.role import RoleHandler
 from src.engines.reconciliation.registry import _reset_registry_for_tests, get_handler, register_handler
+from src.inventory.accounts.models import Account
+from src.inventory.subjects.models import Subject, SubjectKind
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -60,6 +62,28 @@ def _reg_role():
     register_handler('role', RoleHandler())
 
 
+def _restore_production_registry() -> None:
+    """Re-register all production handlers after a test reset.
+
+    ``_reset_registry_for_tests()`` clears the global registry but Python does
+    not re-execute module-level registration code on subsequent imports.  This
+    helper explicitly re-registers every known handler so the registry is left
+    in a production-equivalent state for subsequent tests (e.g. e2e tests that
+    rely on the full registry being populated).
+    """
+    from src.engines.reconciliation.handlers.acl_entry import AclEntryHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.db_grant import DbGrantHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.privilege import PrivilegeHandler  # noqa: PLC0415
+    from src.engines.reconciliation.handlers.sap_role import SapRoleHandler  # noqa: PLC0415
+
+    _reset_registry_for_tests()
+    register_handler('role', RoleHandler())
+    register_handler('acl_entry', AclEntryHandler())
+    register_handler('privilege', PrivilegeHandler())
+    register_handler('db_grant', DbGrantHandler())
+    register_handler('sap_role', SapRoleHandler())
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -75,40 +99,63 @@ def test_role_handler_registered_at_import():
     _reg_role()
 
     assert get_handler('role') is not None
-    _reset_registry_for_tests()
+    _restore_production_registry()
 
 
 @pytest.mark.asyncio
 async def test_role_handler_happy_path(session_factory):
-    """Valid payload → single NormalizationResult with expected fields."""
+    """Valid payload + Account in DB → single NormalizationResult with expected fields."""
+    from src.inventory.employees.repository import create_employee  # noqa: PLC0415
+    from src.inventory.persons.repository import create_person  # noqa: PLC0415
+
     _reset_registry_for_tests()
     _reg_role()
     handler = get_handler('role')
     assert handler is not None
 
-    subject_id = uuid.uuid4()
     async with session_factory() as session:
         app_id = await _make_application(session)
+
+        # Seed Subject (requires Person → Employee chain)
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='Test User')
+        await session.flush()
+        emp = await create_employee(session, person_id=person.id)
+        await session.flush()
+        subj = Subject(
+            external_id=str(uuid.uuid4()),
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='active',
+        )
+        session.add(subj)
+        await session.flush()
+        subject_id = subj.id
+
+        # Seed Account referencing the subject
+        account = Account(application_id=app_id, username='alice', subject_id=subject_id)
+        session.add(account)
+        await session.flush()
+        account_id = account.id
+
         payload = {
-            'subject_id': str(subject_id),
+            'account_external_id': 'alice',
             'resource_key': 'my-resource',
             'resource_type': 'database',
             'action_slug': 'read',
             'effect': 'allow',
         }
         artifact = _make_artifact(app_id, payload)
-        # artifact is a DTO (not ORM), no need to add to session
         results = await handler.handle(artifact, session)
 
     assert len(results) == 1
     r = results[0]
     assert r.subject_id == subject_id
-    assert r.account_id is None
+    assert r.account_id == account_id
     assert r.action_slug == 'read'
     assert r.effect == 'allow'
     assert r.resource_id is not None
 
-    _reset_registry_for_tests()
+    _restore_production_registry()
 
 
 @pytest.mark.asyncio
@@ -125,22 +172,45 @@ async def test_role_handler_invalid_payload_returns_empty(session_factory):
         results = await handler.handle(artifact, session)
 
     assert results == []
-    _reset_registry_for_tests()
+    _restore_production_registry()
 
 
 @pytest.mark.asyncio
 async def test_role_handler_resource_reuse_no_duplicate(session_factory):
     """Calling handler twice with same (app_id, resource_type, resource_key) returns same resource_id."""
+    from src.inventory.employees.repository import create_employee  # noqa: PLC0415
+    from src.inventory.persons.repository import create_person  # noqa: PLC0415
+
     _reset_registry_for_tests()
     _reg_role()
     handler = get_handler('role')
     assert handler is not None
 
-    subject_id = uuid.uuid4()
     async with session_factory() as session:
         app_id = await _make_application(session)
+
+        # Seed Subject (requires Person → Employee chain)
+        person = await create_person(session, external_id=str(uuid.uuid4()), full_name='Test User')
+        await session.flush()
+        emp = await create_employee(session, person_id=person.id)
+        await session.flush()
+        subj = Subject(
+            external_id=str(uuid.uuid4()),
+            kind=SubjectKind.employee,
+            principal_employee_id=emp.id,
+            status='active',
+        )
+        session.add(subj)
+        await session.flush()
+        subject_id = subj.id
+
+        # Seed Account referencing the subject
+        account = Account(application_id=app_id, username='bob', subject_id=subject_id)
+        session.add(account)
+        await session.flush()
+
         payload = {
-            'subject_id': str(subject_id),
+            'account_external_id': 'bob',
             'resource_key': 'shared-resource',
             'resource_type': 'database',
             'action_slug': 'read',
@@ -149,7 +219,6 @@ async def test_role_handler_resource_reuse_no_duplicate(session_factory):
 
         artifact1 = _make_artifact(app_id, payload)
         artifact2 = _make_artifact(app_id, payload)
-        # DTOs, not ORM — no session.add needed
         results1 = await handler.handle(artifact1, session)
         results2 = await handler.handle(artifact2, session)
 
@@ -157,4 +226,4 @@ async def test_role_handler_resource_reuse_no_duplicate(session_factory):
     assert len(results2) == 1
     assert results1[0].resource_id == results2[0].resource_id
 
-    _reset_registry_for_tests()
+    _restore_production_registry()

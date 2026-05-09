@@ -29,7 +29,7 @@ def normalize_mq_log_event_payload(raw: dict[str, Any]) -> dict[str, Any]:
 
     Expected shape (tracing contract):
 
-    - ``event_id``, ``event_type``, ``timestamp``, ``level``, ``message``, ``component``,
+    - ``event_id``, ``timestamp``, ``level``, ``message``, ``component``,
       ``correlation_id`` (string), ``payload``, ``initiator_type``, ``initiator_id``,
       ``actor_type``, ``actor_id``, ``target_type``, ``target_id``
     - ``causation_id``: optional; omit or ``null`` for trace roots
@@ -116,7 +116,7 @@ def run_rabbitmq_consumer(
             if on_parse_error is not None:
                 try:
                     on_parse_error({'raw': str(body[:200])}, str(exc))
-                except Exception:
+                except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
                     pass
             return
 
@@ -125,7 +125,7 @@ def run_rabbitmq_consumer(
             if on_parse_error is not None:
                 try:
                     on_parse_error({'raw': raw}, 'Payload is not a dict')
-                except Exception:
+                except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
                     pass
             return
 
@@ -135,7 +135,7 @@ def run_rabbitmq_consumer(
             if on_parse_error is not None:
                 try:
                     on_parse_error(raw, 'Malformed connector log payload')
-                except Exception:
+                except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
                     pass
             return
 

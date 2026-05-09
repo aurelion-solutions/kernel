@@ -36,7 +36,6 @@ def _minimal_mq_dict():
     return (
         {
             'event_id': _uuid_str(eid),
-            'event_type': 'connector.sync.started',
             'timestamp': '2026-04-05T12:30:00Z',
             'level': 'info',
             'message': 'Sync started',
@@ -75,7 +74,6 @@ async def test_buffer_persists_root_style_event(session_factory) -> None:
     assert len(rows) == 1
     row = rows[0]
     assert row.event_id == eid
-    assert row.event_type == 'connector.sync.started'
     assert row.level == 'info'
     assert row.message == 'Sync started'
     assert row.component == 'connector-jira'
@@ -94,7 +92,6 @@ async def test_buffer_persists_root_style_event(session_factory) -> None:
 async def test_buffer_persists_downstream_style_event(session_factory) -> None:
     """Downstream: causation_id set to parent event_id."""
     parent = new_root_log_event(
-        event_type='parent',
         level=LogLevel.INFO,
         message='p',
         component='c',
@@ -107,7 +104,6 @@ async def test_buffer_persists_downstream_style_event(session_factory) -> None:
     )
     child = new_downstream_log_event(
         parent,
-        event_type='child',
         level=LogLevel.DEBUG,
         message='child msg',
         component='child-comp',
@@ -133,7 +129,6 @@ async def test_buffer_persists_downstream_style_event(session_factory) -> None:
     assert row.event_id == child.event_id
     assert row.correlation_id == parent.correlation_id
     assert row.causation_id == parent.event_id
-    assert row.event_type == 'child'
     assert row.payload == {'step': 2}
 
 

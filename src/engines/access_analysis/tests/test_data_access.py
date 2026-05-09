@@ -189,13 +189,13 @@ def iceberg_table(lake_settings: LakeSettings) -> Any:  # noqa: ANN401
 
     try:
         cat.create_namespace(('normalized',))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     identifier = ('normalized', 'access_facts')
     try:
         cat.drop_table(identifier)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     tbl = cat.create_table(identifier, schema=_make_schema(), partition_spec=_make_partition_spec())

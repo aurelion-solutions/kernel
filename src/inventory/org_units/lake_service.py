@@ -74,7 +74,7 @@ class OrgUnitLakeService:
                 snap = latest_snapshot_id(table)
         except (OrgUnitLakeNotConfiguredError, OrgUnitLakeWriteError):
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             raise OrgUnitLakeWriteError(f'raw.org_units write failed: {exc}', cause=exc) from exc
 
         return MasterDataBatchResult(row_count=len(items), snapshot_id=snap, backend='iceberg')

@@ -26,7 +26,6 @@ def _minimal_contract_dict(
     cid = correlation_id or uuid4()
     return {
         'event_id': _uuid_str(eid),
-        'event_type': 'connector.sync.started',
         'timestamp': '2026-04-05T12:30:00Z',
         'level': 'info',
         'message': 'Sync started',
@@ -61,7 +60,6 @@ def test_parse_valid_root_style_payload():
     assert event.event_id == eid
     assert event.correlation_id == _uuid_str(cid)
     assert event.causation_id is None
-    assert event.event_type == 'connector.sync.started'
     assert event.level == LogLevel.INFO
     assert event.message == 'Sync started'
     assert event.component == 'connector-jira'
@@ -82,7 +80,6 @@ def test_parse_valid_downstream_style_payload():
     child_eid = uuid4()
     raw = {
         'event_id': _uuid_str(child_eid),
-        'event_type': 'connector.step.done',
         'timestamp': '2026-04-05T12:31:00+00:00',
         'level': 'debug',
         'message': 'Step complete',

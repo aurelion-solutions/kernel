@@ -123,11 +123,11 @@ def iceberg_catalog(lake_settings: LakeSettings) -> Catalog:
     cat = get_catalog(lake_settings, log_service=log)
     try:
         cat.create_namespace(('normalized',))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     try:
         cat.drop_table(('normalized', 'access_facts'))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
     cat.create_table(
         ('normalized', 'access_facts'),
@@ -146,7 +146,7 @@ def _get_pg_dsn_sync() -> str:
         from src.core.config import get_settings  # noqa: PLC0415
 
         raw_dsn = get_settings().postgres.dsn
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         raw_dsn = os.getenv('DATABASE_URL', '')
 
     parsed = urlparse(raw_dsn)

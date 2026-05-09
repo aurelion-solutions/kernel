@@ -223,7 +223,7 @@ class LakeSessionFactory:
         conn = duckdb.connect()
         try:
             self._bootstrap(conn)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             conn.close()
             self._log_service.emit_safe(
                 level=LogLevel.ERROR,

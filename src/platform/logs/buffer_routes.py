@@ -29,7 +29,6 @@ _q_initiator_type = Query(None, description='Requires initiator_id when set.')
 _q_initiator_id = Query(None, description='Requires initiator_type when set.')
 _q_actor_type = Query(None, description='Requires actor_id when set.')
 _q_actor_id = Query(None, description='Requires actor_type when set.')
-_q_event_type = Query(None, description='Filter by event_type (exact match).')
 _q_level = Query(None, description='Filter by level (e.g. info, error).')
 _q_from_ts = Query(None, description='Inclusive lower bound on event timestamp (ISO 8601).')
 _q_to_ts = Query(None, description='Inclusive upper bound on event timestamp (ISO 8601).')
@@ -67,7 +66,6 @@ async def list_buffered_logs(
     initiator_id: str | None = _q_initiator_id,
     actor_type: str | None = _q_actor_type,
     actor_id: str | None = _q_actor_id,
-    event_type: str | None = _q_event_type,
     level: str | None = _q_level,
     from_ts: datetime | None = _q_from_ts,
     to_ts: datetime | None = _q_to_ts,
@@ -79,7 +77,6 @@ async def list_buffered_logs(
     target_id = _blank_to_none(target_id)
     initiator_id = _blank_to_none(initiator_id)
     actor_id = _blank_to_none(actor_id)
-    event_type = _blank_to_none(event_type)
 
     target_type = _lower_opt(target_type)
     initiator_type = _lower_opt(initiator_type)
@@ -107,7 +104,6 @@ async def list_buffered_logs(
         or (target_type is not None and target_id is not None)
         or (initiator_type is not None and initiator_id is not None)
         or (actor_type is not None and actor_id is not None)
-        or event_type is not None
         or level is not None
     )
     if not has_discriminator:
@@ -115,7 +111,7 @@ async def list_buffered_logs(
             status_code=400,
             detail=(
                 'Provide at least one filter: correlation_id, target_type+target_id, '
-                'initiator_type+initiator_id, actor_type+actor_id, event_type, or level'
+                'initiator_type+initiator_id, actor_type+actor_id, or level'
             ),
         )
 
@@ -128,7 +124,6 @@ async def list_buffered_logs(
         initiator_id=initiator_id,
         actor_type=actor_type,
         actor_id=actor_id,
-        event_type=event_type,
         level=level,
         from_ts=from_ts,
         to_ts=to_ts,

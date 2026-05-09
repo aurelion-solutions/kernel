@@ -42,6 +42,7 @@ from src.platform.logs.service import LogService, NoOpLogService, merge_emit_com
 if TYPE_CHECKING:
     from pyiceberg.catalog import Catalog
     from src.platform.events.service import EventService
+    from src.platform.lake.config import LakeSettings
     from src.platform.lake.duckdb_session import LakeSession
 
 _COMPONENT = 'engines.reconciliation'
@@ -196,12 +197,14 @@ class ReconciliationService:
         catalog: Catalog,
         events: EventService,
         logs: LogService | NoOpLogService,
+        lake_settings: LakeSettings | None = None,
     ) -> None:
         self._session = session
         self._lake_session = lake_session
         self._catalog = catalog
         self._events = events
         self._logs: LogService | NoOpLogService = logs
+        self._lake_settings = lake_settings
 
     async def run(
         self,
@@ -254,6 +257,7 @@ class ReconciliationService:
     ) -> ReconciliationRunSummary:
         """Execute pipeline with event/log emission. Called only after lock is held."""
         # Log: run started (best-effort)
+        # allowed-emit-safe: observability
         self._logs.emit_safe(
             level=LogLevel.INFO,
             message='Reconciliation run started',
@@ -269,6 +273,8 @@ class ReconciliationService:
         run_id: UUID | None = None
         summary: ReconciliationRunSummary | None = None
 
+        batch_size = self._lake_settings.reconciliation_fetch_batch_size if self._lake_settings is not None else 5000
+
         try:
             summary = await run_reconciliation(
                 self._session,
@@ -276,6 +282,8 @@ class ReconciliationService:
                 self._catalog,
                 application_id=application_id,
                 correlation_id=correlation_id,
+                batch_size=batch_size,
+                logs=self._logs,
             )
             run_id = summary.run_id
 
@@ -287,12 +295,13 @@ class ReconciliationService:
                     status=ReconciliationRunStatus.dry_run_completed,
                 )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
             # Emit run.failed event (load-bearing) + log (best-effort)
             if run_id is not None:
                 failed_event = _build_run_failed_event(run_id, application_id, str(exc), correlation_id)
                 await self._events.emit(failed_event)
 
+            # allowed-emit-safe: best-effort warning
             self._logs.emit_safe(
                 level=LogLevel.ERROR,
                 message=f'Reconciliation run failed: {exc}',
@@ -322,6 +331,7 @@ class ReconciliationService:
         await self._events.emit(completed_event)
 
         # Log: delta created (best-effort)
+        # allowed-emit-safe: observability
         self._logs.emit_safe(
             level=LogLevel.INFO,
             message='Reconciliation delta created',
@@ -342,6 +352,7 @@ class ReconciliationService:
         )
 
         # Log: run completed (best-effort)
+        # allowed-emit-safe: observability
         self._logs.emit_safe(
             level=LogLevel.INFO,
             message='Reconciliation run completed',

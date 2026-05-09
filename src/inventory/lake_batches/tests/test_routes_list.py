@@ -43,7 +43,7 @@ def app_with_lake(engine, lake_path: Path):
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
 

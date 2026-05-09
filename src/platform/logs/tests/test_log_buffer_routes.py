@@ -18,7 +18,6 @@ def _root(
     target_id: str = 'default-target',
     message: str = 'm',
     timestamp: datetime | None = None,
-    event_type: str = 'test.event',
     level: LogLevel = LogLevel.INFO,
     initiator_type: LogParticipantKind = LogParticipantKind.SYSTEM,
     initiator_id: str = 'i',
@@ -26,7 +25,6 @@ def _root(
     actor_id: str = 'a',
 ) -> LogEvent:
     return new_root_log_event(
-        event_type=event_type,
         level=level,
         message=message,
         component='test',
@@ -276,22 +274,6 @@ async def test_log_buffer_filter_by_actor_pair(client, session_factory) -> None:
     data = r.json()
     assert len(data) == 1
     assert data[0]['message'] == 'hit'
-
-
-@pytest.mark.asyncio
-async def test_log_buffer_filter_by_event_type(client, session_factory) -> None:
-    e1 = _root(correlation_id='x1', event_type='custom.alpha', message='a')
-    e2 = _root(correlation_id='x2', event_type='custom.beta', message='b')
-    async with session_factory() as session:
-        await insert_buffered_log_event(session, e1)
-        await insert_buffered_log_event(session, e2)
-        await session.commit()
-
-    r = await client.get('/api/v0/log-buffer', params={'event_type': 'custom.beta'})
-    assert r.status_code == 200
-    data = r.json()
-    assert len(data) == 1
-    assert data[0]['message'] == 'b'
 
 
 @pytest.mark.asyncio

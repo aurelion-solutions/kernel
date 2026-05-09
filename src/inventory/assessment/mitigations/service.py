@@ -240,6 +240,7 @@ def _translate_insert_integrity_error(
     constraint_name: str | None = getattr(asyncpg_exc, 'constraint_name', None)
     if pgcode == '23505' and constraint_name == 'uq_mitigations_active_or_proposed':
         raise MitigationDuplicateActiveError() from None
+    # allowed-emit-safe: best-effort warning
     log_service.emit_safe(
         level=LogLevel.WARNING,
         message=f'Unexpected IntegrityError during mitigation insert: {exc}',

@@ -66,13 +66,16 @@ async def get_active_apply_run_for_reconciliation(
     session: AsyncSession,
     reconciliation_run_id: UUID,
 ) -> SyncApplyRun | None:
-    """Return an in-flight apply run for a reconciliation run.
+    """Return a blocking apply run for a reconciliation run.
 
-    Only ``running`` is treated as blocking — completed and partially_applied runs
-    allow sequential per-item re-applies on the same reconciliation run.
+    ``running``, ``completed``, and ``partially_applied`` runs are all treated
+    as blocking — re-applying to an already-completed reconciliation run is not
+    allowed (matches service.py docstring contract and test Stage-6 expectation).
     """
     active_statuses = [
         SyncApplyRunStatus.running,
+        SyncApplyRunStatus.completed,
+        SyncApplyRunStatus.partially_applied,
     ]
     result = await session.execute(
         select(SyncApplyRun)

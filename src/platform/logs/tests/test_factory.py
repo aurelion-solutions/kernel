@@ -38,7 +38,6 @@ async def test_returned_sink_is_usable(tmp_path: Path) -> None:
     factory.register('file', lambda: FileLogSink(path=log_path))
     sink = factory.get('file')
     event = new_root_log_event(
-        event_type='test',
         level=LogLevel.INFO,
         message='Hello',
         component='test',

@@ -91,6 +91,7 @@ class PolicyCatalogService:
         # Stable, predictable order: type, source, name, id.
         items.sort(key=lambda i: (i.policy_type.value, i.definition_source.value, i.name, i.id))
 
+        # allowed-emit-safe: observability
         self._log.emit_safe(
             level=LogLevel.INFO,
             message='inventory.policy.catalog.computed',
@@ -137,6 +138,7 @@ class PolicyCatalogService:
 
     def _load_cartridge_manifests(self) -> list[CartridgeManifest]:
         if not self._cartridge_root.exists():
+            # allowed-emit-safe: best-effort warning
             self._log.emit_safe(
                 level=LogLevel.WARNING,
                 message='inventory.policy.catalog.cartridge_root_missing',
@@ -151,6 +153,7 @@ class PolicyCatalogService:
         try:
             return self._loader.load_dir(self._cartridge_root)
         except CartridgeLoadError as exc:
+            # allowed-emit-safe: best-effort warning
             self._log.emit_safe(
                 level=LogLevel.ERROR,
                 message='inventory.policy.catalog.cartridge_load_failed',

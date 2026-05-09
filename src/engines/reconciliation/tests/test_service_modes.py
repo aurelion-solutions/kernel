@@ -63,12 +63,15 @@ def _make_session(*, lock_acquired: bool = True, app_exists: bool = True):
 
 
 def _make_service(session) -> ReconciliationService:
+    from src.platform.lake.config import LakeSettings
+
     return ReconciliationService(
         session=session,
         lake_session=MagicMock(),
         catalog=MagicMock(),
         events=NoOpEventService(),
         logs=NoOpLogService(),
+        lake_settings=LakeSettings(),
     )
 
 

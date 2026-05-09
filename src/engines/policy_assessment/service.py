@@ -63,6 +63,7 @@ class PolicyService:
         try:
             # NOTE: kwarg-shape refactor (Step 23 Phase 10) — NOT a migration to aurelion.events bus.
             # Emission stays on aurelion.logs; event_type string silently dropped from wire.
+            # allowed-emit-safe: observability
             self._log.emit_safe(
                 level=LogLevel.INFO,
                 message='Policy decision evaluated',
@@ -73,7 +74,7 @@ class PolicyService:
                     target_id='policy',
                 ),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: best-effort log
             pass
         return decision
 

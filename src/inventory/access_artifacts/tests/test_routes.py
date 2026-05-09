@@ -16,31 +16,51 @@ from src.inventory.access_artifacts.service import AccessArtifactService
 
 
 @pytest.fixture
-def app_with_access_artifacts(engine):
-    """App with access artifact routes using test engine."""
+def app_with_access_artifacts(engine, artifacts_table_fixture, lake_settings_iceberg):
+    """App with access artifact routes + real Iceberg catalog and lake session factory."""
     from fastapi import FastAPI
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from src.platform.lake.deps import get_lake_session, get_optional_lake_session
+    from src.platform.lake.duckdb_session import LakeSessionFactory
+    from src.platform.logs.service import NoOpLogService
 
-    session_factory = async_sessionmaker(
-        bind=engine,
-        expire_on_commit=False,
-        autoflush=False,
-        autocommit=False,
-        class_=AsyncSession,
-    )
+    catalog = artifacts_table_fixture
+    sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
 
     async def override_get_db():
-        async with session_factory() as session:
+        async with sf() as session:
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
                 await session.rollback()
                 raise
+
+    lake_factory = LakeSessionFactory(settings=lake_settings_iceberg, log_service=NoOpLogService(), pg_dsn=None)
+
+    async def override_get_lake_session():
+        sess = lake_factory.acquire()
+        try:
+            yield sess
+        finally:
+            sess.__exit__(None, None, None)
+
+    async def override_get_optional_lake_session():
+        sess = lake_factory.acquire()
+        try:
+            yield sess
+        finally:
+            sess.__exit__(None, None, None)
 
     app = FastAPI()
     app.include_router(access_artifacts_router, prefix='/api/v0')
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_lake_session] = override_get_lake_session
+    app.dependency_overrides[get_optional_lake_session] = override_get_optional_lake_session
+    app.state.lake_catalog = catalog
+    app.state.lake_settings = lake_settings_iceberg
+    app.state.lake_session_factory = lake_factory
+    app.state.log_service = NoOpLogService()
     return app
 
 
@@ -62,26 +82,41 @@ async def _make_application_id(engine) -> uuid.UUID:
         return app.id
 
 
-async def _seed_artifact(engine, app_id: uuid.UUID, **kwargs) -> uuid.UUID:
-    """Seed an artifact via service and return its id."""
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+async def _seed_artifact(app_with_access_artifacts, app_id: uuid.UUID, **kwargs) -> uuid.UUID:
+    """Seed an artifact via live upsert_batch and return its id."""
+    from datetime import UTC, datetime
 
-    sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
-    svc = AccessArtifactService()
-    async with sf() as session:
-        artifact, _ = await svc.upsert_artifact(
-            session,
-            application_id=app_id,
-            artifact_type=kwargs.get('artifact_type', 'sap_role'),
-            external_id=kwargs.get('external_id', f'ext-{uuid.uuid4().hex[:8]}'),
-            payload=kwargs.get('payload', {'data': 'value'}),
-            raw_name=kwargs.get('raw_name', None),
-            effect=kwargs.get('effect', None),
-            valid_from=kwargs.get('valid_from', None),
-            valid_until=kwargs.get('valid_until', None),
-        )
-        await session.commit()
-        return artifact.id
+    from src.inventory.access_artifacts.service import (
+        AccessArtifactBatchItem,
+    )
+
+    catalog = app_with_access_artifacts.state.lake_catalog
+    lake_settings = app_with_access_artifacts.state.lake_settings
+    external_id = kwargs.get('external_id', f'ext-{uuid.uuid4().hex[:8]}')
+    item = AccessArtifactBatchItem(
+        application_id=app_id,
+        artifact_type=kwargs.get('artifact_type', 'sap_role'),
+        external_id=external_id,
+        payload=kwargs.get('payload', {'data': 'value'}),
+        raw_name=kwargs.get('raw_name', None),
+        effect=kwargs.get('effect', None),
+        valid_from=kwargs.get('valid_from', None),
+        valid_until=kwargs.get('valid_until', None),
+        observed_at=datetime.now(UTC),
+    )
+    svc = AccessArtifactService(lake_settings=lake_settings, lake_catalog=catalog)
+    await svc.upsert_batch([item], ingest_batch_id=uuid.uuid4())
+
+    table = catalog.load_table(('raw', 'access_artifacts'))
+    rows = table.scan().to_arrow()
+    for i in range(len(rows)):
+        if (
+            rows.column('external_id')[i].as_py() == external_id
+            and str(rows.column('application_id')[i].as_py()) == str(app_id)
+            and rows.column('is_active')[i].as_py() is True
+        ):
+            return uuid.UUID(str(rows.column('id')[i].as_py()))
+    raise AssertionError(f'seeded artifact not found: external_id={external_id}')
 
 
 @pytest.mark.asyncio
@@ -102,8 +137,8 @@ async def test_get_access_artifacts_200_empty(app_with_access_artifacts) -> None
 async def test_get_access_artifacts_filter_by_artifact_type(app_with_access_artifacts, engine) -> None:
     """GET /access-artifacts?artifact_type= returns only matching artifacts."""
     app_id = await _make_application_id(engine)
-    await _seed_artifact(engine, app_id, artifact_type='sap_role', external_id='role-001')
-    await _seed_artifact(engine, app_id, artifact_type='acl_entry', external_id='acl-001')
+    await _seed_artifact(app_with_access_artifacts, app_id, artifact_type='sap_role', external_id='role-001')
+    await _seed_artifact(app_with_access_artifacts, app_id, artifact_type='acl_entry', external_id='acl-001')
 
     async with AsyncClient(
         transport=ASGITransport(app=app_with_access_artifacts),
@@ -118,29 +153,12 @@ async def test_get_access_artifacts_filter_by_artifact_type(app_with_access_arti
 
 
 @pytest.mark.asyncio
-async def test_get_access_artifacts_old_source_kind_param_ignored(app_with_access_artifacts, engine) -> None:
-    """GET /access-artifacts?source_kind= is silently ignored — returns all artifacts."""
-    app_id = await _make_application_id(engine)
-    await _seed_artifact(engine, app_id, artifact_type='sap_role', external_id='role-002')
-    await _seed_artifact(engine, app_id, artifact_type='acl_entry', external_id='acl-002')
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app_with_access_artifacts),
-        base_url='http://testserver',
-    ) as client:
-        response = await client.get('/api/v0/access-artifacts', params={'source_kind': 'sap_role'})
-
-    assert response.status_code == 200
-    # Old param is unknown — FastAPI ignores it, both artifacts returned
-    data = response.json()['items']
-    assert len(data) >= 2
-
-
-@pytest.mark.asyncio
 async def test_get_access_artifact_200_carries_new_fields(app_with_access_artifacts, engine) -> None:
     """GET /access-artifacts/{id} response carries artifact_type, observed_at, is_active, tombstoned_at."""
     app_id = await _make_application_id(engine)
-    artifact_id = await _seed_artifact(engine, app_id, artifact_type='db_grant', external_id='grant-001')
+    artifact_id = await _seed_artifact(
+        app_with_access_artifacts, app_id, artifact_type='db_grant', external_id='grant-001'
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=app_with_access_artifacts),
@@ -164,7 +182,7 @@ async def test_get_access_artifact_200_carries_new_fields(app_with_access_artifa
 async def test_get_access_artifacts_list_carries_new_fields(app_with_access_artifacts, engine) -> None:
     """GET /access-artifacts list response carries new fields on each item."""
     app_id = await _make_application_id(engine)
-    await _seed_artifact(engine, app_id, artifact_type='sap_role', external_id='role-003')
+    await _seed_artifact(app_with_access_artifacts, app_id, artifact_type='sap_role', external_id='role-003')
 
     async with AsyncClient(
         transport=ASGITransport(app=app_with_access_artifacts),
@@ -201,7 +219,7 @@ async def test_get_access_artifact_by_id_returns_permitted_fields_set(app_with_a
 
     app_id = await _make_application_id(engine)
     artifact_id = await _seed_artifact(
-        engine,
+        app_with_access_artifacts,
         app_id,
         artifact_type='sap_role',
         external_id='role-permitted-route-set',
@@ -230,7 +248,7 @@ async def test_get_access_artifact_by_id_returns_permitted_fields_null(app_with_
     """GET /access-artifacts/{id} returns null for the four permitted universal fields when not set."""
     app_id = await _make_application_id(engine)
     artifact_id = await _seed_artifact(
-        engine,
+        app_with_access_artifacts,
         app_id,
         artifact_type='acl_entry',
         external_id='acl-permitted-route-null',
@@ -257,7 +275,7 @@ async def test_get_access_artifacts_list_returns_permitted_fields_set(app_with_a
 
     app_id = await _make_application_id(engine)
     await _seed_artifact(
-        engine,
+        app_with_access_artifacts,
         app_id,
         artifact_type='db_grant',
         external_id='grant-permitted-list-set',
@@ -288,7 +306,7 @@ async def test_get_access_artifacts_list_returns_permitted_fields_null(app_with_
     """GET /access-artifacts list returns null for the four permitted fields when not set."""
     app_id = await _make_application_id(engine)
     await _seed_artifact(
-        engine,
+        app_with_access_artifacts,
         app_id,
         artifact_type='sap_role',
         external_id='role-permitted-list-null',
@@ -313,31 +331,23 @@ async def test_get_access_artifacts_list_returns_permitted_fields_null(app_with_
 @pytest.mark.asyncio
 async def test_list_access_artifacts_is_active_filter(app_with_access_artifacts, engine) -> None:
     """GET /access-artifacts?is_active=true/false/unset filters by lifecycle status."""
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from datetime import UTC, datetime
 
     app_id = await _make_application_id(engine)
     active_ext_id = f'active-filter-route-{uuid.uuid4().hex[:6]}'
     inactive_ext_id = f'inactive-filter-route-{uuid.uuid4().hex[:6]}'
 
     active_id = await _seed_artifact(
-        engine,
-        app_id,
-        artifact_type='acl_entry',
-        external_id=active_ext_id,
+        app_with_access_artifacts, app_id, artifact_type='acl_entry', external_id=active_ext_id
     )
     inactive_id = await _seed_artifact(
-        engine,
-        app_id,
-        artifact_type='acl_entry',
-        external_id=inactive_ext_id,
+        app_with_access_artifacts, app_id, artifact_type='acl_entry', external_id=inactive_ext_id
     )
 
-    # Tombstone the inactive artifact directly via service
-    sf = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False, class_=AsyncSession)
-    svc = AccessArtifactService()
-    async with sf() as session:
-        await svc.tombstone_artifact(session, artifact_id=inactive_id)
-        await session.commit()
+    catalog = app_with_access_artifacts.state.lake_catalog
+    lake_settings = app_with_access_artifacts.state.lake_settings
+    svc = AccessArtifactService(lake_settings=lake_settings, lake_catalog=catalog)
+    await svc.tombstone_batch([inactive_id], observed_at=datetime.now(UTC))
 
     async with AsyncClient(
         transport=ASGITransport(app=app_with_access_artifacts),

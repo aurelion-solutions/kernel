@@ -27,7 +27,7 @@ class NormalizationResult:
       ``ensure_resource_by_identity(...)``; handlers MUST NOT return raw
       ``resource_key`` / ``resource_type``.
     - ``action_slug`` must be a slug from the seeded ``ref_actions`` vocabulary.
-      Unknown slug → ``AccessFactActionSlugUnknownError`` at service level.
+      Unknown slug → 422 at service level.
     - ``effect`` is the raw source string (``allow`` | ``deny``); validated
       downstream by ``AccessFact.effect`` enum.
     """

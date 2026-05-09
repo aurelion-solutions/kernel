@@ -104,7 +104,7 @@ def run_rabbitmq_consumer(
             if not isinstance(raw, dict):
                 raise ValueError('Payload is not a JSON object')
             on_event(raw, method.routing_key, props)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: task-loop guard
             _ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 

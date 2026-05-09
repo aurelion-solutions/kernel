@@ -20,15 +20,15 @@ Deleted phases (Step 8):
 Design decisions:
   - NO writes to ``normalized.access_facts`` in this step (Steps 11–12 own that).
   - NO calls to ``AccessFactService.*`` in this module.
-  - NO logging here — Step 9 adds LogService call sites.
-  - NO events here — Step 9 adds event emission.
+  - NO events here — events are emitted by ``engines/reconciliation/service.py`` only.
   - Caller (route or CLI) commits the transaction; this module only flushes.
 
 Known race (documented):
   Snapshot ids are captured via ``catalog.load_table(...).current_snapshot()``
   BEFORE running DuckDB queries.  If a writer commits a new snapshot between the
   capture and the scan, DuckDB may read a newer snapshot than the recorded id.
-  Mitigated by the single-writer kernel invariant and Step 9 advisory lock.
+  Mitigated by the single-writer kernel invariant via PG advisory lock
+  (``engines/reconciliation/service.py``).
   Revisit if concurrent writes are ever allowed.
 """
 
@@ -57,10 +57,13 @@ from src.engines.reconciliation.repository import (
 from src.engines.reconciliation.views import AccessArtifactRowView, AccessFactRowView
 from src.inventory.access_artifacts.schemas import AccessArtifactView
 from src.platform.lake.duckdb_session import LakeSession
+from src.platform.logs.schemas import LogLevel
+from src.platform.logs.service import NoOpLogService, merge_emit_component_trace_fields
 
 if TYPE_CHECKING:
     from pyiceberg.catalog import Catalog
     from src.engines.reconciliation.schemas import ReconciliationRunSummary
+    from src.platform.logs.service import LogService
 
 # (subject_id | None, account_id | None, resource_id, action_id)
 FactKey = tuple[UUID | None, UUID | None, UUID, int]
@@ -72,11 +75,6 @@ _NormalizedCandidate = tuple[AccessArtifactRowView, NormalizationResult | None]
 
 # Resolved candidate: DTO, result, action_id (resolved), fact_key
 _ResolvedCandidate = tuple[AccessArtifactRowView, NormalizationResult, int, FactKey]
-
-# Batch size for DuckDB fetchmany iterations.
-# TODO: move to LakeSettings in a later step.
-_FETCH_BATCH_SIZE = 5000
-
 
 # ---------------------------------------------------------------------------
 # Natural key hash — delegated to shared helper (Phase 15 Step 14 D5 refactor).
@@ -142,7 +140,7 @@ def _phase_load_artifacts(
     lake_session: LakeSession,
     *,
     application_id: UUID,
-    batch_size: int = _FETCH_BATCH_SIZE,
+    batch_size: int,
 ) -> list[AccessArtifactRowView]:
     """Load active artifacts for the application via DuckDB iceberg_scan.
 
@@ -204,6 +202,10 @@ def _phase_load_artifacts(
 async def _phase_dispatch(
     session: AsyncSession,
     artifacts: list[AccessArtifactRowView],
+    *,
+    logs: LogService | NoOpLogService,
+    application_id: UUID,
+    correlation_id: str | None,
 ) -> tuple[list[_NormalizedCandidate], int]:
     """Dispatch each artifact DTO to its registered handler.
 
@@ -214,6 +216,7 @@ async def _phase_dispatch(
     Returns ``(candidates, unhandled_count)``.
     Errored artifacts (handler raised) are appended as ``(artifact, None)`` sentinel.
     """
+    _COMPONENT = 'engines.reconciliation'
     candidates: list[_NormalizedCandidate] = []
     unhandled = 0
 
@@ -225,9 +228,25 @@ async def _phase_dispatch(
         try:
             view = _to_view(artifact)
             results = await handler.handle(view, session)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: task-loop guard
             # Per-artifact exception — signal errored via None sentinel.
-            # Caller tracks facts_errored; no logging here (Step 9 adds LogService).
+            logs.emit_safe(
+                level=LogLevel.WARNING,
+                message='Reconciliation skipped artifact: handler raised',
+                component=_COMPONENT,
+                payload=merge_emit_component_trace_fields(
+                    {
+                        'reason': 'handler_exception',
+                        'exception_type': type(exc).__name__,
+                        'application_id': str(application_id),
+                        'artifact_id': str(artifact.id),
+                        'artifact_type': artifact.artifact_type,
+                    },
+                    component_id=_COMPONENT,
+                    target_id=str(application_id),
+                ),
+                correlation_id=correlation_id,
+            )
             candidates.append((artifact, None))
             continue
         for result in results:
@@ -240,7 +259,7 @@ def _phase_load_current_state(
     lake_session: LakeSession,
     *,
     application_id: UUID,
-    batch_size: int = _FETCH_BATCH_SIZE,
+    batch_size: int,
 ) -> tuple[set[FactKey], dict[FactKey, AccessFactRowView]]:
     """Load active facts for the application via DuckDB iceberg_scan.
 
@@ -308,6 +327,10 @@ def _phase_load_current_state(
 async def _phase_resolve_action_ids(
     lake_session: LakeSession,
     candidates: list[_NormalizedCandidate],
+    *,
+    logs: LogService | NoOpLogService,
+    application_id: UUID,
+    correlation_id: str | None,
 ) -> tuple[list[_ResolvedCandidate], int]:
     """Resolve action slugs → action ids via ``ref_actions_local`` TEMP TABLE.
 
@@ -316,6 +339,8 @@ async def _phase_resolve_action_ids(
     Unknown slugs → errored_count incremented, candidate skipped.
     Errored candidates (handler exception, None result) → skipped + counted.
     """
+    _COMPONENT = 'engines.reconciliation'
+
     # Collect unique slugs (skip errored / None results)
     slugs: set[str] = set()
     for _artifact, result in candidates:
@@ -340,7 +365,23 @@ async def _phase_resolve_action_ids(
             continue
         action_id = slug_to_id.get(result.action_slug)
         if action_id is None:
-            # Unknown slug — skip without logging (Step 9 adds LogService)
+            # Unknown slug — log and skip.
+            logs.emit_safe(
+                level=LogLevel.WARNING,
+                message='Reconciliation skipped candidate: unknown action slug',
+                component=_COMPONENT,
+                payload=merge_emit_component_trace_fields(
+                    {
+                        'reason': 'unknown_action_slug',
+                        'action_slug': result.action_slug,
+                        'application_id': str(application_id),
+                        'artifact_id': str(artifact.id),
+                    },
+                    component_id=_COMPONENT,
+                    target_id=str(application_id),
+                ),
+                correlation_id=correlation_id,
+            )
             errored += 1
             continue
         key: FactKey = (result.subject_id, result.account_id, result.resource_id, action_id)
@@ -536,6 +577,8 @@ async def run_reconciliation(
     *,
     application_id: UUID,
     correlation_id: str | None = None,
+    batch_size: int = 5000,
+    logs: LogService | NoOpLogService | None = None,
 ) -> ReconciliationRunSummary:
     """Run the artifact-first reconciliation pipeline for one application.
 
@@ -550,10 +593,12 @@ async def run_reconciliation(
     Does NOT commit — caller (route or CLI) owns the transaction boundary.
 
     Known race: snapshot ids captured here may lag if a writer commits a new
-    snapshot between capture and the DuckDB scan.  Mitigated by single-writer
-    kernel invariant + Step 9 advisory lock.  Documented here; revisit if
+    snapshot between capture and the DuckDB scan.  Mitigated by the
+    single-writer kernel invariant via PG advisory lock
+    (``engines/reconciliation/service.py``).  Documented here; revisit if
     concurrent lake writes are introduced.
     """
+    _logs: LogService | NoOpLogService = logs if logs is not None else NoOpLogService()
     from src.engines.reconciliation.schemas import ReconciliationRunSummary
     from src.platform.lake.schemas import (
         NORMALIZED_ACCESS_FACTS_TABLE,
@@ -569,14 +614,14 @@ async def run_reconciliation(
         artifacts_tbl = catalog.load_table(RAW_ACCESS_ARTIFACTS_TABLE)
         snap = artifacts_tbl.current_snapshot()
         observed_snapshot_id = snap.snapshot_id if snap is not None else None
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: best-effort log
         observed_snapshot_id = None
 
     try:
         facts_tbl = catalog.load_table(NORMALIZED_ACCESS_FACTS_TABLE)
         snap = facts_tbl.current_snapshot()
         current_snapshot_id = snap.snapshot_id if snap is not None else None
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: best-effort log
         current_snapshot_id = None
 
     # 2. Create run row
@@ -590,12 +635,26 @@ async def run_reconciliation(
 
     try:
         # 3. Pipeline phases
-        artifacts = _phase_load_artifacts(lake_session, application_id=application_id)
+        artifacts = _phase_load_artifacts(lake_session, application_id=application_id, batch_size=batch_size)
         artifacts_ingested = len(artifacts)
 
-        raw_candidates, artifacts_unhandled = await _phase_dispatch(session, artifacts)
-        current_keys, current_rows = _phase_load_current_state(lake_session, application_id=application_id)
-        resolved_candidates, facts_errored = await _phase_resolve_action_ids(lake_session, raw_candidates)
+        raw_candidates, artifacts_unhandled = await _phase_dispatch(
+            session,
+            artifacts,
+            logs=_logs,
+            application_id=application_id,
+            correlation_id=correlation_id,
+        )
+        current_keys, current_rows = _phase_load_current_state(
+            lake_session, application_id=application_id, batch_size=batch_size
+        )
+        resolved_candidates, facts_errored = await _phase_resolve_action_ids(
+            lake_session,
+            raw_candidates,
+            logs=_logs,
+            application_id=application_id,
+            correlation_id=correlation_id,
+        )
 
         facts_created, facts_updated, facts_revoked, unchanged_count = await _phase_persist_delta(
             session,
@@ -620,7 +679,7 @@ async def run_reconciliation(
             ),
         )
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: pipeline boundary
         # 5. Mark run as failed; re-raise so caller can handle
         await update_run_status(
             session,

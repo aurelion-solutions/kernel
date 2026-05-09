@@ -67,7 +67,7 @@ def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
         ts_str, uuid_hex = raw.split('|', 1)
         return datetime.fromisoformat(ts_str), UUID(uuid_hex)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
         raise HTTPException(status_code=400, detail='Invalid cursor') from exc
 
 

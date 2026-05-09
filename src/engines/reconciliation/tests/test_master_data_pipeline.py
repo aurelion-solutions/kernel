@@ -119,12 +119,12 @@ def seeded_persons_lake(lake_settings_iceberg, capturing_log_service):
     for ns in (('raw',),):
         try:
             catalog.create_namespace(ns)
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
             pass
 
     try:
         catalog.drop_table(RAW_PERSONS_TABLE)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     tbl = catalog.create_table(RAW_PERSONS_TABLE, schema=RAW_PERSONS_SCHEMA)

@@ -108,12 +108,12 @@ def maintenance_table(
 
     try:
         catalog.create_namespace(('test',))
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass  # namespace may already exist
 
     try:
         catalog.drop_table(test_identifier)
-    except Exception:
+    except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
         pass
 
     tbl = catalog.create_table(test_identifier, schema=test_schema, partition_spec=test_spec)

@@ -30,5 +30,5 @@ class TeeEventSink:
         for tap in self._taps:
             try:
                 await tap.emit(event)
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: event handler swallow
                 pass  # tap-sinks are observability, not load-bearing; silence is intentional

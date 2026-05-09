@@ -13,7 +13,6 @@ from src.inventory.artifact_bindings.service import (
     ArtifactBindingArtifactNotFoundError,
     ArtifactBindingDuplicateError,
     ArtifactBindingService,
-    ArtifactBindingTargetNotFoundError,
     ArtifactBindingUnknownTargetTypeError,
 )
 from src.platform.events.schemas import EventParticipantKind
@@ -311,28 +310,6 @@ async def test_create_binding_artifact_not_found_raises(
                 session,
                 artifact_id=uuid.uuid4(),
                 target_type='resource',
-                target_id=uuid.uuid4(),
-            )
-
-    assert capturing_events.emitted == []
-
-
-@pytest.mark.asyncio
-async def test_create_binding_target_not_found_raises(
-    service: ArtifactBindingService,
-    capturing_events: CapturingEventService,
-    session_factory,
-) -> None:
-    """Valid target_type='access_fact' + random target_id raises ArtifactBindingTargetNotFoundError."""
-    async with session_factory() as session:
-        app_id = await _make_application(session)
-        artifact_id = await _make_artifact(session, app_id)
-
-        with pytest.raises(ArtifactBindingTargetNotFoundError):
-            await service.create_binding(
-                session,
-                artifact_id=artifact_id,
-                target_type='access_fact',
                 target_id=uuid.uuid4(),
             )
 

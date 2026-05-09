@@ -23,16 +23,21 @@ def test_returns_table_metadata_in_deterministic_order(
     lake_settings_sqlite: LakeSettings,
     capturing_log_service: tuple[LogService, CapturingLogSink],
 ) -> None:
-    """Both standard tables present; result order: normalized.access_facts, raw.access_artifacts."""
+    """All 5 standard tables present; result order: sorted by (namespace, name)."""
     log, _ = capturing_log_service
     response = get_lake_status(lake_catalog_with_tables, lake_settings_sqlite, log_service=log)
 
-    assert len(response.tables) == 2
-    first, second = response.tables
-    assert first.namespace == 'normalized'
-    assert first.name == 'access_facts'
-    assert second.namespace == 'raw'
-    assert second.name == 'access_artifacts'
+    assert len(response.tables) == 5
+    expected = [
+        ('normalized', 'access_facts'),
+        ('raw', 'access_artifacts'),
+        ('raw', 'employees'),
+        ('raw', 'org_units'),
+        ('raw', 'persons'),
+    ]
+    for entry, (exp_ns, exp_name) in zip(response.tables, expected):
+        assert entry.namespace == exp_ns
+        assert entry.name == exp_name
 
 
 # ---------------------------------------------------------------------------

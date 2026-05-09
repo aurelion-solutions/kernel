@@ -16,7 +16,6 @@ def _root(
     level: LogLevel = LogLevel.INFO,
 ) -> object:
     return new_root_log_event(
-        event_type='test.event',
         level=level,
         message=message,
         component='test',

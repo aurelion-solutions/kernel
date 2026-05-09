@@ -12,7 +12,6 @@ import uuid
 import pytest
 from src.inventory.access_usage_facts.service import (
     AccessUsageFactDuplicateError,
-    AccessUsageFactForeignKeyError,
     AccessUsageFactService,
     AccessUsageFactWindowOrderError,
 )
@@ -180,27 +179,6 @@ async def test_create_usage_fact_happy_path_open_window(
     emitted = capturing_events.filter_by_type('inventory.access_usage_fact.created')
     assert len(emitted) == 1
     assert emitted[0].payload['window_to'] is None
-
-
-@pytest.mark.asyncio
-async def test_create_usage_fact_unknown_access_fact_raises_422(
-    service: AccessUsageFactService,
-    capturing_events: CapturingEventService,
-    session_factory,
-) -> None:
-    """Non-existent access_fact_id raises AccessUsageFactForeignKeyError; no event emitted."""
-    async with session_factory() as session:
-        with pytest.raises(AccessUsageFactForeignKeyError):
-            await service.create_usage_fact(
-                session,
-                access_fact_id=uuid.uuid4(),
-                last_seen=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
-                usage_count=1,
-                window_from=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
-                window_to=None,
-            )
-
-    assert capturing_events.emitted == []
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,6 @@ from src.platform.logs.schemas import (
 
 def _base_kwargs() -> dict:
     return {
-        'event_type': 'platform.request.started',
         'level': LogLevel.INFO,
         'message': 'Started',
         'component': 'api',
@@ -50,7 +49,6 @@ def test_valid_downstream_event_via_helper():
     root = new_root_log_event(**_base_kwargs())
     child = new_downstream_log_event(
         root,
-        event_type='connector.command.sent',
         level=LogLevel.DEBUG,
         message='Sent to connector',
         component='connector-bridge',
@@ -71,7 +69,6 @@ def test_downstream_from_parent_id_matches_downstream_from_parent_event():
     from_parent = new_downstream_log_event_from_parent_id(
         parent_event_id=root.event_id,
         correlation_id=root.correlation_id,
-        event_type='child',
         level=LogLevel.INFO,
         message='m',
         component='c',
@@ -84,7 +81,6 @@ def test_downstream_from_parent_id_matches_downstream_from_parent_event():
     )
     from_obj = new_downstream_log_event(
         root,
-        event_type='child',
         level=LogLevel.INFO,
         message='m',
         component='c',
@@ -110,7 +106,6 @@ def test_trace_root_allows_causation_id_none_downstream_sets_parent_event_id():
     e_root = uuid4()
     root = LogEvent(
         event_id=e_root,
-        event_type='t',
         timestamp=ts,
         level=LogLevel.INFO,
         message='m',
@@ -129,7 +124,6 @@ def test_trace_root_allows_causation_id_none_downstream_sets_parent_event_id():
     e_child = uuid4()
     child = LogEvent(
         event_id=e_child,
-        event_type='t2',
         timestamp=ts,
         level=LogLevel.INFO,
         message='m2',
@@ -150,7 +144,6 @@ def test_downstream_helper_always_sets_non_null_causation():
     """Propagation helper ties causation_id to the parent event (never None)."""
     root = new_root_log_event(**_base_kwargs())
     base = _base_kwargs()
-    base['event_type'] = 'child.step'
     base['message'] = 'child'
     child = new_downstream_log_event(root, **base)
     assert child.causation_id is not None
@@ -165,7 +158,6 @@ def test_required_fields_validation():
     with pytest.raises(ValidationError):
         LogEvent(
             event_id=eid,
-            event_type='t',
             timestamp=ts,
             level=LogLevel.INFO,
             message='',
@@ -188,7 +180,6 @@ def test_causation_id_must_not_equal_event_id():
     with pytest.raises(ValidationError):
         LogEvent(
             event_id=eid,
-            event_type='t',
             timestamp=ts,
             level=LogLevel.INFO,
             message='m',
@@ -210,7 +201,6 @@ def test_unknown_fields_rejected():
     with pytest.raises(ValidationError):
         LogEvent(
             event_id=uuid4(),
-            event_type='t',
             timestamp=ts,
             level=LogLevel.INFO,
             message='m',
@@ -254,7 +244,6 @@ def test_invalid_log_level_rejected():
     with pytest.raises(ValidationError):
         LogEvent(
             event_id=uuid4(),
-            event_type='test',
             timestamp=datetime.now(UTC),
             level='invalid',  # type: ignore[arg-type]
             message='test',
@@ -290,103 +279,3 @@ async def test_minimal_mock_implementation_satisfies_log_sink():
     await mock.emit(event)
     assert len(mock.emitted) == 1
     assert mock.emitted[0] == event
-
-
-# ---------------------------------------------------------------------------
-# Path A — event_type optional (Step 9)
-# ---------------------------------------------------------------------------
-
-
-def _base_kwargs_no_event_type() -> dict:
-    """Base kwargs without event_type for testing optional field."""
-    return {
-        'level': LogLevel.INFO,
-        'message': 'Started',
-        'component': 'api',
-        'initiator_type': LogParticipantKind.USER,
-        'initiator_id': 'user-1',
-        'actor_type': LogParticipantKind.SYSTEM,
-        'actor_id': 'kernel-api',
-        'target_type': LogParticipantKind.CONNECTOR,
-        'target_id': 'app-1',
-    }
-
-
-def test_log_event_accepts_event_type_none():
-    """LogEvent accepts event_type=None (operational log without event routing)."""
-    ts = datetime.now(UTC)
-    event = LogEvent(
-        event_id=uuid4(),
-        event_type=None,
-        timestamp=ts,
-        level=LogLevel.INFO,
-        message='op log',
-        component='data-lake',
-        correlation_id=uuid4(),
-        causation_id=None,
-        initiator_type=LogParticipantKind.SYSTEM,
-        initiator_id='sys',
-        actor_type=LogParticipantKind.SYSTEM,
-        actor_id='sys',
-        target_type=LogParticipantKind.SYSTEM,
-        target_id='x',
-    )
-    assert event.event_type is None
-
-
-def test_log_event_rejects_empty_event_type():
-    """LogEvent rejects empty or whitespace-only event_type."""
-    ts = datetime.now(UTC)
-    base = dict(
-        event_id=uuid4(),
-        timestamp=ts,
-        level=LogLevel.INFO,
-        message='m',
-        component='c',
-        correlation_id=uuid4(),
-        causation_id=None,
-        initiator_type=LogParticipantKind.SYSTEM,
-        initiator_id='sys',
-        actor_type=LogParticipantKind.SYSTEM,
-        actor_id='sys',
-        target_type=LogParticipantKind.SYSTEM,
-        target_id='x',
-    )
-    with pytest.raises(ValidationError):
-        LogEvent(**base, event_type='')
-    with pytest.raises(ValidationError):
-        LogEvent(**base, event_type='   ')
-
-
-def test_new_root_log_event_accepts_event_type_none():
-    """new_root_log_event returns LogEvent with event_type=None when omitted."""
-    kw = _base_kwargs_no_event_type()
-    event = new_root_log_event(**kw)
-    assert event.event_type is None
-
-
-def test_log_event_json_round_trip_omits_event_type_when_none():
-    """model_dump with exclude_none=True drops event_type key when None."""
-    ts = datetime.now(UTC)
-    event = LogEvent(
-        event_id=uuid4(),
-        event_type=None,
-        timestamp=ts,
-        level=LogLevel.INFO,
-        message='m',
-        component='c',
-        correlation_id=uuid4(),
-        causation_id=None,
-        initiator_type=LogParticipantKind.SYSTEM,
-        initiator_id='sys',
-        actor_type=LogParticipantKind.SYSTEM,
-        actor_id='sys',
-        target_type=LogParticipantKind.SYSTEM,
-        target_id='x',
-    )
-    dump_exclude = event.model_dump(mode='json', exclude_none=True)
-    assert 'event_type' not in dump_exclude
-
-    dump_include = event.model_dump(mode='json', exclude_none=False)
-    assert 'event_type' in dump_include
-    assert dump_include['event_type'] is None

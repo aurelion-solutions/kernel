@@ -93,14 +93,14 @@ class AsyncRabbitMQRPCClient:
         if self._channel is not None:
             try:
                 await self._channel.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
             self._channel = None
 
         if self._connection is not None:
             try:
                 await self._connection.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
                 pass
             self._connection = None
 
@@ -118,7 +118,7 @@ class AsyncRabbitMQRPCClient:
 
         try:
             payload = json.loads(message.body.decode('utf-8'))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 # allowed-broad: provider boundary
             if not fut.done():
                 fut.set_exception(exc)
             return
@@ -180,7 +180,7 @@ class AsyncRabbitMQRPCClient:
         except TimeoutError as exc:
             self._pending.pop(cid, None)
             raise TimeoutError(f'RPC timeout for operation={operation!r} instance_id={instance_id!r}') from exc
-        except Exception:
+        except Exception:  # noqa: BLE001 # allowed-broad: best-effort cleanup
             self._pending.pop(cid, None)
             raise
         else:
