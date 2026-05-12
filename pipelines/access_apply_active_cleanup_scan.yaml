@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# access_apply_active_cleanup_scan — periodic stale lease cleanup.
+#
+# Runs every minute.  The single step calls
+# access_plan.cleanup_stale_apply_leases, which inspects every row in
+# access_apply_active and removes rows whose associated pipeline run has
+# reached a terminal state (completed | failed | cancelled) or whose
+# started_at exceeds the configured max_apply_duration_seconds threshold.
+#
+# The action is stateless and idempotent — safe to re-run at any time.
+
+pipeline:
+  name: access_apply_active_cleanup_scan
+  version: 1
+  schema_version: 1
+
+  triggers:
+    - type: schedule
+      every: 1m
+
+  steps:
+    - name: cleanup
+      engine: access_plan
+      action: cleanup_stale_apply_leases
+      requires: []

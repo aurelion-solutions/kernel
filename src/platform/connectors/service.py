@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.platform.applications.models import Application
 from src.platform.connectors.exceptions import ConnectorInstanceNotFoundError
 from src.platform.connectors.models import ConnectorInstance
+from src.platform.connectors.registration_schemas import ConnectorCapabilityDescriptor
 from src.platform.connectors.repository import (
     delete_stale_connector_instances,
+    get_connector_descriptor,
     get_connector_instance_by_instance_id,
     list_connector_instances,
     list_online_connector_instances,
@@ -27,12 +30,25 @@ class ConnectorInstanceService:
         *,
         instance_id: str,
         tags: list[str],
+        descriptor: dict[str, Any] | None = None,
     ) -> ConnectorInstance:
         return await upsert_connector_instance(
             session,
             instance_id=instance_id,
             tags=tags,
+            descriptor=descriptor,
         )
+
+    async def get_descriptor(
+        self,
+        session: AsyncSession,
+        instance_id: str,
+    ) -> ConnectorCapabilityDescriptor | None:
+        """Return parsed ``ConnectorCapabilityDescriptor`` for ``instance_id``, or None."""
+        raw = await get_connector_descriptor(session, instance_id)
+        if raw is None:
+            return None
+        return ConnectorCapabilityDescriptor.model_validate(raw)
 
     async def cleanup_stale_instances(
         self,
@@ -71,6 +87,7 @@ class ConnectorInstanceService:
         *,
         instance_id: str,
         tags: list[str],
+        descriptor: dict[str, Any] | None = None,
         log_service: LogService | None = None,
     ) -> ConnectorInstance:
         log = log_service if log_service is not None else noop_log_service
@@ -83,6 +100,7 @@ class ConnectorInstanceService:
             session,
             instance_id=instance_id,
             tags=tags,
+            descriptor=descriptor,
         )
 
         if existing is None:

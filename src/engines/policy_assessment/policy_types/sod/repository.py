@@ -20,7 +20,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.engines.effective_access.models import EffectiveGrant
+from src.engines.access_effective.models import EffectiveGrant
 from src.engines.policy_assessment.policy_types.sod.evaluator import (
     CapabilityGrantView,
     MitigationView,

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# access_apply_pipeline — apply a single AccessPlan via the access_apply engine.
+#
+# Triggered via POST /plans/{id}/apply (HTTP trigger source).
+# Contains one static step that calls access_apply.execute_plan(plan_id).
+#
+# Single step design rationale (from ARCH_CONTEXT.md / phase_19.md E1):
+#   Phase 18 orchestrator works with statically loaded YAML pipeline definitions.
+#   Dynamic step lists are not supported in Phase 18. Per-item execution progress
+#   is tracked in PlanItemExecution rows — not via separate steps. The single
+#   step iterates items internally in DAG order; pipeline reclaim after crash
+#   continues from where execution left off (PlanItemExecution.status).
+
+pipeline:
+  name: access_apply_pipeline
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [plan_id]
+    properties:
+      plan_id:
+        type: string
+        format: uuid
+
+  steps:
+    - name: execute_plan
+      engine: access_apply
+      action: execute_plan
+      args:
+        plan_id: "${args.plan_id}"
+      requires: []

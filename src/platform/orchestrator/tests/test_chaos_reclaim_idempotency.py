@@ -29,7 +29,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from src.engines.effective_access.models import EffectiveGrant
+from src.engines.access_effective.models import EffectiveGrant
 from src.inventory.initiatives.models import InitiativeType
 from src.inventory.subjects.models import SubjectKind
 from src.platform.events.service import EventService
@@ -45,7 +45,7 @@ from src.platform.orchestrator.service import PipelineOrchestratorService
 # Constants
 # ---------------------------------------------------------------------------
 
-_ACTIONS_MODULE = 'src.engines.effective_access.actions'
+_ACTIONS_MODULE = 'src.engines.access_effective.actions'
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ class TestChaosReclaimIdempotency:
                     {
                         'name': 'project_app_step',
                         'kind': 'engine_call',
-                        'engine': 'effective_access',
+                        'engine': 'access_effective',
                         'action': 'project_application',
                         'args': step_args,
                     },

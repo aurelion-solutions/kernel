@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.core.http.errors import translate_service_errors
 from src.inventory.access_facts.deps import get_access_fact_service
+from src.inventory.access_facts.display_enrichment import enrich_access_facts
 from src.inventory.access_facts.schemas import (
     AccessFactArtifactRefRead,
     AccessFactEffect,
@@ -43,11 +44,14 @@ async def list_access_facts(
     offset: int = Query(default=0, ge=0),
     lake_session: LakeSession = DependsLakeSession,
     service: AccessFactService = DependsService,
+    pg_session: AsyncSession = DependsDB,
 ) -> list[AccessFactRead]:
     """List access facts with optional filters.
 
     action_slug: filter by action slug (e.g. 'read', 'write'). Unknown slug returns [].
     is_active: filter by lifecycle state (True=active only, False=revoked only, omit=both).
+    Display fields (subject_display, account_display, resource_display, application_code)
+    are resolved via a single PG batch lookup per entity type — never N+1.
     """
     views = await service.list_facts(
         lake_session,
@@ -61,7 +65,7 @@ async def list_access_facts(
         limit=limit,
         offset=offset,
     )
-    return [_view_to_read(v) for v in views]
+    return await enrich_access_facts(pg_session, views)
 
 
 @router.get('/{fact_id}', response_model=AccessFactRead)

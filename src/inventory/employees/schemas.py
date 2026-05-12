@@ -77,3 +77,16 @@ class EmployeeBulkResponse(BaseModel):
     row_count: int
     snapshot_id: int | None
     backend: str = 'iceberg'
+
+
+class EmployeePatch(BaseModel):
+    """Request body for PATCH /employees/{id}.
+
+    All fields are optional — only set fields are applied.
+    Context-changing fields (org_unit_id, attributes) trigger
+    subject.context.changed event emission.
+    """
+
+    org_unit_id: uuid.UUID | None = Field(default=None)
+    description: str | None = Field(default=None, max_length=255)
+    attributes: dict[str, str] | None = Field(default=None)

@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
-from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
 from src.engines.policy_assessment.policy_types.sod.service import SodEvaluatorService
 from src.inventory.access_model.capabilities.models import Capability
 from src.inventory.access_model.capability_grants.models import CapabilityGrant

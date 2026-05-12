@@ -25,7 +25,7 @@ from src.engines.access_analysis.tests.conftest import (
     seed_pending_scan_run,
     seed_subject,
 )
-from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
 from src.engines.policy_assessment.cartridge_service import PolicyCartridgeAssessmentService
 from src.engines.policy_assessment.contracts import PolicyAssessmentOutput
 from src.engines.policy_assessment.schemas import AbstractState, Decision, RiskLevel

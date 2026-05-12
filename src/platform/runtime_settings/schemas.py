@@ -50,3 +50,32 @@ class RuntimeSettingsConfig(BaseModel):
     llm_max_messages: int = Field(default=32, ge=1)
     llm_max_chars_per_message: int = Field(default=32000, ge=1)
     llm_max_total_chars: int = Field(default=128000, ge=1)
+    safe_revoke_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            'Fraction of existing effective facts that may be revoked in a single plan '
+            'before requires_confirmation is set to True. Default 0.5 (50%).'
+        ),
+    )
+    max_apply_duration_seconds: int = Field(
+        default=3600,
+        ge=60,
+        description=(
+            'Maximum expected duration (in seconds) for an access_apply pipeline run. '
+            'access_apply_active rows older than this threshold are considered stale '
+            'and deleted by the cleanup scanner regardless of pipeline run status. '
+            'Default 3600 (1 hour).'
+        ),
+    )
+    scanner_window_lookback_seconds: int = Field(
+        default=120,
+        ge=1,
+        description=(
+            'Look-back window in seconds for the scheduled-replan scanner (E4). '
+            'The scanner queries initiatives whose valid_from or valid_until falls in '
+            '[now() - lookback, now() + 60s]. Default 120 (2 minutes). '
+            'Tests override via DI to keep fixtures fast.'
+        ),
+    )

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# access_plan_application_decommissioned — fan-out replan for every NHI
+# that belongs to a decommissioned application.
+#
+# Routing key: inventory.application.decommissioned
+#
+# The matcher fires one pipeline run per event delivery.  The single step
+# calls access_plan.fanout_replan_for_application, which:
+#   1. Queries nhis WHERE application_id = <application_id>
+#   2. For each NHI calls AccessPlanService.create_plan(subject_ref=nhi.id)
+#
+# Idempotency: the action passes idempotency_key = <application_id>:<nhi_id>
+# so duplicate event deliveries do not produce duplicate plans.
+
+pipeline:
+  name: access_plan_application_decommissioned
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [application_id]
+    properties:
+      application_id:
+        type: string
+        description: "Application UUID that was decommissioned"
+      idempotency_key:
+        type: string
+        description: "Event-level idempotency key from payload"
+
+  triggers:
+    - type: mq
+      routing_key: "inventory.application.decommissioned"
+      args_from_payload:
+        application_id: application_id
+        idempotency_key: idempotency_key
+
+  steps:
+    - name: fanout_replan
+      engine: access_plan
+      action: fanout_replan_for_application
+      args:
+        application_id: "${args.application_id}"
+        idempotency_key: "${args.idempotency_key}"
+      requires: []

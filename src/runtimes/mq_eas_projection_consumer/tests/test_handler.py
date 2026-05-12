@@ -17,7 +17,7 @@ import uuid
 from uuid import UUID
 
 import pytest
-from src.engines.effective_access.schemas import IncrementalApplyKind
+from src.engines.access_effective.schemas import IncrementalApplyKind
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import noop_event_service
 from src.platform.logs.schemas import LogLevel

@@ -50,7 +50,7 @@ def test_ensure_tables_creates_both_on_first_call(
     result = ensure_tables(catalog, log_service=log_service)
 
     assert isinstance(result, EnsureTablesResult)
-    assert len(result.tables) == 5  # Step 9: tables now 5, name kept for baseline stability
+    assert len(result.tables) == 6  # Step 9+accounts: tables now 6
 
     for entry in result.tables:
         assert entry.created is True
@@ -63,7 +63,7 @@ def test_ensure_tables_creates_both_on_first_call(
 
     ensured_records = [r for r in sink.records if 'tables_ensured' in r.message]
     assert len(ensured_records) == 1
-    assert ensured_records[0].payload['created_count'] == 5  # Step 9: tables now 5
+    assert ensured_records[0].payload['created_count'] == 6  # Step 9+accounts: tables now 6
     assert ensured_records[0].payload['preexisting_count'] == 0
 
     failed_records = [r for r in sink.records if 'tables_ensure_failed' in r.message]
@@ -90,7 +90,7 @@ def test_ensure_tables_is_idempotent_on_second_call(
 
     second_result = ensure_tables(catalog, log_service=log_service)
 
-    assert len(second_result.tables) == 5  # Step 9: tables now 5, name kept for baseline stability
+    assert len(second_result.tables) == 6  # Step 9+accounts: tables now 6
     for entry in second_result.tables:
         assert entry.created is False
         assert entry.current_snapshot_id is None
@@ -101,11 +101,11 @@ def test_ensure_tables_is_idempotent_on_second_call(
     assert raw_tables.count(RAW_ACCESS_ARTIFACTS_TABLE) == 1
     assert norm_tables.count(NORMALIZED_ACCESS_FACTS_TABLE) == 1
 
-    # Fresh summary log with preexisting=5
+    # Fresh summary log with preexisting=6
     ensured_records = [r for r in sink.records if 'tables_ensured' in r.message]
     assert len(ensured_records) == 1
     assert ensured_records[0].payload['created_count'] == 0
-    assert ensured_records[0].payload['preexisting_count'] == 5  # Step 9: tables now 5
+    assert ensured_records[0].payload['preexisting_count'] == 6  # Step 9+accounts: tables now 6
 
     # Identifiers are identical between both calls
     for first_entry, second_entry in zip(first_result.tables, second_result.tables):
@@ -233,11 +233,11 @@ def test_ensure_tables_recovers_from_concurrent_create_race(
 
     result = ensure_tables(catalog, log_service=log_service)
 
-    # First table was recovered (race), remaining 4 were created normally.
+    # First table was recovered (race), remaining 5 were created normally.
     assert result.tables[0].created is False
     assert result.tables[1].created is True
 
     ensured_records = [r for r in sink.records if 'tables_ensured' in r.message]
     assert len(ensured_records) == 1
-    assert ensured_records[0].payload['created_count'] == 4  # Step 9: 5 tables, 1 race → 4 created
+    assert ensured_records[0].payload['created_count'] == 5  # Step 9+accounts: 6 tables, 1 race → 5 created
     assert ensured_records[0].payload['preexisting_count'] == 1

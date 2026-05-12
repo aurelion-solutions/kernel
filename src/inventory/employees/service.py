@@ -28,6 +28,9 @@ from src.inventory.employees.repository import (
     delete_employee_attribute as repo_delete_employee_attribute,
 )
 from src.inventory.employees.repository import (
+    get_employee_attribute_by_key as repo_get_employee_attribute_by_key,
+)
+from src.inventory.employees.repository import (
     get_employee_by_id as repo_get_employee_by_id,
 )
 from src.inventory.employees.repository import (
@@ -39,7 +42,10 @@ from src.inventory.employees.repository import (
 from src.inventory.employees.repository import (
     resolve_persons_by_external_ids as repo_resolve_persons_by_external_ids,
 )
-from src.inventory.employees.schemas import EmployeeBulkItem
+from src.inventory.employees.repository import (
+    upsert_employee_attribute as repo_upsert_employee_attribute,
+)
+from src.inventory.employees.schemas import EmployeeBulkItem, EmployeePatch
 from src.inventory.org_units.repository import (
     get_by_external_ids as repo_get_org_units_by_external_ids,
 )
@@ -98,6 +104,57 @@ class EmployeeOrgUnitNotFoundError(Exception):
     def __init__(self, missing: list[str]) -> None:
         self.missing = missing
         super().__init__(f'Unknown org_unit_external_ids: {", ".join(missing)}')
+
+
+# ---------------------------------------------------------------------------
+# Event builders
+# ---------------------------------------------------------------------------
+
+
+def _build_subject_context_changed_event(
+    employee_id: uuid.UUID,
+    correlation_id: str,
+) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='subject.context.changed',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id,
+        causation_id=None,
+        payload={
+            'subject_id': str(employee_id),
+            'subject_type': 'employee',
+        },
+        actor_kind=EventParticipantKind.COMPONENT,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(employee_id),
+    )
+
+
+def _build_employment_status_changed_event(
+    employee_id: uuid.UUID,
+    old_value: str | None,
+    new_value: str,
+    correlation_id: str,
+) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='subject.employment_status.changed',
+        occurred_at=datetime.now(UTC),
+        correlation_id=correlation_id,
+        causation_id=None,
+        payload={
+            'subject_id': str(employee_id),
+            'subject_type': 'employee',
+            'old_value': old_value,
+            'new_value': new_value,
+        },
+        actor_kind=EventParticipantKind.COMPONENT,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(employee_id),
+    )
 
 
 class EmployeeService:
@@ -241,6 +298,64 @@ class EmployeeService:
                 target_id=str(employee.id),
             )
         )
+
+    async def update_employee(
+        self,
+        session: AsyncSession,
+        employee_id: uuid.UUID,
+        patch: EmployeePatch,
+        correlation_id: str | None = None,
+    ) -> Employee:
+        """Patch employee fields and emit context-change events.
+
+        Context-changing changes (org_unit_id, attributes) emit
+        subject.context.changed. Changing attributes.employment_status
+        additionally emits subject.employment_status.changed with old/new values.
+        Changing description only does not emit context events.
+        """
+        employee = await repo_get_employee_by_id(session, employee_id)
+        if employee is None:
+            raise EmployeeNotFoundError(employee_id)
+
+        corr_id = correlation_id if correlation_id is not None else uuid.uuid4().hex
+        context_changed = False
+
+        if patch.org_unit_id is not None:
+            employee.org_unit_id = patch.org_unit_id
+            context_changed = True
+
+        if patch.description is not None:
+            employee.description = patch.description
+
+        if patch.attributes is not None:
+            for key, value in patch.attributes.items():
+                if key == 'employment_status':
+                    old_attr = await repo_get_employee_attribute_by_key(session, employee_id, 'employment_status')
+                    old_value = old_attr.value if old_attr is not None else None
+                    await repo_upsert_employee_attribute(session, employee_id=employee_id, key=key, value=value)
+                    await self._events.emit(
+                        _build_employment_status_changed_event(
+                            employee_id=employee_id,
+                            old_value=old_value,
+                            new_value=value,
+                            correlation_id=corr_id,
+                        )
+                    )
+                else:
+                    await repo_upsert_employee_attribute(session, employee_id=employee_id, key=key, value=value)
+                context_changed = True
+
+        await session.flush()
+
+        if context_changed:
+            await self._events.emit(
+                _build_subject_context_changed_event(
+                    employee_id=employee_id,
+                    correlation_id=corr_id,
+                )
+            )
+
+        return employee
 
     async def bulk_upsert_employees(
         self,

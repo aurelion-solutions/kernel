@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# access_plan_subject_triggers — fire access_plan.plan on subject-level events.
+#
+# Covered routing keys (subject.context.changed, subject.employment_status.changed,
+# subject.replan.required, inventory.nhi.expired):
+#
+# All four events carry a `subject_id` field in their payload that maps directly
+# to the `subject_ref` arg expected by access_plan.plan.
+#
+# Deduplification: upstream emitters include an `idempotency_key` field in
+# the payload.  The orchestrator's unique constraint on
+# (pipeline_name, idempotency_key) collapses duplicates.
+# When no idempotency_key is present the run uses a UUID — no dedup, safe.
+
+pipeline:
+  name: access_plan_subject_triggers
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [subject_ref]
+    properties:
+      subject_ref:
+        type: string
+        description: "Subject UUID (employee or NHI)"
+      idempotency_key:
+        type: string
+        description: "Upstream-supplied key for deduplification"
+
+  triggers:
+    - type: mq
+      routing_key: "subject.context.changed"
+      args_from_payload:
+        subject_ref: subject_id
+        idempotency_key: idempotency_key
+
+    - type: mq
+      routing_key: "subject.employment_status.changed"
+      args_from_payload:
+        subject_ref: subject_id
+        idempotency_key: idempotency_key
+
+    - type: mq
+      routing_key: "subject.replan.required"
+      args_from_payload:
+        subject_ref: subject_id
+        idempotency_key: idempotency_key
+
+    - type: mq
+      routing_key: "inventory.nhi.expired"
+      args_from_payload:
+        subject_ref: nhi_id
+        idempotency_key: idempotency_key
+
+  steps:
+    - name: plan
+      engine: access_plan
+      action: plan
+      args:
+        subject_ref: "${args.subject_ref}"
+        idempotency_key: "${args.idempotency_key}"
+      requires: []

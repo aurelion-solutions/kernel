@@ -32,7 +32,7 @@ async def _seed_minimal_refs(session) -> Refs:  # type: ignore[no-untyped-def]
     from src.inventory.access_model.capabilities.models import Capability
     from src.inventory.access_model.capability_mappings.models import CapabilityMapping
     from src.inventory.access_model.capability_scope_keys.models import CapabilityScopeKey
-    from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+    from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
     from src.inventory.actions.models import Action as RefAction
     from src.inventory.enums import Action
     from src.inventory.initiatives.models import Initiative, InitiativeType

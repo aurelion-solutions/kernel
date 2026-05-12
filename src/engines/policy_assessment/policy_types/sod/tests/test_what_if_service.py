@@ -12,7 +12,7 @@ import uuid
 from pydantic import ValidationError
 import pytest
 import sqlalchemy as sa
-from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
 from src.engines.policy_assessment.policy_types.sod.exceptions import (
     WhatIfApplicationNotFoundError,
     WhatIfCapabilityNotFoundError,

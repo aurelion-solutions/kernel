@@ -59,6 +59,18 @@ class Initiative(Base):
         sa.DateTime(timezone=True),
         nullable=True,
     )
+    # Denormalized for scanner performance (E4): who owns this initiative.
+    # Populated by access_apply when creating the initiative (F3+).
+    # NULL for initiatives created before F3 or via direct REST (tests/imports).
+    subject_ref: Mapped[str | None] = mapped_column(
+        sa.String(256),
+        nullable=True,
+    )
+    subject_type: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        nullable=True,
+    )
+
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,
@@ -75,4 +87,11 @@ class Initiative(Base):
         Index('ix_initiatives_access_fact_id', 'access_fact_id'),
         Index('ix_initiatives_type', 'type'),
         Index('ix_initiatives_valid_window', 'valid_from', 'valid_until'),
+        # Index for the scheduled replan scanner (E4).
+        # Covers queries filtering on (valid_from, valid_until) in a sliding window.
+        # NOTE: A partial-index predicate with now() is not allowed in PostgreSQL
+        # (now() is STABLE, not IMMUTABLE).  The migration creates a plain index
+        # on these two columns; scanner selectivity comes from the WHERE clause
+        # in the query itself, not the index predicate.
+        Index('idx_initiatives_replan_horizon', 'valid_from', 'valid_until'),
     )

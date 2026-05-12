@@ -234,6 +234,29 @@ class ActionRegistry:
         """Remove all registrations.  Test-only; leading underscore signals the contract."""
         self._registry.clear()
 
+    def _register_if_absent(
+        self,
+        engine: str,
+        action: str,
+        args_schema: type[BaseModel],
+        result_schema: type[BaseModel],
+        idempotent: bool,
+        handler: ActionHandler,
+    ) -> None:
+        """Register action only if not already registered.  Test-only."""
+        key = (engine, action)
+        if key not in self._registry:
+            self.register(engine, action, args_schema, result_schema, idempotent, handler)
+
+    def _snapshot_for_tests(self) -> dict[tuple[str, str], RegisteredAction]:
+        """Return a shallow copy of the registry for snapshot/restore in tests."""
+        return dict(self._registry)
+
+    def _restore_for_tests(self, snapshot: dict[tuple[str, str], RegisteredAction]) -> None:
+        """Restore registry from a snapshot produced by _snapshot_for_tests."""
+        self._registry.clear()
+        self._registry.update(snapshot)
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton

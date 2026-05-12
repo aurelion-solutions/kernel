@@ -83,6 +83,9 @@ class LakeSession:
     def fetchall(self) -> list[Any]:
         return self._conn.fetchall()
 
+    def fetchmany(self, size: int) -> list[Any]:
+        return self._conn.fetchmany(size)
+
     def fetch_arrow_table(self) -> Any:
         return self._conn.fetch_arrow_table()
 

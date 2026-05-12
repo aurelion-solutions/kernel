@@ -47,8 +47,8 @@ def _make_session(*, running_count: int = 0, batch_count: int = 0) -> MagicMock:
     """Return a mock AsyncSession whose execute() returns controlled scalar counts.
 
     Query order is fixed:
-      1. sync_apply_runs count  (running_count)
-      2. lake_batches count     (batch_count, only reached when running_count==0)
+      1. inventory_sync_runs count  (running_count)
+      2. lake_batches count         (batch_count, only reached when running_count==0)
     """
     session = MagicMock()
 
@@ -126,12 +126,12 @@ async def test_happy_path_no_active_writes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T2: gate blocked by running sync_apply_run
+# T2: gate blocked by running inventory_sync_run
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_gate_blocked_by_running_sync_apply_run() -> None:
+async def test_gate_blocked_by_running_inventory_sync_run() -> None:
     """clean_orphan_files NOT called when running_count > 0."""
     catalog = _make_catalog()
     session = _make_session(running_count=1, batch_count=0)

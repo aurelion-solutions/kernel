@@ -24,6 +24,7 @@ class AccountStatus(StrEnum):
     disabled = 'disabled'
     deleted = 'deleted'
     unknown = 'unknown'
+    invited = 'invited'
 
 
 class Account(Base):

@@ -88,7 +88,7 @@ _ENGINE_ACTION_MODULES: tuple[str, ...] = (
     'src.engines.access_analysis.assessment_preview.actions',
     'src.engines.access_analysis.capability_preview.actions',
     'src.engines.access_analysis.reports.actions',
-    'src.engines.effective_access.actions',
+    'src.engines.access_effective.actions',
     'src.engines.policy_assessment.policy_types.sod.actions',
 )
 

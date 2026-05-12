@@ -53,6 +53,11 @@ class AccountRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Enriched display fields — populated by route handler (batch lookup, not N+1).
+    application_code: str | None = None
+    application_name: str | None = None
+    subject_display: str | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -68,8 +73,13 @@ class AccountBulkItem(BaseModel):
 
     application_id: uuid.UUID
     username: str = Field(..., min_length=1, max_length=255)
-    display_name: str | None = Field(None, max_length=255)
-    email: str | None = Field(None, max_length=255)
+    external_id: str | None = Field(default=None, max_length=255)
+    display_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    status: AccountStatus | None = None
+    is_privileged: bool | None = None
+    mfa_enabled: bool | None = None
+    meta: dict[str, Any] | None = None
 
 
 class AccountBulkRequest(BaseModel):
@@ -80,6 +90,7 @@ class AccountBulkRequest(BaseModel):
 
 
 class AccountBulkResponse(BaseModel):
-    """Response for bulk account upsert."""
+    """Response for bulk account upsert (lake-first path)."""
 
-    upserted: int
+    row_count: int
+    snapshot_id: int | None = None

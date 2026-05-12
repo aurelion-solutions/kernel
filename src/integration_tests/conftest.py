@@ -84,13 +84,15 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> Async
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from src.core.db.deps import get_db
 
-    # S2: restore production handler registry (defensive — no-op when already correct)
-    from src.engines.reconciliation.handlers.acl_entry import AclEntryHandler  # noqa: PLC0415
-    from src.engines.reconciliation.handlers.db_grant import DbGrantHandler  # noqa: PLC0415
-    from src.engines.reconciliation.handlers.privilege import PrivilegeHandler  # noqa: PLC0415
-    from src.engines.reconciliation.handlers.role import RoleHandler  # noqa: PLC0415
-    from src.engines.reconciliation.handlers.sap_role import SapRoleHandler  # noqa: PLC0415
-    from src.engines.reconciliation.registry import _reset_registry_for_tests, register_handler  # noqa: PLC0415
+    # S2: restore production handler registry
+    from src.engines.inventory_reconcile.handlers.acl_entry import (
+        AclEntryHandler,  # noqa: PLC0415
+    )
+    from src.engines.inventory_reconcile.handlers.db_grant import DbGrantHandler  # noqa: PLC0415
+    from src.engines.inventory_reconcile.handlers.privilege import PrivilegeHandler  # noqa: PLC0415
+    from src.engines.inventory_reconcile.handlers.role import RoleHandler  # noqa: PLC0415
+    from src.engines.inventory_reconcile.handlers.sap_role import SapRoleHandler  # noqa: PLC0415
+    from src.engines.inventory_reconcile.registry import _reset_registry_for_tests, register_handler  # noqa: PLC0415
 
     _reset_registry_for_tests()
     register_handler('role', RoleHandler())
@@ -172,6 +174,7 @@ async def app_iceberg(engine: Any, lake_settings_iceberg: LakeSettings) -> Async
         NestedField(15, 'subject_kind_denorm', StringType(), required=True),
         NestedField(16, 'reconciliation_delta_item_id', StringType(), required=True),
         NestedField(17, 'natural_key_hash', StringType(), required=True),
+        NestedField(18, 'event_key', StringType(), required=False),
     )
     _norm_spec = PartitionSpec(
         PartitionField(source_id=15, field_id=1001, transform=IdentityTransform(), name='subject_kind_denorm')

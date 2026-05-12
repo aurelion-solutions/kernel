@@ -7,8 +7,8 @@
 Drives the full pipeline through public API:
   Stage 1  — Seed PG master data (Application, Subjects, Accounts, Resources)
   Stage 2  — POST /access-artifacts/bulk (50 artifacts)
-  Stage 3  — POST /reconciliation/runs (mode=review) → pending_apply
-  Stage 4  — POST /reconciliation/runs/{id}/apply (mode=manual_apply) → applied
+  Stage 3  — POST /inventory-reconciles/runs (mode=review) → pending_apply
+  Stage 4  — POST /inventory-reconciles/runs/{id}/apply (mode=manual_apply) → applied
   Stage 5  — POST /scan-runs + POST /scan-runs/{id}/run → findings check
   Stage 6  — Idempotency: re-apply same run → 409
   Stage 7  — Invariant: no inventory.access_fact.* events during reconciliation step
@@ -67,10 +67,10 @@ async def test_lake_only_pipeline(client_iceberg: Any, session_factory: Any, app
     assert bulk_data['backend'] == 'iceberg'
 
     # -----------------------------------------------------------------------
-    # Stage 3 — POST /reconciliation/runs (mode=review)
+    # Stage 3 — POST /inventory-reconciles/runs (mode=review)
     # -----------------------------------------------------------------------
     recon_resp = await client_iceberg.post(
-        '/api/v0/reconciliation/runs',
+        '/api/v0/inventory-reconciles/runs',
         json={'application_id': app_id, 'mode': 'review'},
     )
     assert recon_resp.status_code == 200, f'reconciliation failed: {recon_resp.text}'
@@ -91,10 +91,10 @@ async def test_lake_only_pipeline(client_iceberg: Any, session_factory: Any, app
     )
 
     # -----------------------------------------------------------------------
-    # Stage 4 — POST /reconciliation/runs/{id}/apply (mode=manual_apply)
+    # Stage 4 — POST /inventory-reconciles/runs/{id}/apply (mode=manual_apply)
     # -----------------------------------------------------------------------
     apply_resp = await client_iceberg.post(
-        f'/api/v0/reconciliation/runs/{run_id}/apply',
+        f'/api/v0/inventory-reconciles/runs/{run_id}/apply',
         json={'mode': 'manual_apply'},
     )
     assert apply_resp.status_code == 200, f'apply failed: {apply_resp.text}'
@@ -137,7 +137,7 @@ async def test_lake_only_pipeline(client_iceberg: Any, session_factory: Any, app
     # Stage 6 — Idempotency: re-apply same run → 409
     # -----------------------------------------------------------------------
     reapply_resp = await client_iceberg.post(
-        f'/api/v0/reconciliation/runs/{run_id}/apply',
+        f'/api/v0/inventory-reconciles/runs/{run_id}/apply',
         json={'mode': 'manual_apply'},
     )
     assert reapply_resp.status_code == 409, (

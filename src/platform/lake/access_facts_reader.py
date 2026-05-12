@@ -114,7 +114,7 @@ def run_get_fact(
             f.action_id, r.slug AS action_slug, f.effect,
             f.valid_from, f.valid_until, f.is_active, f.revoked_at,
             f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts') f
         LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
         WHERE f.id = ?::uuid AND f.id IS NOT NULL
         LIMIT 1
@@ -185,7 +185,7 @@ def run_list_facts(
             f.action_id, r.slug AS action_slug, f.effect,
             f.valid_from, f.valid_until, f.is_active, f.revoked_at,
             f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts') f
         LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
         {where_clause}
         ORDER BY f.id
@@ -314,7 +314,7 @@ def run_get_by_natural_key(
             f.action_id, r.slug AS action_slug, f.effect,
             f.valid_from, f.valid_until, f.is_active, f.revoked_at,
             f.observed_at, f.created_at
-        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts', skip_schema_inference=true) f
+        FROM iceberg_scan('{warehouse_uri}/normalized/access_facts') f
         LEFT JOIN ref_actions_local r ON r.id = CAST(f.action_id AS BIGINT)
         {where_clause}
         LIMIT 1

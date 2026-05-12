@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
+from datetime import UTC, datetime
 from typing import NoReturn
 import uuid
 
@@ -14,8 +15,12 @@ from src.platform.applications.exceptions import (
 from src.platform.applications.models import Application
 from src.platform.applications.repository import get_application_by_id
 from src.platform.applications.schemas import ApplicationCreate, ApplicationUpdate
+from src.platform.events.schemas import EventEnvelope, EventParticipantKind
+from src.platform.events.service import EventService, noop_event_service
 from src.platform.logs.schemas import LogLevel, LogParticipantKind
 from src.platform.logs.service import LogService, merge_emit_component_trace_fields, noop_log_service
+
+_COMPONENT = 'platform.applications'
 
 
 def _discriminate_integrity_error(exc: IntegrityError, code: str) -> NoReturn:
@@ -123,6 +128,60 @@ async def update_application(
             target_id=str(app.id),
             target_type=LogParticipantKind.APPLICATION.value,
         ),
+    )
+    return app
+
+
+async def decommission_application(
+    session: AsyncSession,
+    application_id: uuid.UUID,
+    event_service: EventService | None = None,
+    log_service: LogService | None = None,
+) -> Application:
+    """Decommission an application.
+
+    Sets is_active=False and emits inventory.application.decommissioned.
+    Raises ApplicationNotFoundError if the application does not exist.
+    """
+    log = log_service if log_service is not None else noop_log_service
+    events = event_service if event_service is not None else noop_event_service
+
+    app = await get_application_by_id(session, application_id)
+    if app is None:
+        raise ApplicationNotFoundError(f'Application {application_id} not found')
+
+    app.is_active = False
+    await session.flush()
+    await session.refresh(app)
+
+    log.emit_safe(  # allowed-emit-safe: observability
+        level=LogLevel.INFO,
+        message='Application decommissioned',
+        component=_COMPONENT,
+        payload=merge_emit_component_trace_fields(
+            {'application_id': str(app.id), 'code': app.code},
+            component_id=_COMPONENT,
+            target_id=str(app.id),
+            target_type=LogParticipantKind.APPLICATION.value,
+        ),
+    )
+
+    await events.emit(
+        EventEnvelope(
+            event_id=uuid.uuid4(),
+            event_type='inventory.application.decommissioned',
+            occurred_at=datetime.now(UTC),
+            correlation_id=uuid.uuid4().hex,
+            causation_id=None,
+            payload={
+                'application_id': str(app.id),
+                'code': app.code,
+            },
+            actor_kind=EventParticipantKind.COMPONENT,
+            actor_id=_COMPONENT,
+            target_kind=EventParticipantKind.SYSTEM,
+            target_id=str(app.id),
+        )
     )
     return app
 

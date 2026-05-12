@@ -65,10 +65,16 @@ class AccessFactRead(BaseModel):
     effect: AccessFactEffect
     is_active: bool
     revoked_at: datetime | None
-    observed_at: datetime
-    valid_from: datetime
+    observed_at: datetime | None
+    valid_from: datetime | None
     valid_until: datetime | None
     created_at: datetime
+    # display fields — nullable; populated by list endpoint batch lookup
+    subject_display: str | None = None
+    account_display: str | None = None
+    resource_display: str | None = None
+    application_code: str | None = None
+    application_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -100,9 +106,9 @@ class AccessFactView(BaseModel):
     action_id: int
     action_slug: str
     effect: AccessFactEffect
-    valid_from: datetime
+    valid_from: datetime | None
     valid_until: datetime | None
     is_active: bool
     revoked_at: datetime | None
-    observed_at: datetime
+    observed_at: datetime | None
     created_at: datetime

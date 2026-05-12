@@ -22,13 +22,13 @@ def test_platform_api_main_imports_cleanly() -> None:
 
 
 def test_reconciliation_pipeline_imports_cleanly() -> None:
-    """src.engines.reconciliation.pipeline imports without ImportError."""
-    import src.engines.reconciliation.pipeline  # noqa: F401
+    """src.engines.inventory_reconcile.pipeline imports without ImportError."""
+    import src.engines.inventory_reconcile.pipeline  # noqa: F401
 
 
-def test_sync_apply_service_imports_cleanly() -> None:
-    """src.engines.sync_apply.service imports without ImportError."""
-    import src.engines.sync_apply.service  # noqa: F401
+def test_inventory_sync_service_imports_cleanly() -> None:
+    """src.engines.inventory_sync.service imports without ImportError."""
+    import src.engines.inventory_sync.service  # noqa: F401
 
 
 def test_access_artifact_view_exported_from_schemas() -> None:
@@ -52,7 +52,7 @@ def test_handler_contract_uses_access_artifact_view() -> None:
     """Handler Protocol is typed with AccessArtifactView, not AccessArtifact ORM."""
     import typing
 
-    from src.engines.reconciliation.handlers.role import RoleHandler
+    from src.engines.inventory_reconcile.handlers.role import RoleHandler
     from src.inventory.access_artifacts.schemas import AccessArtifactView
 
     role_handler = RoleHandler()

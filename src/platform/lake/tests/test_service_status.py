@@ -27,10 +27,11 @@ def test_returns_table_metadata_in_deterministic_order(
     log, _ = capturing_log_service
     response = get_lake_status(lake_catalog_with_tables, lake_settings_sqlite, log_service=log)
 
-    assert len(response.tables) == 5
+    assert len(response.tables) == 6
     expected = [
         ('normalized', 'access_facts'),
         ('raw', 'access_artifacts'),
+        ('raw', 'accounts'),
         ('raw', 'employees'),
         ('raw', 'org_units'),
         ('raw', 'persons'),

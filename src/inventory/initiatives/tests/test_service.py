@@ -627,3 +627,139 @@ async def test_initiative_service_has_no_log_attribute(
     """InitiativeService has no _log attribute — guards against log-era reintroduction."""
     bare_service = InitiativeService()
     assert getattr(bare_service, '_log', None) is None
+
+
+# ---------------------------------------------------------------------------
+# §F3 — create_or_get + close (Phase 19 Step F3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_or_get_creates_new_initiative(
+    service: InitiativeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_or_get returns (initiative, True) when no prior row exists."""
+    async with session_factory() as session:
+        fact_id = await _make_access_fact(session)
+        initiative, created = await service.create_or_get(
+            session,
+            access_fact_id=fact_id,
+            type_=InitiativeType.requested,
+            origin='access_apply:app-test',
+        )
+        await session.commit()
+
+    assert created is True
+    assert initiative.id is not None
+    assert initiative.type == InitiativeType.requested
+
+    created_events = capturing_events.filter_by_type('inventory.initiative.created')
+    assert len(created_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_or_get_returns_existing_without_duplicate_event(
+    service: InitiativeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_or_get on existing (access_fact_id, type, origin) returns (existing, False) without emitting."""
+    async with session_factory() as session:
+        fact_id = await _make_access_fact(session)
+        first, created_1 = await service.create_or_get(
+            session,
+            access_fact_id=fact_id,
+            type_=InitiativeType.birthright,
+            origin='same-origin',
+        )
+        await session.commit()
+        first_id = first.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        second, created_2 = await service.create_or_get(
+            session,
+            access_fact_id=fact_id,
+            type_=InitiativeType.birthright,
+            origin='same-origin',
+        )
+        await session.commit()
+
+    assert created_2 is False
+    assert second.id == first_id
+    # No additional event emitted on second call
+    assert capturing_events.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_close_sets_valid_until_and_emits_expired(
+    service: InitiativeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """close sets valid_until to now, emits inventory.initiative.expired, does NOT delete row."""
+    async with session_factory() as session:
+        fact_id = await _make_access_fact(session)
+        initiative = await service.create_initiative(
+            session,
+            access_fact_id=fact_id,
+            type_=InitiativeType.requested,
+            origin='legacy',
+        )
+        await session.commit()
+        initiative_id = initiative.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        closed = await service.close(session, initiative_id)
+        await session.commit()
+
+    assert closed.valid_until is not None
+    assert closed.valid_until <= datetime.now(UTC)
+
+    expired_events = capturing_events.filter_by_type('inventory.initiative.expired')
+    assert len(expired_events) == 1
+
+    # Row must still exist — no DELETE
+    async with session_factory() as session:
+        from src.inventory.initiatives.models import Initiative
+
+        row = await session.get(Initiative, initiative_id)
+        assert row is not None
+        assert row.valid_until is not None
+
+
+@pytest.mark.asyncio
+async def test_close_already_closed_is_noop(
+    service: InitiativeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """close on an already-closed initiative is a no-op — no event emitted, valid_until unchanged."""
+    past_dt = datetime.now(UTC) - timedelta(hours=1)
+    async with session_factory() as session:
+        fact_id = await _make_access_fact(session)
+        initiative = await service.create_initiative(
+            session,
+            access_fact_id=fact_id,
+            type_=InitiativeType.requested,
+            origin='legacy',
+            valid_until=past_dt,
+        )
+        await session.commit()
+        initiative_id = initiative.id
+
+    capturing_events.emitted.clear()
+
+    async with session_factory() as session:
+        closed = await service.close(session, initiative_id)
+        await session.commit()
+
+    # No events emitted (already closed)
+    assert capturing_events.emitted == []
+    # valid_until preserved — not overwritten by new close
+    assert closed.valid_until is not None

@@ -51,6 +51,9 @@ FIELD_META: dict[str, tuple[str, str]] = {
     'llm_max_messages': ('llm_max_messages', 'int'),
     'llm_max_chars_per_message': ('llm_max_chars_per_message', 'int'),
     'llm_max_total_chars': ('llm_max_total_chars', 'int'),
+    'safe_revoke_threshold': ('safe_revoke_threshold', 'float'),
+    'max_apply_duration_seconds': ('max_apply_duration_seconds', 'int'),
+    'scanner_window_lookback_seconds': ('scanner_window_lookback_seconds', 'int'),
 }
 
 

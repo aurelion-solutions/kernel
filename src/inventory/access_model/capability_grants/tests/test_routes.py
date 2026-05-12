@@ -74,7 +74,7 @@ async def test_get_capability_grant_by_id_returns_persisted_row(client, session_
 async def test_get_capability_grants_active_only_excludes_tombstoned(client, session_factory) -> None:
     """Seed one active + one tombstoned grant; active_only=True (default) returns only active."""
     import sqlalchemy as sa
-    from src.engines.effective_access.models import EffectiveGrant
+    from src.engines.access_effective.models import EffectiveGrant
 
     # Use a past date guaranteed to be before datetime.now(UTC) at test execution time.
     tombstone_ts = datetime(2024, 1, 1, tzinfo=UTC)

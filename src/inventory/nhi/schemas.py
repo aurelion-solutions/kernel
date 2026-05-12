@@ -36,6 +36,17 @@ class NHIRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class NHIPatch(BaseModel):
+    """Request body for PATCH /nhi/{id}."""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    description: str | None = Field(None, max_length=255)
+    is_locked: bool | None = None
+    owner_employee_id: uuid.UUID | None = None
+    application_id: uuid.UUID | None = None
+    attributes: dict[str, str] | None = None
+
+
 class NHIAttributeCreate(BaseModel):
     """Request body for POST /nhi/{id}/attributes."""
 

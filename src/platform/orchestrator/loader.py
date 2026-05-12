@@ -135,8 +135,9 @@ class PipelineDefinitionLoader:
 
     _DEFAULT_SCHEMA_PATH = Path(__file__).parent.parent.parent.parent / 'pipelines' / 'schema.json'
 
-    def __init__(self, schema_path: Path | None = None) -> None:
+    def __init__(self, schema_path: Path | None = None, *, validate_action_refs: bool = True) -> None:
         self._schema_path: Path = schema_path if schema_path is not None else self._DEFAULT_SCHEMA_PATH
+        self._validate_action_refs: bool = validate_action_refs
         self._validator: Any = None  # Draft202012Validator, built lazily
 
     # ------------------------------------------------------------------
@@ -164,7 +165,8 @@ class PipelineDefinitionLoader:
         raw = self._read_yaml(path)
         self._validate_schema(raw, path)
         pipeline = raw['pipeline']
-        self._check_action_refs(pipeline, path)
+        if self._validate_action_refs:
+            self._check_action_refs(pipeline, path)
         requires_graph = self._check_requires_order(pipeline, path)
         self._check_templating(pipeline, requires_graph, path)
         self._check_triggers(pipeline, path)

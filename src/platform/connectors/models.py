@@ -34,6 +34,11 @@ class ConnectorInstance(Base):
         default=list,
         server_default=sa.text("'[]'::jsonb"),
     )
+    descriptor: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

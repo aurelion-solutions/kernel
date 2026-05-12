@@ -148,13 +148,13 @@ async def _check_active_writes(
     """Return a skip reason string if active writes are detected, else ``None``.
 
     Queries:
-    1. ``sync_apply_runs`` for any row with ``status = 'running'``.
+    1. ``inventory_sync_runs`` for any row with ``status = 'running'``.
     2. ``lake_batches`` for rows created within ``2 × orphan_older_than_hours``.
     """
-    result = await session.execute(text("SELECT COUNT(*) FROM sync_apply_runs WHERE status = 'running'"))
+    result = await session.execute(text("SELECT COUNT(*) FROM inventory_sync_runs WHERE status = 'running'"))
     running_count: int = result.scalar_one()
     if running_count > 0:
-        return "sync_apply_run in 'running' state detected"
+        return "inventory_sync_run in 'running' state detected"
 
     window_hours = 2 * orphan_older_than_hours
     result2 = await session.execute(

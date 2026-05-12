@@ -21,10 +21,7 @@ from src.inventory.accounts.repository import (
 from src.inventory.accounts.repository import (
     update_account as repo_update_account,
 )
-from src.inventory.accounts.repository import (
-    upsert_accounts_bulk as repo_upsert_accounts_bulk,
-)
-from src.inventory.accounts.schemas import AccountBulkItem, AccountPatch
+from src.inventory.accounts.schemas import AccountPatch
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
 
@@ -121,22 +118,3 @@ class AccountService:
                 )
             )
         return account
-
-    async def upsert_bulk(
-        self,
-        session: AsyncSession,
-        items: list[AccountBulkItem],
-        *,
-        correlation_id: str | None = None,  # noqa: ARG002 — reserved for future event emission
-    ) -> int:
-        """Bulk upsert accounts by (application_id, username). Returns rowcount."""
-        rows = [
-            {
-                'application_id': item.application_id,
-                'username': item.username,
-                'display_name': item.display_name,
-                'email': item.email,
-            }
-            for item in items
-        ]
-        return await repo_upsert_accounts_bulk(session, rows)

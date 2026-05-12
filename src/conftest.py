@@ -66,10 +66,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from src.core.db.base import Base
 from src.core.db.deps import get_db
-import src.engines.effective_access.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
+import src.engines.access_effective.models  # noqa: F401 — registers EffectiveGrant + partition DDL listeners
+import src.engines.access_plan.models  # noqa: F401 — registers AccessPlan + PlanItem + PlanDependency + PlanItemExecution + AccessApplyActive for create_all
+import src.engines.inventory_reconcile.models  # noqa: F401 — registers inventory_reconcile_runs + inventory_reconcile_delta_items for create_all
+import src.engines.inventory_sync.models  # noqa: F401 — registers SyncApplyRun + SyncApplyResult for create_all
 import src.engines.policy_assessment.policy_types.sod.evaluator  # noqa: F401 — keeps evaluator module discoverable for test collection
-import src.engines.reconciliation.models  # noqa: F401 — registers ReconciliationRun + ReconciliationDeltaItem for create_all
-import src.engines.sync_apply.models  # noqa: F401 — registers SyncApplyRun + SyncApplyResult for create_all
 import src.inventory.access_model.capabilities.models  # noqa: F401 — registers Capability for create_all
 import src.inventory.access_model.capability_grants.models  # noqa: F401 — registers CapabilityGrant for create_all
 import src.inventory.access_model.capability_mappings.models  # noqa: F401 — registers CapabilityMapping for create_all
@@ -265,7 +266,23 @@ async def _drop_everything(conn: sa.Connection) -> None:
     #     (lake_migration_runs depends on lake_batches which is in ORM).
     await conn.execute(sa.text('DROP TABLE IF EXISTS lake_migration_runs CASCADE'))
 
+    # 1c. Drop legacy engine tables (old reconciliation / sync_apply names that
+    #     pre-date the Phase 19 A2 rename) that may still exist in databases
+    #     created before the rename.  These tables hold a FK to lake_batches
+    #     (inventory_reconcile_runs / sync_apply_runs), so they must be removed
+    #     before Base.metadata.drop_all attempts to drop lake_batches.
+    await conn.execute(sa.text('DROP TABLE IF EXISTS sync_apply_results CASCADE'))
+    await conn.execute(sa.text('DROP TABLE IF EXISTS sync_apply_runs CASCADE'))
+    await conn.execute(sa.text('DROP TABLE IF EXISTS reconciliation_delta_items CASCADE'))
+    await conn.execute(sa.text('DROP TABLE IF EXISTS reconciliation_runs CASCADE'))
+
     # 2. Drop ORM-managed objects.
+    # Use individual CASCADE drops instead of Base.metadata.drop_all to avoid
+    # FK ordering issues when the DB contains tables that reference each other
+    # across the ORM metadata boundary (e.g. inventory_reconcile_runs → lake_batches).
+    for table in Base.metadata.sorted_tables:
+        await conn.execute(sa.text(f'DROP TABLE IF EXISTS "{table.name}" CASCADE'))
+    # Also try drop_all for any tables Base couldn't find via direct SQL:
     await conn.run_sync(lambda sync_conn: Base.metadata.drop_all(sync_conn, checkfirst=True))
 
     # 3. Drop residual partition tables that may leak past drop_all when
@@ -405,7 +422,7 @@ async def _ensure_schema_intact(engine: AsyncEngine) -> None:
 
     Several round-trip migration tests
     (``src/engines/reconciliation/tests/test_migration_delta_model.py``,
-    ``src/engines/sync_apply/tests/test_migration.py``)
+    ``src/engines/inventory_sync/tests/test_migration.py``)
     leave the database in an arbitrary state — they invoke ``drop_all`` and
     rebuild the schema themselves, and the shim tables this conftest creates
     are not in their working set.  Probe several distinctive objects; if any
@@ -534,7 +551,7 @@ async def app(engine: AsyncEngine) -> FastAPI:
     app.state.log_service = NoOpLogService()
     app.state.event_buffer = InMemoryEventBuffer()
     app.state.lake_session_factory = _test_lake_factory
-    # lake_catalog is read by get_lake_catalog() dependency in sync_apply / reconciliation / platform.lake routes.
+    # lake_catalog is read by get_lake_catalog() dependency in inventory_sync / reconciliation / platform.lake routes.
     app.state.lake_catalog = _test_catalog
     # Expose catalog for route tests that need to seed Iceberg data
     app.state.test_iceberg_catalog = _test_catalog

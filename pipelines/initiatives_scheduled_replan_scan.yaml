@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# initiatives_scheduled_replan_scan — periodic scanner for scheduled replanning.
+#
+# Runs every minute.  The single step calls
+# inventory.initiatives.scan_for_replan, which finds initiatives whose
+# valid_from / valid_until fall within a sliding window around now(), and
+# emits subject.replan.required events for each affected subject.
+#
+# The action is stateless and idempotent — safe to re-run at any time.
+# Full implementation lands in Phase 19 Step E4 (stub registered in E1).
+
+pipeline:
+  name: initiatives_scheduled_replan_scan
+  version: 1
+  schema_version: 1
+
+  triggers:
+    - type: schedule
+      every: 1m
+
+  steps:
+    - name: scan
+      engine: inventory.initiatives
+      action: scan_for_replan
+      requires: []

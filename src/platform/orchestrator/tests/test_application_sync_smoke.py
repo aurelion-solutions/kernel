@@ -42,8 +42,8 @@ import uuid
 import pyarrow as pa
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from src.engines.reconciliation.contracts import Handler, NormalizationResult
-from src.engines.reconciliation.registry import _reset_registry_for_tests, register_handler
+from src.engines.inventory_reconcile.contracts import Handler, NormalizationResult
+from src.engines.inventory_reconcile.registry import _reset_registry_for_tests, register_handler
 from src.platform.events.service import EventService
 from src.platform.events.testing import CapturingEventService
 from src.platform.lake.catalog import get_catalog, reset_catalog_cache_for_tests
@@ -65,9 +65,9 @@ from src.platform.orchestrator.service import PipelineOrchestratorService
 
 # isort: split
 # Force action registration — side-effect imports must follow other src imports.
-import src.engines.effective_access.actions  # noqa: F401, E402
-import src.engines.reconciliation.actions  # noqa: F401, E402
-import src.engines.sync_apply.actions  # noqa: F401, E402
+import src.engines.access_effective.actions  # noqa: F401, E402
+import src.engines.inventory_reconcile.actions  # noqa: F401, E402
+import src.engines.inventory_sync.actions  # noqa: F401, E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -92,9 +92,9 @@ class TestApplicationSyncLoad:
         """
         import importlib  # noqa: PLC0415
 
-        import src.engines.effective_access.actions as _ea  # noqa: PLC0415
-        import src.engines.reconciliation.actions as _ra  # noqa: PLC0415
-        import src.engines.sync_apply.actions as _sa  # noqa: PLC0415
+        import src.engines.access_effective.actions as _ea  # noqa: PLC0415
+        import src.engines.inventory_reconcile.actions as _ra  # noqa: PLC0415
+        import src.engines.inventory_sync.actions as _sa  # noqa: PLC0415
         from src.platform.orchestrator.registry import ACTION_REGISTRY  # noqa: PLC0415
 
         ACTION_REGISTRY._clear_for_tests()
@@ -334,9 +334,9 @@ class TestApplicationSyncSmoke:
         # importlib.reload does not hit DuplicateActionError.
         import importlib  # noqa: PLC0415
 
-        import src.engines.effective_access.actions as _ea  # noqa: PLC0415
-        import src.engines.reconciliation.actions as _ra  # noqa: PLC0415
-        import src.engines.sync_apply.actions as _sa  # noqa: PLC0415
+        import src.engines.access_effective.actions as _ea  # noqa: PLC0415
+        import src.engines.inventory_reconcile.actions as _ra  # noqa: PLC0415
+        import src.engines.inventory_sync.actions as _sa  # noqa: PLC0415
         from src.platform.orchestrator.registry import ACTION_REGISTRY  # noqa: PLC0415
 
         ACTION_REGISTRY._clear_for_tests()
@@ -466,7 +466,7 @@ class TestApplicationSyncSmoke:
 
             capturing = CapturingEventService()
 
-            # Patch _build_event_service in sync_apply.actions so that inventory.access_fact.*
+            # Patch _build_event_service in inventory_sync.actions so that inventory.access_fact.*
             # events from SyncApplyService flow into `capturing` rather than a noop sink.
             # AURELION_EVENTS_PROVIDER=noop (set by conftest session fixture) would otherwise
             # swallow all events emitted by engine actions that build their own EventService.
@@ -477,11 +477,11 @@ class TestApplicationSyncSmoke:
 
             with (
                 patch(
-                    'src.engines.sync_apply.actions._build_event_service',
+                    'src.engines.inventory_sync.actions._build_event_service',
                     return_value=sync_apply_event_service,
                 ),
                 patch(
-                    'src.engines.reconciliation.actions._build_event_service',
+                    'src.engines.inventory_reconcile.actions._build_event_service',
                     return_value=reconcile_event_service,
                 ),
             ):
@@ -562,7 +562,7 @@ class TestApplicationSyncSmoke:
                 assert sr.status.value == 'completed', f'Step {sr.step_name!r} status: {sr.status!r}'
 
             # --- Assert effective_grants ---
-            from src.engines.effective_access.models import EffectiveGrant  # noqa: PLC0415
+            from src.engines.access_effective.models import EffectiveGrant  # noqa: PLC0415
 
             async with session_factory() as session:
                 grant_count = (
@@ -578,7 +578,7 @@ class TestApplicationSyncSmoke:
             assert event_types.count('pipeline.step.completed') == 6
             assert 'pipeline.run.completed' in event_types
             access_fact_events = [e for e in capturing.emitted if e.event_type.startswith('inventory.access_fact.')]
-            assert len(access_fact_events) >= 1, 'Expected ≥1 inventory.access_fact.* event from sync_apply'
+            assert len(access_fact_events) >= 1, 'Expected ≥1 inventory.access_fact.* event from inventory_sync'
 
         finally:
             _reset_registry_for_tests()

@@ -86,7 +86,7 @@ async def test_re_projection_does_not_overwrite_application_id(session_factory) 
         session.add(app2)
         await session.flush()
 
-        from src.engines.effective_access.models import EffectiveGrant
+        from src.engines.access_effective.models import EffectiveGrant
 
         await session.execute(
             sa.update(EffectiveGrant).where(EffectiveGrant.id == refs.effective_grant_id).values(application_id=app2.id)
@@ -107,7 +107,7 @@ async def test_tombstoned_effective_grant_yields_tombstoned_capability_grant(ses
     async with session_factory() as session:
         refs = await _seed_minimal_refs(session)
 
-        from src.engines.effective_access.models import EffectiveGrant
+        from src.engines.access_effective.models import EffectiveGrant
 
         tombstone_ts = _NOW - timedelta(hours=1)
         await session.execute(
@@ -133,7 +133,7 @@ async def test_project_for_application_processes_all_grants(session_factory) -> 
         # Add 2 more EGs in the same application — use distinct resources to avoid UQ violation
         import uuid as _uuid
 
-        from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+        from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
         from src.inventory.enums import Action
         from src.inventory.initiatives.models import Initiative, InitiativeType
         from src.inventory.resources.models import Resource

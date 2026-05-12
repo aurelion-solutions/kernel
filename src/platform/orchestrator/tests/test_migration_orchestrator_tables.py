@@ -158,7 +158,7 @@ def _sync_assert_absent(sync_conn: Any) -> None:
 async def migration_engine() -> AsyncGenerator[AsyncEngine]:
     """Module-scoped async engine; sets up prerequisite base schema."""
     from src.core.db.base import Base  # noqa: PLC0415
-    import src.engines.effective_access.models  # noqa: F401, PLC0415
+    import src.engines.access_effective.models  # noqa: F401, PLC0415
     import src.inventory.access_model.capabilities.models  # noqa: F401, PLC0415
     import src.inventory.access_model.capability_grants.models  # noqa: F401, PLC0415
     import src.inventory.access_model.capability_mappings.models  # noqa: F401, PLC0415

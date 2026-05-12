@@ -18,8 +18,8 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.engines.effective_access.models import EffectiveGrant
-from src.engines.effective_access.repository import get_effective_grant
+from src.engines.access_effective.models import EffectiveGrant
+from src.engines.access_effective.repository import get_effective_grant
 from src.inventory.access_model.capability_grants import capability_projector
 from src.inventory.access_model.capability_grants.capability_projector import (
     CapabilityGrantDraft,

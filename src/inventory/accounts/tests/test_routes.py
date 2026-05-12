@@ -286,3 +286,33 @@ async def test_patch_account_empty_body_returns_200_no_change(app_with_accounts,
         )
     assert response.status_code == 200
     assert response.json()['status'] == 'active'
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_returns_enriched_application_fields(app_with_accounts, engine) -> None:
+    """GET /accounts returns application_code and application_name enriched from Application table."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    # Create application with distinct code and full name.
+    sf = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+    async with sf() as session:
+        app = Application(name='GitHub Enterprise', code='GHE', config={})
+        session.add(app)
+        await session.commit()
+        app_id = app.id
+
+    await _create_account(engine, app_id, username='enriched-user')
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_accounts),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get(f'/api/v0/accounts?application_id={app_id}')
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    account = data[0]
+    assert account['application_code'] == 'GHE'
+    assert account['application_name'] == 'GitHub Enterprise'
+    assert account['subject_display'] is None  # no subject linked

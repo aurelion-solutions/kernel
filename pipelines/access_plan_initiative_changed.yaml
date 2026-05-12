@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# access_plan_initiative_changed — fire replan when an initiative changes.
+#
+# Routing key: inventory.initiative.changed
+#
+# The event payload carries `initiative_id` and (optionally) `subject_ref`.
+# The fanout_replan_for_initiative action resolves the subject from the
+# initiative record and calls AccessPlanService.create_plan.
+#
+# Deduplification: `idempotency_key` from payload.  Follows the same
+# dedup contract as access_plan_subject_triggers.
+
+pipeline:
+  name: access_plan_initiative_changed
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [initiative_id]
+    properties:
+      initiative_id:
+        type: string
+        description: "Initiative UUID from the event payload"
+      subject_ref:
+        type: string
+        description: "Optional direct subject_ref hint from payload (avoids DB lookup)"
+      idempotency_key:
+        type: string
+        description: "Upstream-supplied key for deduplification"
+
+  triggers:
+    - type: mq
+      routing_key: "inventory.initiative.changed"
+      args_from_payload:
+        initiative_id: initiative_id
+        subject_ref: subject_ref
+        idempotency_key: idempotency_key
+
+  steps:
+    - name: replan_for_initiative
+      engine: access_plan
+      action: fanout_replan_for_initiative
+      args:
+        initiative_id: "${args.initiative_id}"
+        subject_ref: "${args.subject_ref}"
+        idempotency_key: "${args.idempotency_key}"
+      requires: []

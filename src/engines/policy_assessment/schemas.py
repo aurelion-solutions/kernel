@@ -119,4 +119,5 @@ class Rule(BaseModel):
 class RulePack(BaseModel):
     lifecycle: list[Rule] = Field(default_factory=list)
     risk: list[Rule] = Field(default_factory=list)
+    birthright: list[Rule] = Field(default_factory=list)
     mapping: dict[str, dict[str, Any]] = Field(default_factory=dict)

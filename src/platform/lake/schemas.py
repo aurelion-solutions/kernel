@@ -28,6 +28,7 @@ NORMALIZED_NAMESPACE: tuple[str, ...] = ('normalized',)
 RAW_PERSONS_TABLE: tuple[str, ...] = ('raw', 'persons')
 RAW_ORG_UNITS_TABLE: tuple[str, ...] = ('raw', 'org_units')
 RAW_EMPLOYEES_TABLE: tuple[str, ...] = ('raw', 'employees')
+RAW_ACCOUNTS_TABLE: tuple[str, ...] = ('raw', 'accounts')
 RAW_ACCESS_ARTIFACTS_TABLE: tuple[str, ...] = ('raw', 'access_artifacts')
 NORMALIZED_ACCESS_FACTS_TABLE: tuple[str, ...] = ('normalized', 'access_facts')
 
@@ -83,6 +84,9 @@ RAW_NORMALIZED_ACCESS_FACTS_SCHEMA_FIELDS = [
     NestedField(field_id=15, name='subject_kind_denorm', field_type=StringType(), required=True),
     NestedField(field_id=16, name='reconciliation_delta_item_id', field_type=UUIDType(), required=True),
     NestedField(field_id=17, name='natural_key_hash', field_type=StringType(), required=True),
+    # Phase 19 Step F2: wire-level idempotency key for single-fact sync.
+    # Nullable for backward compatibility — legacy rows written before F2 have no key.
+    NestedField(field_id=18, name='event_key', field_type=StringType(), required=False),
 ]
 
 NORMALIZED_ACCESS_FACTS_SCHEMA = Schema(*RAW_NORMALIZED_ACCESS_FACTS_SCHEMA_FIELDS)
@@ -159,3 +163,29 @@ RAW_EMPLOYEES_SCHEMA = Schema(
 )
 
 RAW_EMPLOYEES_PARTITION_SPEC = PartitionSpec()
+
+# ---------------------------------------------------------------------------
+# raw.accounts
+# ---------------------------------------------------------------------------
+
+RAW_ACCOUNTS_SCHEMA = Schema(
+    NestedField(field_id=1, name='id', field_type=StringType(), required=True),
+    NestedField(field_id=2, name='ingest_batch_id', field_type=StringType(), required=False),
+    NestedField(field_id=3, name='application_id', field_type=StringType(), required=True),
+    NestedField(field_id=4, name='username', field_type=StringType(), required=True),
+    NestedField(field_id=5, name='external_id', field_type=StringType(), required=False),
+    NestedField(field_id=6, name='display_name', field_type=StringType(), required=False),
+    NestedField(field_id=7, name='email', field_type=StringType(), required=False),
+    NestedField(field_id=8, name='status', field_type=StringType(), required=False),
+    NestedField(field_id=9, name='is_privileged', field_type=BooleanType(), required=False),
+    NestedField(field_id=10, name='mfa_enabled', field_type=BooleanType(), required=False),
+    NestedField(field_id=11, name='meta', field_type=StringType(), required=False),
+    NestedField(field_id=12, name='observed_at', field_type=TimestamptzType(), required=True),
+    NestedField(field_id=13, name='_inserted_at', field_type=TimestamptzType(), required=True),
+    NestedField(field_id=14, name='is_active', field_type=BooleanType(), required=True),
+    NestedField(field_id=15, name='tombstoned_at', field_type=TimestamptzType(), required=False),
+    # Composite natural key encoded as "<application_id>::<username>" for retire-on-re-upload.
+    NestedField(field_id=16, name='_natural_key_hint', field_type=StringType(), required=True),
+)
+
+RAW_ACCOUNTS_PARTITION_SPEC = PartitionSpec()

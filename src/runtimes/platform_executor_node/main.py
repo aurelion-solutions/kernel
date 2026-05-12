@@ -163,11 +163,13 @@ async def _run() -> None:
     import src.engines.access_analysis.assessment_preview.actions as _aaap_actions  # noqa: F401, PLC0415
     import src.engines.access_analysis.capability_preview.actions as _aacp_actions  # noqa: F401, PLC0415
     import src.engines.access_analysis.reports.actions as _aar_actions  # noqa: F401, PLC0415
-    import src.engines.effective_access.actions as _ea_actions  # noqa: F401, PLC0415
+    import src.engines.access_apply.actions as _aapply_actions  # noqa: F401, PLC0415
+    import src.engines.access_effective.actions as _ea_actions  # noqa: F401, PLC0415
+    import src.engines.access_plan.actions as _ap_actions  # noqa: F401, PLC0415
+    import src.engines.inventory_reconcile.actions as _recon_actions  # noqa: F401, PLC0415
+    import src.engines.inventory_sync.actions as _sa_actions  # noqa: F401, PLC0415
     import src.engines.policy_assessment.policy_types.sod.actions as _sod_actions  # noqa: F401, PLC0415
-    import src.engines.provisioning.actions as _prov_actions  # noqa: F401, PLC0415
-    import src.engines.reconciliation.actions as _recon_actions  # noqa: F401, PLC0415
-    import src.engines.sync_apply.actions as _sa_actions  # noqa: F401, PLC0415
+    import src.inventory.initiatives.actions as _init_actions  # noqa: F401, PLC0415
 
     # --- Connector RPC client (eager init for connector-backed actions) --------
     # Mirrors platform_api/main.py:73-78.  Opened once at process start so that

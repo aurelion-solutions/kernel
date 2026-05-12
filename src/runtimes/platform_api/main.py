@@ -21,7 +21,7 @@ from src.core.db.session import get_engine
 from src.core.middleware.correlation import CorrelationIdMiddleware
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient
-import src.engines.reconciliation.handlers  # noqa: F401 — bootstrap handler registry
+import src.engines.inventory_reconcile.handlers  # noqa: F401 — bootstrap handler registry
 from src.platform.connectors.client import ConnectorClient
 from src.platform.connectors.registration_consumer import run_connector_registration_consumer
 from src.platform.events.buffer import InMemoryEventBuffer, InMemoryEventBufferSink

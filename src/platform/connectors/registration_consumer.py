@@ -40,11 +40,14 @@ async def handle_connector_registration(
 
     service = ConnectorInstanceService()
 
+    descriptor_dict = payload.descriptor.model_dump() if payload.descriptor is not None else None
+
     async with session_factory() as session:
         await service.register_from_message(
             session,
             instance_id=payload.instance_id,
             tags=payload.tags,
+            descriptor=descriptor_dict,
             log_service=log,
         )
         await session.commit()

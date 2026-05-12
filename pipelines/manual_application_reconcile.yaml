@@ -26,14 +26,14 @@ pipeline:
 
   steps:
     - name: reconcile
-      engine: reconciliation
+      engine: inventory_reconcile
       action: run
       args:
         application_id: "${args.application_id}"
       requires: []
 
     - name: master_data_apply_person
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"
@@ -41,7 +41,7 @@ pipeline:
       requires: [reconcile]
 
     - name: master_data_apply_org_unit
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"
@@ -49,7 +49,7 @@ pipeline:
       requires: [reconcile]
 
     - name: master_data_apply_employee
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"

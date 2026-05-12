@@ -26,7 +26,7 @@ import uuid
 import pytest
 import sqlalchemy as sa
 from src.engines.access_analysis.services.capability_projection import CapabilityProjectionService
-from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
 from src.inventory.enums import Action
 from src.inventory.initiatives.models import Initiative, InitiativeType
 from src.inventory.resources.models import Resource

@@ -62,6 +62,15 @@ async def list_nhi(session: AsyncSession) -> list[NHI]:
     return list(result.scalars().all())
 
 
+async def list_nhi_by_application_id(
+    session: AsyncSession,
+    application_id: uuid.UUID,
+) -> list[NHI]:
+    """Return all NHIs whose application_id matches the given application UUID."""
+    result = await session.execute(select(NHI).where(NHI.application_id == application_id).order_by(NHI.id))
+    return list(result.scalars().all())
+
+
 async def list_nhi_attributes(
     session: AsyncSession,
     nhi_id: uuid.UUID,

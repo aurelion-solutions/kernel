@@ -21,7 +21,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.engines.access_analysis.data_access import iter_unused_access_fact_views
-from src.engines.effective_access.models import EffectiveGrant
+from src.engines.access_effective.models import EffectiveGrant
 from src.engines.policy_assessment.policy_types.access_risk.evaluator import (
     AccessFactView,
     AccountView,

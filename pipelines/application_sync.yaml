@@ -9,7 +9,7 @@
 #   2. master_data_apply_person    — apply person master-data delta items
 #   3. master_data_apply_org_unit  — apply org_unit master-data delta items
 #   4. master_data_apply_employee  — apply employee master-data delta items
-#   5. sync_apply             — write approved delta items to normalized.access_facts
+#   5. inventory_sync         — write approved delta items to normalized.access_facts
 #   6. project_eas            — project effective access grants for the application
 #
 # Trigger: MQ routing_key=connector.result.received
@@ -49,14 +49,14 @@ pipeline:
 
   steps:
     - name: reconcile
-      engine: reconciliation
+      engine: inventory_reconcile
       action: run
       args:
         application_id: "${args.application_id}"
       requires: []
 
     - name: master_data_apply_person
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"
@@ -64,7 +64,7 @@ pipeline:
       requires: [reconcile]
 
     - name: master_data_apply_org_unit
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"
@@ -72,15 +72,15 @@ pipeline:
       requires: [reconcile]
 
     - name: master_data_apply_employee
-      engine: reconciliation
+      engine: inventory_reconcile
       action: master_data_apply
       args:
         run_id: "${steps.reconcile.result.run_id}"
         entity_type: employee
       requires: [reconcile]
 
-    - name: sync_apply
-      engine: sync_apply
+    - name: inventory_sync
+      engine: inventory_sync
       action: apply
       args:
         reconciliation_run_id: "${steps.reconcile.result.run_id}"
@@ -88,9 +88,9 @@ pipeline:
       requires: [master_data_apply_person, master_data_apply_org_unit, master_data_apply_employee]
 
     - name: project_eas
-      engine: effective_access
+      engine: access_effective
       action: project_application
       args:
         application_id: "${args.application_id}"
         now: "${args.now}"
-      requires: [sync_apply]
+      requires: [inventory_sync]

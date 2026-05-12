@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import uuid
 
+import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.employees.repository import get_employee_by_id as repo_get_employee_by_id
@@ -31,6 +32,8 @@ from src.inventory.nhi.repository import (
 from src.inventory.nhi.repository import (
     list_nhi_attributes as repo_list_nhi_attributes,
 )
+from src.inventory.nhi.schemas import NHIPatch
+from src.inventory.subjects.models import Subject, SubjectKind
 from src.platform.applications.repository import get_application_by_id as repo_get_application_by_id
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
@@ -230,3 +233,133 @@ class NHIService:
                 target_id=str(nhi_id),
             )
         )
+
+    async def _resolve_nhi_subject_id(self, session: AsyncSession, nhi_id: uuid.UUID) -> str:
+        """Return the Subject.id string for the given NHI, or nhi_id as fallback."""
+        subject_result = await session.execute(
+            sa.select(Subject).where(
+                Subject.kind == SubjectKind.nhi,
+                Subject.principal_nhi_id == nhi_id,
+            )
+        )
+        subject = subject_result.scalar_one_or_none()
+        return str(subject.id) if subject is not None else str(nhi_id)
+
+    async def update_nhi(
+        self,
+        session: AsyncSession,
+        nhi_id: uuid.UUID,
+        patch: NHIPatch,
+        correlation_id: str | None = None,
+    ) -> NHI:
+        """PATCH NHI fields and/or attributes.
+
+        Context fields (name, application_id, owner_employee_id) emit
+        subject.context.changed (subject_type=nhi).
+        Attribute changes also emit subject.context.changed.
+        Non-context fields (description, is_locked) emit no domain event.
+        """
+        nhi = await repo_get_nhi_by_id(session, nhi_id)
+        if nhi is None:
+            raise NHINotFoundError(nhi_id)
+
+        context_changed = False
+
+        if patch.name is not None:
+            nhi.name = patch.name
+            context_changed = True
+        if patch.description is not None:
+            nhi.description = patch.description
+        if patch.is_locked is not None:
+            nhi.is_locked = patch.is_locked
+        if patch.owner_employee_id is not None:
+            emp = await repo_get_employee_by_id(session, patch.owner_employee_id)
+            if emp is None:
+                raise InvalidOwnerEmployeeIdError(patch.owner_employee_id)
+            nhi.owner_employee_id = patch.owner_employee_id
+            context_changed = True
+        if patch.application_id is not None:
+            app = await repo_get_application_by_id(session, patch.application_id)
+            if app is None:
+                raise InvalidApplicationIdError(patch.application_id)
+            nhi.application_id = patch.application_id
+            context_changed = True
+
+        if patch.attributes is not None:
+            context_changed = True
+            for key, value in patch.attributes.items():
+                try:
+                    await repo_create_nhi_attribute(session, nhi_id=nhi_id, key=key, value=value)
+                except IntegrityError:
+                    # Attribute already exists — update in place
+                    await session.execute(
+                        sa.update(NHIAttribute)
+                        .where(NHIAttribute.nhi_id == nhi_id, NHIAttribute.key == key)
+                        .values(value=value)
+                    )
+
+        await session.flush()
+        await session.refresh(nhi)
+
+        if context_changed:
+            subject_id = await self._resolve_nhi_subject_id(session, nhi_id)
+            await self._events.emit(
+                EventEnvelope(
+                    event_id=uuid.uuid4(),
+                    event_type='subject.context.changed',
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                    causation_id=None,
+                    payload={
+                        'subject_id': subject_id,
+                        'subject_type': 'nhi',
+                        'nhi_id': str(nhi_id),
+                    },
+                    actor_kind=EventParticipantKind.COMPONENT,
+                    actor_id=_COMPONENT,
+                    target_kind=EventParticipantKind.SYSTEM,
+                    target_id=subject_id,
+                )
+            )
+        return nhi
+
+    async def deactivate_nhi(
+        self,
+        session: AsyncSession,
+        nhi_id: uuid.UUID,
+        correlation_id: str | None = None,
+    ) -> NHI:
+        """Deactivate (expire) an NHI.
+
+        Sets is_locked=True and emits inventory.nhi.expired.
+        Raises NHINotFoundError if the NHI does not exist.
+        """
+        nhi = await repo_get_nhi_by_id(session, nhi_id)
+        if nhi is None:
+            raise NHINotFoundError(nhi_id)
+
+        nhi.is_locked = True
+        await session.flush()
+        await session.refresh(nhi)
+
+        subject_id = await self._resolve_nhi_subject_id(session, nhi_id)
+
+        await self._events.emit(
+            EventEnvelope(
+                event_id=uuid.uuid4(),
+                event_type='inventory.nhi.expired',
+                occurred_at=datetime.now(UTC),
+                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
+                causation_id=None,
+                payload={
+                    'nhi_id': str(nhi_id),
+                    'subject_id': subject_id,
+                    'subject_type': 'nhi',
+                },
+                actor_kind=EventParticipantKind.COMPONENT,
+                actor_id=_COMPONENT,
+                target_kind=EventParticipantKind.SYSTEM,
+                target_id=str(nhi_id),
+            )
+        )
+        return nhi

@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Integration test: sync_apply.apply is reachable via the executor's boot path.
+"""Integration test: inventory_sync.apply is reachable via the executor's boot path.
 
 Two complementary checks:
 
 1. **Static source check** — asserts that the preload line
-   ``import src.engines.sync_apply.actions as _sa_actions`` is present in
+   ``import src.engines.inventory_sync.actions as _sa_actions`` is present in
    ``platform_executor_node/main.py``.  If the line is accidentally removed,
    this test catches it immediately without needing to spin up the process.
 
 2. **Ambient registry check** — asserts that ``ACTION_REGISTRY`` already
-   contains ``(sync_apply, apply)`` by the time this test runs, WITHOUT
-   evicting ``src.engines.sync_apply.actions`` from ``sys.modules`` first.
+   contains ``(inventory_sync, apply)`` by the time this test runs, WITHOUT
+   evicting ``src.engines.inventory_sync.actions`` from ``sys.modules`` first.
 
    In a real executor process the sequence is:
      a. Python starts, ``sys.modules`` is empty.
@@ -24,8 +24,8 @@ Two complementary checks:
      e. From that point on the module is cached in ``sys.modules`` and the
         registry retains the entry for the lifetime of the process.
 
-   In the test suite, ``src.engines.sync_apply.actions`` is imported by
-   earlier tests (``test_actions.py``) OR by ``sync_apply/__init__.py``
+   In the test suite, ``src.engines.inventory_sync.actions`` is imported by
+   earlier tests (``test_actions.py``) OR by ``inventory_sync/__init__.py``
    side-effect when the package is touched.  Regardless of which test runs
    first, once the module is in ``sys.modules`` the entry survives unless
    ``_clear_for_tests()`` is called.
@@ -38,13 +38,13 @@ Two complementary checks:
 
 Together these checks protect against the regression described in Phase 18 Step
 9d F1: the action is REST-callable via the API process's transitive import of
-``sync_apply.routes`` but would silently be absent from executor-node's registry
+``inventory_sync.routes`` but would silently be absent from executor-node's registry
 if the preload line were missing from ``main.py``.
 
 Contamination notes
 -------------------
 Several other test modules call ``ACTION_REGISTRY._clear_for_tests()`` in their
-teardown without evicting ``src.engines.sync_apply.actions`` from ``sys.modules``.
+teardown without evicting ``src.engines.inventory_sync.actions`` from ``sys.modules``.
 This leaves the module cached but the registry empty; a subsequent
 ``importlib.import_module`` is a no-op and ``@register_action`` never re-runs.
 
@@ -55,9 +55,9 @@ all exception classes — is a *new* object.  Any module-level
 ``from src.platform.orchestrator.registry import …`` reference made before the
 reload points at the stale pre-reload object and is useless.
 
-The ``_ensure_sync_apply_registered`` fixture below defends against both vectors
+The ``_ensure_inventory_sync_registered`` fixture below defends against both vectors
 by always re-fetching ``ACTION_REGISTRY`` directly from ``sys.modules`` at call
-time and by force-reloading ``src.engines.sync_apply.actions`` so
+time and by force-reloading ``src.engines.inventory_sync.actions`` so
 ``@register_action`` registers into the *current* singleton unconditionally.
 The helper ``_live_registry()`` does the same for tests that need to query the
 registry.
@@ -78,8 +78,8 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _EXECUTOR_MAIN = Path(__file__).parents[1] / 'main.py'
-_PRELOAD_TOKEN = 'import src.engines.sync_apply.actions as _sa_actions'
-_ACTIONS_MODULE = 'src.engines.sync_apply.actions'
+_PRELOAD_TOKEN = 'import src.engines.inventory_sync.actions as _sa_actions'
+_ACTIONS_MODULE = 'src.engines.inventory_sync.actions'
 _REGISTRY_MODULE = 'src.platform.orchestrator.registry'
 
 
@@ -105,13 +105,13 @@ def _live_registry() -> Any:
 
 
 @pytest.fixture(autouse=True)
-def _ensure_sync_apply_registered() -> Iterator[None]:
-    """Guarantee that sync_apply.apply is in ACTION_REGISTRY before each test.
+def _ensure_inventory_sync_registered() -> Iterator[None]:
+    """Guarantee that inventory_sync.apply is in ACTION_REGISTRY before each test.
 
     Defends against two contamination vectors:
 
     1. Another test cleared the registry via ``_clear_for_tests()`` but left
-       ``src.engines.sync_apply.actions`` in ``sys.modules``, so a plain
+       ``src.engines.inventory_sync.actions`` in ``sys.modules``, so a plain
        ``importlib.import_module`` call would be a no-op.
 
     2. ``test_registry.py::test_no_side_effects_on_import`` called
@@ -120,7 +120,7 @@ def _ensure_sync_apply_registered() -> Iterator[None]:
        ``from … import ACTION_REGISTRY`` references now point at the stale
        pre-reload object.
 
-    Fix: force-reload ``src.engines.sync_apply.actions`` (pop + re-import) so
+    Fix: force-reload ``src.engines.inventory_sync.actions`` (pop + re-import) so
     ``@register_action`` runs and registers into the current live singleton.
     Always use ``_live_registry()`` to access the singleton — never a stale
     module-level binding.
@@ -137,7 +137,7 @@ def _ensure_sync_apply_registered() -> Iterator[None]:
     LiveActionNotFoundError: type[Exception] = reg_mod.ActionNotFoundError
 
     try:
-        _live_registry().get('sync_apply', 'apply')
+        _live_registry().get('inventory_sync', 'apply')
     except LiveActionNotFoundError:
         # Registry was cleared by another test but the module is still cached.
         # Evict and re-import to re-trigger @register_action on the live singleton.
@@ -145,7 +145,7 @@ def _ensure_sync_apply_registered() -> Iterator[None]:
         importlib.import_module(_ACTIONS_MODULE)
 
     # Sanity: the live registry must now contain the entry.
-    _live_registry().get('sync_apply', 'apply')
+    _live_registry().get('inventory_sync', 'apply')
 
     yield
 
@@ -155,11 +155,11 @@ def _ensure_sync_apply_registered() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def test_executor_main_contains_sync_apply_preload() -> None:
-    """The preload line for sync_apply.actions is present in platform_executor_node/main.py.
+def test_executor_main_contains_inventory_sync_preload() -> None:
+    """The preload line for inventory_sync.actions is present in platform_executor_node/main.py.
 
     If this line is removed, the executor process will start without registering
-    the ``sync_apply.apply`` action, causing ActionNotFoundError at pipeline
+    the ``inventory_sync.apply`` action, causing ActionNotFoundError at pipeline
     dispatch time.  This static check catches the regression before any runtime
     test runs.
     """
@@ -176,17 +176,17 @@ def test_executor_main_contains_sync_apply_preload() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sync_apply_action_in_registry_via_cached_module_import() -> None:
-    """sync_apply.apply is in ACTION_REGISTRY after a cache-hit import of the actions module.
+def test_inventory_sync_action_in_registry_via_cached_module_import() -> None:
+    """inventory_sync.apply is in ACTION_REGISTRY after a cache-hit import of the actions module.
 
     The test deliberately does NOT call ``sys.modules.pop`` before importing
-    ``src.engines.sync_apply.actions``.  This mirrors the executor process
+    ``src.engines.inventory_sync.actions``.  This mirrors the executor process
     after ``_run()`` fires the preload import: subsequent calls to
     ``importlib.import_module`` on that module are no-ops (cache hit) and the
     registry entry survives.
 
     If this test fails with ActionNotFoundError it means either:
-    - ``@register_action`` in ``sync_apply/actions.py`` is broken, or
+    - ``@register_action`` in ``inventory_sync/actions.py`` is broken, or
     - something else cleared the registry AND the module was not re-imported
       (which cannot happen via the production executor path).
 
@@ -207,8 +207,8 @@ def test_sync_apply_action_in_registry_via_cached_module_import() -> None:
     # Always query via the live singleton to avoid stale references after any
     # registry-module reload done by other tests.
     registry = _live_registry()
-    rec = registry.get('sync_apply', 'apply')
+    rec = registry.get('inventory_sync', 'apply')
 
-    assert rec.engine == 'sync_apply'
+    assert rec.engine == 'inventory_sync'
     assert rec.action == 'apply'
     assert rec.idempotent is True

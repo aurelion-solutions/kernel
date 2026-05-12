@@ -61,7 +61,7 @@ pipeline:
       requires: [detect_terminated]
 
     - name: delete_account
-      engine: provisioning
+      engine: access_apply
       action: delete_account
       args:
         application_id: "${args.application_id}"

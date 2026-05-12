@@ -21,7 +21,7 @@ import sqlalchemy as sa
 async def test_evaluate_valid_body_returns_violations(client, session_factory) -> None:  # type: ignore[no-untyped-def]
     """POST /sod/evaluate valid body → 200, list of SodViolationResponse."""
 
-    from src.engines.effective_access.models import EffectiveGrant, EffectiveGrantEffect
+    from src.engines.access_effective.models import EffectiveGrant, EffectiveGrantEffect
     from src.inventory.access_model.capabilities.models import Capability
     from src.inventory.access_model.capability_grants.models import CapabilityGrant
     from src.inventory.access_model.capability_mappings.models import CapabilityMapping
