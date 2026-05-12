@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aurelion.dev/schemas/pipeline.schema.json",
+  "title": "Aurelion Pipeline Definition",
+  "description": "Grammar for pipeline YAML definitions loaded by the native orchestrator. Structural grammar only — per-action arg schemas are merged at the well-known endpoint (Step 11).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pipeline"],
+  "properties": {
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "schema_version", "steps"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Pipeline identifier. Lowercase, digits, underscores; must start with a letter."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Pipeline version. Monotonically increasing integer."
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Schema version. Must be 1 for this grammar."
+        },
+        "args": {
+          "type": "object",
+          "description": "Pipeline-level argument declarations. Values may use ${args.X} or ${steps.<name>.result.X} template syntax (validated by loader, not by this schema)."
+        },
+        "triggers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/trigger" },
+          "description": "Zero or more trigger declarations. 'http' is not a valid trigger type here — manual triggers are universal (POST /pipeline-runs) and never declared in YAML."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" },
+          "description": "Ordered list of pipeline steps. At least one step is required."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "trigger": {
+      "oneOf": [
+        { "$ref": "#/$defs/trigger_mq" },
+        { "$ref": "#/$defs/trigger_schedule" }
+      ]
+    },
+    "trigger_mq": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "routing_key"],
+      "properties": {
+        "type": { "const": "mq" },
+        "routing_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "RabbitMQ routing key to subscribe on."
+        },
+        "match": {
+          "type": "object",
+          "description": "Optional JSONB predicate to filter matching messages."
+        },
+        "args_from_payload": {
+          "type": "object",
+          "description": "Map pipeline arg names to dotted payload paths extracted from the MQ message body.",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "trigger_schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "oneOf": [
+        {
+          "required": ["cron"],
+          "not": { "required": ["every"] }
+        },
+        {
+          "required": ["every"],
+          "not": { "required": ["cron"] }
+        }
+      ],
+      "properties": {
+        "type": { "const": "schedule" },
+        "cron": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Cron expression (5-field). Mutually exclusive with 'every'."
+        },
+        "every": {
+          "type": "string",
+          "pattern": "^\\d+(s|m|h|d)$",
+          "description": "Interval expression (e.g. '30m', '1h'). Mutually exclusive with 'cron'."
+        },
+        "args": {
+          "type": "object",
+          "description": "Args to pass to the pipeline run on schedule trigger."
+        }
+      }
+    },
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/step_engine_call" },
+        { "$ref": "#/$defs/step_wait_for_event" }
+      ]
+    },
+    "step_engine_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "engine", "action"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Step identifier. Unique within the pipeline."
+        },
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target engine name (must match a registered engine)."
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Action name within the engine."
+        },
+        "args": {
+          "type": "object",
+          "description": "Step-level args. May use template syntax ${args.X} or ${steps.<name>.result.X}."
+        },
+        "retry": {
+          "type": "object",
+          "description": "Retry policy. Schema expanded in Step 5+ (registry)."
+        },
+        "on_error": {
+          "type": "string",
+          "enum": ["fail", "continue"],
+          "description": "What to do if the step fails. Defaults to 'fail'."
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of step names that must complete before this step runs."
+        }
+      }
+    },
+    "step_wait_for_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "event", "timeout"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Step identifier. Unique within the pipeline."
+        },
+        "type": { "const": "wait_for_event" },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Event type to wait for (routing key on aurelion.events)."
+        },
+        "match": {
+          "type": "object",
+          "description": "Optional predicate matched against the event payload."
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^\\d+(s|m|h|d)$",
+          "description": "Maximum wait duration (e.g. '10m', '1h'). REQUIRED — no infinite waits."
+        },
+        "on_timeout": {
+          "type": "string",
+          "enum": ["fail"],
+          "description": "Action on timeout. Currently only 'fail' is supported."
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of step names that must complete before this step runs."
+        }
+      }
+    }
+  }
+}

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.engines.reconciliation.models import (
     ReconciliationDeltaItem,
@@ -141,27 +141,6 @@ async def bulk_insert_delta_items(
     """
     session.add_all(items)
     await session.flush()
-
-
-async def bulk_approve_run_pending_items(
-    session: AsyncSession,
-    reconciliation_run_id: UUID,
-) -> int:
-    """Set all ``pending`` delta items for a run to ``approved``.
-
-    Returns the number of rows updated.
-    Flushes but does not commit — caller owns the transaction boundary.
-    """
-    stmt = (
-        update(ReconciliationDeltaItem)
-        .where(ReconciliationDeltaItem.reconciliation_run_id == reconciliation_run_id)
-        .where(ReconciliationDeltaItem.status == ReconciliationDeltaItemStatus.pending)
-        .values(status=ReconciliationDeltaItemStatus.approved)
-        .execution_options(synchronize_session='fetch')
-    )
-    result = await session.execute(stmt)
-    await session.flush()
-    return result.rowcount  # type: ignore[return-value]
 
 
 async def list_delta_items(

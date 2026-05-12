@@ -14,6 +14,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.core.context import current_correlation_id
 from src.engines.ingest.models import StagingConnectorResult
 from src.engines.ingest.schemas import ArtifactsBulkPayload, ConnectorResultIngestRequest, LakeRefLocation
 from src.inventory.access_artifacts.service import (
@@ -87,6 +88,44 @@ def _build_artifacts_batch_ingested_event(
         actor_id='engines.ingest',
         target_kind=EventParticipantKind.SYSTEM,
         target_id=str(batch_id),
+    )
+
+
+def _build_connector_result_received_event(
+    *,
+    result_id: uuid.UUID,
+    application_id: uuid.UUID,
+    task_id: uuid.UUID,
+    correlation_id: str | None,
+) -> EventEnvelope:
+    """Build the connector.result.received EventEnvelope.
+
+    Single builder for this event type — emitted only from engines/ingest/service.py
+    on the inline/lake_ref success path.
+    """
+    resolved_correlation_id: str
+    if correlation_id is not None:
+        resolved_correlation_id = correlation_id
+    else:
+        ctx_id = current_correlation_id()
+        resolved_correlation_id = ctx_id if ctx_id is not None else uuid.uuid4().hex
+
+    return EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type='connector.result.received',
+        occurred_at=datetime.now(UTC),
+        correlation_id=resolved_correlation_id,
+        causation_id=None,
+        payload={
+            'result_id': str(result_id),
+            'application_id': str(application_id),
+            'task_id': str(task_id),
+            'now': datetime.now(UTC).isoformat(),
+        },
+        actor_kind=EventParticipantKind.COMPONENT,
+        actor_id=_COMPONENT,
+        target_kind=EventParticipantKind.SYSTEM,
+        target_id=str(application_id),
     )
 
 
@@ -283,6 +322,14 @@ async def ingest_connector_result(
         status=request.status,
         result_id=result_id,
         payload=payload_to_store,
+    )
+    await ev.emit(
+        _build_connector_result_received_event(
+            result_id=result_id,
+            application_id=application_id,
+            task_id=task_id,
+            correlation_id=request.code,
+        )
     )
     # allowed-emit-safe: observability
     log.emit_safe(

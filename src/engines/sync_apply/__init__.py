@@ -30,6 +30,9 @@ from src.engines.sync_apply.schemas import (
 )
 from src.engines.sync_apply.service import SyncApplyService
 
+# Side-effect import: registers sync_apply actions in ACTION_REGISTRY at import time.
+from src.engines.sync_apply import actions as _actions  # noqa: F401, E402
+
 __all__ = [
     'SyncApplyService',
     'SyncApplyApplyRequest',

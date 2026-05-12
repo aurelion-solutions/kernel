@@ -430,7 +430,15 @@ async def apply_master_data_delta(
     run = await get_run(session, run_id)
     if run is None:
         raise LookupError(f'ReconciliationRun {run_id} not found')
-    if run.status != ReconciliationRunStatus.pending_apply:
+    # Accept pending_apply (first call) or applied/partially_applied (fan-out: subsequent
+    # entity_type call after a sibling already advanced the status). In the fan-out case
+    # there are simply no pending items left for this entity_type — the result is a no-op.
+    _ACCEPTABLE_STATUSES = {
+        ReconciliationRunStatus.pending_apply,
+        ReconciliationRunStatus.applied,
+        ReconciliationRunStatus.partially_applied,
+    }
+    if run.status not in _ACCEPTABLE_STATUSES:
         raise ValueError(f'Run {run_id} is not in pending_apply status (got {run.status})')
 
     dispatch = {

@@ -134,15 +134,40 @@ async def _make_access_fact(  # type: ignore[no-untyped-def]
     valid_from: datetime = _NOW,
     valid_until: datetime | None = None,
 ) -> UUID:
-    """Synthesize an access_fact UUID.
+    """Insert a row into the access_facts shim table and return its id.
 
-    Phase 15 Step 16: PG ``access_facts`` table was dropped — facts now live in
-    Iceberg. ``source_access_fact_id`` on EffectiveGrant is a plain UUID with no
-    FK, so we just return a fresh id.
+    Phase 15 Step 16: PG ``access_facts`` table was replaced by Iceberg as the
+    primary store, but a shim table is maintained in tests for JOIN-based reads
+    (see src/conftest.py ``_ACCESS_FACTS_DDL``).  The repository's
+    ``fetch_access_fact_with_initiatives`` queries via raw SQL JOIN, so the row
+    must exist in the shim for projection service tests to succeed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
-    return _uuid.uuid4()
+    import sqlalchemy as sa  # noqa: PLC0415
+
+    fact_id = _uuid.uuid4()
+    row = await session.execute(sa.text("SELECT id FROM ref_actions WHERE slug = 'read'"))
+    action_id = row.scalar_one()
+    await session.execute(
+        sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, valid_from, valid_until, observed_at) '
+            'VALUES (:id, :sid, :rid, :aid, :effect, :vf, :vu, :oa)'
+        ),
+        {
+            'id': fact_id,
+            'sid': subject_id,
+            'rid': resource_id,
+            'aid': action_id,
+            'effect': effect,
+            'vf': valid_from,
+            'vu': valid_until,
+            'oa': _NOW,
+        },
+    )
+    await session.flush()
+    return fact_id
 
 
 async def _make_initiative(  # type: ignore[no-untyped-def]

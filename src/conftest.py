@@ -92,6 +92,7 @@ from src.platform.lake.duckdb_session import LakeSessionFactory
 import src.platform.llm.models  # noqa: F401 — registers LLMModel for create_all
 import src.platform.logs.models  # noqa: F401 — log_event_buffer metadata for create_all
 from src.platform.logs.service import NoOpLogService
+import src.platform.orchestrator.models  # noqa: F401 — registers PipelineRun + StepRun + PipelineEventWaiter for create_all
 import src.platform.runtime_settings.models  # noqa: F401 — registers RuntimeSetting for create_all
 from src.platform.secrets.factory import register_default_providers
 from src.routers.v0 import router

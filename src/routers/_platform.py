@@ -13,6 +13,8 @@ from src.platform.llm.routes import profiles_router as llm_execution_profiles_ro
 from src.platform.logs.buffer_recent_routes import router as platform_logs_router
 from src.platform.logs.buffer_routes import router as log_buffer_router
 from src.platform.logs.routes import router as logs_router
+from src.platform.orchestrator.routes import router as orchestrator_router
+from src.platform.orchestrator.routes import well_known_router as orchestrator_well_known_router
 from src.platform.runtime_settings.routes import router as runtime_settings_router
 from src.platform.secrets.provider_config.routes import router as secrets_providers_router
 
@@ -27,6 +29,8 @@ def include_platform_routers(router: APIRouter) -> None:
     router.include_router(platform_events_router)
     router.include_router(platform_logs_router)
     router.include_router(runtime_settings_router)
+    router.include_router(orchestrator_router)
+    router.include_router(orchestrator_well_known_router)
     router.include_router(secrets_providers_router)
     router.include_router(llm_models_router)
     router.include_router(llm_execution_profiles_router)

@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# nightly_orphan_scan — system-wide assessment-preview sweep on a cron schedule.
+#
+# Two parallel detector steps (orphan accounts and terminated-subject accounts)
+# run independently. Both detectors are read-only — they call into
+# access_analysis.assessment_preview services without mutating state.
+#
+# Trigger: schedule, every night at 02:30 UTC.
+
+pipeline:
+  name: nightly_orphan_scan
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    properties:
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 5000
+        default: 1000
+
+  triggers:
+    - type: schedule
+      cron: "30 2 * * *"
+      args:
+        limit: 1000
+
+  steps:
+    - name: detect_orphans
+      engine: access_analysis.assessment_preview
+      action: detect_orphans
+      args:
+        limit: "${args.limit}"
+      requires: []
+
+    - name: detect_terminated
+      engine: access_analysis.assessment_preview
+      action: detect_terminated
+      args:
+        limit: "${args.limit}"
+      requires: []

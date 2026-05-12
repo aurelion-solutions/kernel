@@ -81,7 +81,6 @@ async def lifespan(app: FastAPI):
     app.state.rpc_client = rpc_client
     app.state.connector_client = ConnectorClient(rpc_client=rpc_client)
 
-    # RuntimeSettings — seed defaults and load typed snapshot
     from src.core.db.session import get_session_factory  # noqa: PLC0415
 
     async with get_session_factory()() as session:
@@ -151,7 +150,85 @@ async def lifespan(app: FastAPI):
     )
     connector_registration_thread.start()
 
+    # Pipeline beat — periodic schedule-firing task.
+    from pathlib import Path  # noqa: PLC0415
+
+    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: PLC0415
+    from src.platform.events.service import EventService  # noqa: PLC0415
+    from src.platform.orchestrator.beat import beat_loop  # noqa: PLC0415
+    from src.platform.orchestrator.loader import PipelineDefinitionLoader  # noqa: PLC0415
+    from src.platform.orchestrator.matcher import matcher_loop  # noqa: PLC0415
+    from src.platform.orchestrator.service import PipelineOrchestratorService  # noqa: PLC0415
+
+    _pipeline_loader = PipelineDefinitionLoader()
+    try:
+        _pipeline_defs = _pipeline_loader.load_dir(Path('pipelines'))
+    except Exception:  # noqa: BLE001 # allowed-broad: task-loop guard
+        from src.platform.logs.schemas import LogLevel as _LogLevel  # noqa: PLC0415
+
+        log_service.emit_safe(  # allowed-emit-safe: best-effort warning
+            level=_LogLevel.WARNING,
+            message='Pipeline load failed; beat will idle',
+            component='platform_api',
+        )
+        _pipeline_defs = {}
+
+    app.state.pipeline_definitions = _pipeline_defs
+
+    def _beat_service_factory(session: AsyncSession) -> PipelineOrchestratorService:
+        return PipelineOrchestratorService(
+            session=session,
+            events=EventService(sink=event_sink_factory.get('mq')),
+            logs=log_service,
+        )
+
+    _beat_task = asyncio.create_task(
+        beat_loop(
+            get_session_factory(),
+            lambda: app.state.pipeline_definitions,
+            _beat_service_factory,
+            log_service,
+        ),
+        name='orchestrator-beat',
+    )
+    app.state.beat_task = _beat_task
+
+    def _matcher_service_factory(session: AsyncSession) -> PipelineOrchestratorService:
+        return PipelineOrchestratorService(
+            session=session,
+            events=EventService(sink=event_sink_factory.get('mq')),
+            logs=log_service,
+        )
+
+    _matcher_binding_keys = [k.strip() for k in settings.rabbitmq.orchestrator_matcher_bindings.split(',') if k.strip()]
+    _matcher_task = asyncio.create_task(
+        matcher_loop(
+            mq_url=url,
+            events_exchange=mq.events_exchange,
+            matcher_queue=settings.rabbitmq.orchestrator_matcher_queue,
+            binding_keys=_matcher_binding_keys,
+            session_factory=get_session_factory(),
+            defs_provider=lambda: app.state.pipeline_definitions,
+            service_factory=_matcher_service_factory,
+            log_service=log_service,
+        ),
+        name='orchestrator-matcher',
+    )
+    app.state.matcher_task = _matcher_task
+
     yield
+
+    _matcher_task.cancel()
+    try:
+        await _matcher_task
+    except asyncio.CancelledError:
+        pass  # expected shutdown path
+
+    _beat_task.cancel()
+    try:
+        await _beat_task
+    except asyncio.CancelledError:
+        pass  # expected shutdown path
 
     lake_session_factory.close_all()
     await rpc_client.close()

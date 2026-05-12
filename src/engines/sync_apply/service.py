@@ -39,7 +39,6 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.engines.reconciliation.models import ReconciliationDeltaOperation
-from src.engines.reconciliation.repository import bulk_approve_run_pending_items
 from src.engines.sync_apply.exceptions import (
     SyncApplyAlreadyExecutedError,
     SyncApplyDeltaItemNotApplicableError,
@@ -58,6 +57,7 @@ from src.engines.sync_apply.models import (
     SyncApplyRunStatus,
 )
 from src.engines.sync_apply.repository import (
+    bulk_approve_run_pending_items,
     bulk_insert_results,
     create_apply_run,
     get_active_apply_run_for_reconciliation,

@@ -82,7 +82,7 @@ def _fact_row_from_row(row: sa.engine.Row) -> AccessFactRow:  # type: ignore[typ
     return AccessFactRow(
         id=row.id,
         subject_id=row.subject_id,
-        subject_kind=row.subject_kind,
+        subject_kind=SubjectKind(row.subject_kind) if isinstance(row.subject_kind, str) else row.subject_kind,
         account_id=row.account_id,
         application_id=row.application_id,
         resource_id=row.resource_id,

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.engines.reconciliation.models import (
     ReconciliationDeltaItem,
@@ -204,6 +204,31 @@ async def update_reconciliation_run_status(
         run.status = ReconciliationRunStatus(status)
         run.finished_at = datetime.now(UTC)
         await session.flush()
+
+
+async def bulk_approve_run_pending_items(
+    session: AsyncSession,
+    reconciliation_run_id: UUID,
+) -> int:
+    """Set all ``pending`` delta items for a run to ``approved``.
+
+    Returns rowcount. Flushes; caller owns commit.
+
+    Lives here (sync_apply) rather than in reconciliation/repository because
+    this promotion is owned by the apply side — bulk-approval is part of the
+    apply workflow, not the reconciliation pipeline. Sibling rationale to
+    ``mark_delta_items_applied`` (see line 155 docstring).
+    """
+    stmt = (
+        update(ReconciliationDeltaItem)
+        .where(ReconciliationDeltaItem.reconciliation_run_id == reconciliation_run_id)
+        .where(ReconciliationDeltaItem.status == ReconciliationDeltaItemStatus.pending)
+        .values(status=ReconciliationDeltaItemStatus.approved)
+        .execution_options(synchronize_session='fetch')
+    )
+    result = await session.execute(stmt)
+    await session.flush()
+    return result.rowcount  # type: ignore[return-value]
 
 
 async def get_non_approved_items(

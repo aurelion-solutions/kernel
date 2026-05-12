@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# account_offboarding_with_grace — MQ-driven offboarding with a 7-day grace window.
+#
+# Steps:
+#   1. detect_terminated   — confirm the subject is in a terminal status
+#   2. wait_grace_window   — wait_for_event step parks the run for up to 7 days
+#                            waiting for a `subject.reactivated` cancel-signal;
+#                            if the timeout expires, the run advances naturally
+#                            and the delete step fires
+#   3. delete_account      — drop the account through the provisioning connector
+#
+# Trigger: MQ routing_key=subject.terminated
+#   args_from_payload maps:
+#     application_id ← payload.application_id
+#     username       ← payload.username
+
+pipeline:
+  name: account_offboarding_with_grace
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [application_id, username]
+    properties:
+      application_id:
+        type: string
+        format: uuid
+      username:
+        type: string
+        minLength: 1
+
+  triggers:
+    - type: mq
+      routing_key: subject.terminated
+      match: {}
+      args_from_payload:
+        application_id: application_id
+        username: username
+
+  steps:
+    - name: detect_terminated
+      engine: access_analysis.assessment_preview
+      action: detect_terminated
+      args:
+        application_id: "${args.application_id}"
+        limit: 100
+      requires: []
+
+    - name: wait_grace_window
+      type: wait_for_event
+      event: subject.reactivated
+      match:
+        application_id: "${args.application_id}"
+        username: "${args.username}"
+      timeout: 7d
+      on_timeout: fail
+      requires: [detect_terminated]
+
+    - name: delete_account
+      engine: provisioning
+      action: delete_account
+      args:
+        application_id: "${args.application_id}"
+        username: "${args.username}"
+      requires: [wait_grace_window]

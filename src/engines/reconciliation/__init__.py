@@ -39,3 +39,6 @@ __all__ = [
     'list_registered_types',
     'register_handler',
 ]
+
+# Side-effect import: registers reconciliation actions in ACTION_REGISTRY at import time.
+from src.engines.reconciliation import actions as _actions  # noqa: F401, E402

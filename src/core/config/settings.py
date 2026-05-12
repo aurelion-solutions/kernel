@@ -60,6 +60,8 @@ class RabbitMQSettings(BaseModel):
     logs_exchange: str = 'aurelion.logs'
     connector_commands_exchange: str = 'aurelion.connectors.commands'
     connector_responses_exchange: str = 'aurelion.connectors.responses'
+    orchestrator_matcher_queue: str = 'aurelion.orchestrator.matcher'
+    orchestrator_matcher_bindings: str = '#'
 
     @property
     def url(self) -> str:

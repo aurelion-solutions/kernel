@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# manual_application_reconcile — reconciliation-only sweep, kicked off by hand.
+#
+# Differs from application_sync in two ways:
+#   * No automatic trigger — every run is created via POST /pipeline-runs
+#     (or `al pipelines run --name manual_application_reconcile ...`).
+#   * Stops after master-data fan-out: nothing is written to access_facts
+#     and the projection step is skipped. Useful for previewing the delta
+#     without touching effective-grants state.
+
+pipeline:
+  name: manual_application_reconcile
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [application_id]
+    properties:
+      application_id:
+        type: string
+        format: uuid
+
+  steps:
+    - name: reconcile
+      engine: reconciliation
+      action: run
+      args:
+        application_id: "${args.application_id}"
+      requires: []
+
+    - name: master_data_apply_person
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: person
+      requires: [reconcile]
+
+    - name: master_data_apply_org_unit
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: org_unit
+      requires: [reconcile]
+
+    - name: master_data_apply_employee
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: employee
+      requires: [reconcile]

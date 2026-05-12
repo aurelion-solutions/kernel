@@ -163,3 +163,39 @@ async def test_apply_master_data_delta_end_to_end(session_factory):
     async with session_factory() as session:
         row = await session.execute(sa.select(Person).where(Person.external_id == 'EXT-E2E-001'))
         assert row.scalar_one().full_name == 'E2E Person'
+
+
+@pytest.mark.asyncio
+async def test_apply_master_data_delta_noop_when_already_applied(session_factory):
+    """Fan-out parallel ok: apply_master_data_delta with status=applied returns zero counts without raising.
+
+    In the 6-step pipeline, three master_data_apply steps run in parallel (person/org_unit/employee).
+    The first sibling to commit advances run.status to 'applied' or 'partially_applied'.
+    The remaining siblings must not raise ValueError — they should no-op gracefully.
+    """
+    async with session_factory() as session:
+        run = await create_run(session, application_id=None, entity_type=ReconciliationEntityType.person)
+        run.status = ReconciliationRunStatus.applied
+        await session.flush()
+
+        result = await apply_master_data_delta(session, run_id=run.id, entity_type=ReconciliationEntityType.person)
+        await session.commit()
+
+    # No items were in pending state → all counts are zero, no exception raised
+    assert result.applied_count == 0
+    assert result.failed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_master_data_delta_noop_when_partially_applied(session_factory):
+    """Fan-out partial ok: apply_master_data_delta with status=partially_applied returns zero counts."""
+    async with session_factory() as session:
+        run = await create_run(session, application_id=None, entity_type=ReconciliationEntityType.person)
+        run.status = ReconciliationRunStatus.partially_applied
+        await session.flush()
+
+        result = await apply_master_data_delta(session, run_id=run.id, entity_type=ReconciliationEntityType.person)
+        await session.commit()
+
+    assert result.applied_count == 0
+    assert result.failed_count == 0

@@ -33,7 +33,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from src.engines.effective_access.models import EffectiveGrantEffect
 from src.inventory.access_facts.schemas import AccessFactEffect
 from src.inventory.enums import Action
@@ -182,6 +182,90 @@ class ProjectionRunSummary(BaseModel):
     rows_updated: int
     rows_tombstoned: int
     rows_skipped: int = 0
+    started_at: datetime
+    finished_at: datetime
+    correlation_id: UUID
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 Step 9b — Action envelope schemas (projection write surface)
+# ---------------------------------------------------------------------------
+
+
+class ProjectAccessFactArgs(BaseModel):
+    """Args for effective_access.project_access_fact action.
+
+    ``now`` controls the projection timestamp passed to ``project()``.
+    ``correlation_id`` is optional — the service generates one when absent.
+    """
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    access_fact_id: UUID
+    now: datetime
+    correlation_id: UUID | None = None
+
+
+class ProjectApplicationArgs(BaseModel):
+    """Args for effective_access.project_application action."""
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    application_id: UUID
+    now: datetime
+    correlation_id: UUID | None = None
+
+
+class ApplyIncrementalChangeArgs(BaseModel):
+    """Args for effective_access.apply_incremental_change action.
+
+    Mirrors the service's branching contract:
+    - UPSERT / INVALIDATE_FACT require ``access_fact_id``; ``initiative_id`` must be absent.
+    - INVALIDATE_INITIATIVE requires ``initiative_id``; ``access_fact_id`` must be absent.
+    """
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    change_kind: IncrementalApplyKind
+    observed_at: datetime
+    access_fact_id: UUID | None = None
+    initiative_id: UUID | None = None
+    correlation_id: UUID | None = None
+    causation_event_id: UUID | None = None
+
+    @model_validator(mode='after')
+    def _validate_branch_ids(self) -> ApplyIncrementalChangeArgs:
+        """Enforce XOR: access_fact_id vs initiative_id per change_kind."""
+        if self.change_kind is IncrementalApplyKind.INVALIDATE_INITIATIVE:
+            if self.initiative_id is None:
+                raise ValueError('INVALIDATE_INITIATIVE requires initiative_id')
+            if self.access_fact_id is not None:
+                raise ValueError('INVALIDATE_INITIATIVE must not receive access_fact_id')
+        else:
+            if self.access_fact_id is None:
+                raise ValueError(f'{self.change_kind.value} requires access_fact_id')
+            if self.initiative_id is not None:
+                raise ValueError(f'{self.change_kind.value} must not receive initiative_id')
+        return self
+
+
+class ProjectionResult(BaseModel):
+    """Envelope wrapping a ``ProjectionRunSummary`` for action result validation.
+
+    Non-frozen because it wraps derived counters and may be constructed from
+    a service return value with ``model_validate(...)``.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    scope_kind: str
+    scope_id: UUID
+    pairs_projected: int
+    rows_upserted: int
+    rows_inserted: int
+    rows_updated: int
+    rows_tombstoned: int
+    rows_skipped: int
     started_at: datetime
     finished_at: datetime
     correlation_id: UUID

@@ -108,16 +108,49 @@ async def _make_app_and_resource(session) -> tuple[UUID, UUID]:  # type: ignore[
     return app.id, resource.id
 
 
-async def _make_access_fact(session, subject_id: UUID, resource_id: UUID) -> UUID:  # type: ignore[no-untyped-def]
-    """Synthesize an access_fact UUID.
+async def _make_access_fact(  # type: ignore[no-untyped-def]
+    session,
+    subject_id: UUID,
+    resource_id: UUID,
+    *,
+    effect: str = 'allow',
+    valid_from: datetime = _NOW,
+    valid_until: datetime | None = None,
+) -> UUID:
+    """Insert a row into the access_facts shim table and return its id.
 
-    Phase 15 Step 16: PG ``access_facts`` table was dropped — facts now live in
-    Iceberg. ``source_access_fact_id`` on EffectiveGrant is a plain UUID with no
-    FK, so we just return a fresh id.
+    Phase 15 Step 16: PG ``access_facts`` table was replaced by Iceberg as the
+    primary store, but a shim table is maintained in tests for JOIN-based reads
+    (see src/conftest.py ``_ACCESS_FACTS_DDL``).  The repository's
+    ``fetch_access_fact_with_initiatives`` queries via raw SQL JOIN, so the row
+    must exist in the shim for repository tests to succeed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
-    return _uuid.uuid4()
+    import sqlalchemy as _sa  # noqa: PLC0415
+
+    fact_id = _uuid.uuid4()
+    row = await session.execute(_sa.text("SELECT id FROM ref_actions WHERE slug = 'read'"))
+    action_id = row.scalar_one()
+    await session.execute(
+        _sa.text(
+            'INSERT INTO access_facts '
+            '(id, subject_id, resource_id, action_id, effect, valid_from, valid_until, observed_at) '
+            'VALUES (:id, :sid, :rid, :aid, :effect, :vf, :vu, :oa)'
+        ),
+        {
+            'id': fact_id,
+            'sid': subject_id,
+            'rid': resource_id,
+            'aid': action_id,
+            'effect': effect,
+            'vf': valid_from,
+            'vu': valid_until,
+            'oa': _NOW,
+        },
+    )
+    await session.flush()
+    return fact_id
 
 
 async def _make_initiative(
@@ -252,7 +285,7 @@ async def test_fetch_access_fact_pre_resolves_subject_kind_and_app_id(session_fa
 async def test_fetch_application_facts_yields_in_batches(session_factory) -> None:
     """Seed 7 facts (each with unique resource); with batch_size=3 → 3 batches (3+3+1)."""
     async with session_factory() as session:
-        await _make_employee_subject(session)
+        subject_id = await _make_employee_subject(session)
         from src.inventory.resources.models import Resource
         from src.platform.applications.models import Application
 
@@ -267,12 +300,6 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
         await session.flush()
         app_id = app.id
 
-        from sqlalchemy import select as sa_select
-        from src.inventory.actions.models import Action as RefAction
-
-        read_id_result = await session.execute(sa_select(RefAction.id).where(RefAction.slug == 'read'))
-        _ = read_id_result.scalar_one()  # validated reference data is present
-
         for _ in range(7):
             res_ext = str(uuid.uuid4())
             resource = Resource(
@@ -284,9 +311,7 @@ async def test_fetch_application_facts_yields_in_batches(session_factory) -> Non
             )
             session.add(resource)
             await session.flush()
-            # Phase 15 Step 16: access_facts table dropped — synthesize a UUID
-            # for the EffectiveGrant.source_access_fact_id column (plain UUID, no FK).
-            _ = uuid.uuid4()
+            await _make_access_fact(session, subject_id, resource.id)
         await session.commit()
 
     async with session_factory() as session:

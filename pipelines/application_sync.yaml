@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 Michael Abramovich
+#
+# SPDX-License-Identifier: BUSL-1.1
+
+# application_sync — end-to-end sync pipeline triggered by connector.result.received.
+#
+# Steps (6):
+#   1. reconcile              — compute delta for the application
+#   2. master_data_apply_person    — apply person master-data delta items
+#   3. master_data_apply_org_unit  — apply org_unit master-data delta items
+#   4. master_data_apply_employee  — apply employee master-data delta items
+#   5. sync_apply             — write approved delta items to normalized.access_facts
+#   6. project_eas            — project effective access grants for the application
+#
+# Trigger: MQ routing_key=connector.result.received
+#   args_from_payload maps:
+#     application_id  ← payload.application_id  (str UUID, always present)
+#     now             ← payload.now              (ISO-8601 datetime; present in
+#                                                 smoke-test synthetic payloads;
+#                                                 real MQ emitter must include it)
+#
+# Trigger payload contract: connector.result.received emits
+# {result_id, application_id, task_id, now} since Phase 18 Step 21.
+# `now` is server-side stamped at emit time and is required by project_eas.
+
+pipeline:
+  name: application_sync
+  version: 1
+  schema_version: 1
+
+  args:
+    type: object
+    required: [application_id, now]
+    properties:
+      application_id:
+        type: string
+        format: uuid
+      now:
+        type: string
+        format: date-time
+
+  triggers:
+    - type: mq
+      routing_key: connector.result.received
+      match: {}
+      args_from_payload:
+        application_id: application_id
+        now: now
+
+  steps:
+    - name: reconcile
+      engine: reconciliation
+      action: run
+      args:
+        application_id: "${args.application_id}"
+      requires: []
+
+    - name: master_data_apply_person
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: person
+      requires: [reconcile]
+
+    - name: master_data_apply_org_unit
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: org_unit
+      requires: [reconcile]
+
+    - name: master_data_apply_employee
+      engine: reconciliation
+      action: master_data_apply
+      args:
+        run_id: "${steps.reconcile.result.run_id}"
+        entity_type: employee
+      requires: [reconcile]
+
+    - name: sync_apply
+      engine: sync_apply
+      action: apply
+      args:
+        reconciliation_run_id: "${steps.reconcile.result.run_id}"
+        mode: auto_apply
+      requires: [master_data_apply_person, master_data_apply_org_unit, master_data_apply_employee]
+
+    - name: project_eas
+      engine: effective_access
+      action: project_application
+      args:
+        application_id: "${args.application_id}"
+        now: "${args.now}"
+      requires: [sync_apply]

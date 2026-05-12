@@ -5,10 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] - 2026-05-12
+
+### Added
+
+- Phase 18 Native Pipeline Orchestrator complete (36/36 milestones)
+- Chaos test: crash-and-resume idempotency — `effective_grants` row count identical after reclaim
+- Race test: two executor nodes × 4 slots × 100 pending runs
+- `reset_process_lake_deps_for_tests()` public helper in `platform/lake/factory.py` — safe teardown function for tests; prevents private-global mutation in test suites
+- `pipelines/application_sync.yaml` — 6-step pipeline (reconcile → fan-out master_data_apply ×3 → sync_apply → project_eas); MQ trigger on `connector.result.received` with `args_from_payload`; `schema_version: 1`; `args.now` for projection timestamp (Phase 18 Step 21)
+- `args_from_payload` property added to `trigger_mq` in `pipelines/schema.json` (enables payload extraction at trigger time)
+- Smoke e2e test `src/platform/orchestrator/tests/test_application_sync_smoke.py` — full pipeline drive via matcher_tick + runner loop; asserts 6 step_runs, ≥1 effective_grant, ≥1 `inventory.access_fact.*` event
+- `provisioning` engine actions `create_account` and `delete_account` registered in `ACTION_REGISTRY` (`idempotent=True`); process-level `ConnectorClient` factory in `platform/connectors/factory.py`
+- `sync_apply.apply` engine action (`idempotent=True`) with `SyncApplyApplyArgs` / `SyncApplyApplyResult` schemas
+- `effective_access` projection actions: `project_access_fact`, `project_application`, `apply_incremental_change` (`idempotent=False`); `ProjectAccessFactArgs`, `ProjectApplicationArgs`, `ApplyIncrementalChangeArgs`, `ProjectionResult` schemas
+- `reconciliation.run` and `reconciliation.master_data_apply` engine actions with request-less lake dep factory (`platform/lake/factory.py`)
+- Liveness heartbeat (`executor.process.heartbeat`) published every `EXECUTOR_HEARTBEAT_SECONDS` (default 60s, min 1s) from `platform_executor_node`; payload schema `ExecutorHeartbeatPayload`; routing key on `aurelion.events` exchange (Phase 18 Step 20)
+- `POST /pipeline-runs/{run_id}/retry` endpoint with `PipelineOrchestratorService.create_retry`; `RunNotRetryableError` for non-terminal and cancelling sources; `RetryPipelineRunResponse` schema
+- `POST /pipeline-runs/{run_id}/cancel` endpoint with 5-branch dispatch; `cancelling` watcher in `_heartbeat_refresher`; `asyncio.wait(FIRST_COMPLETED)` cancel path; `pipeline.run.cancelled` event
+- Pipeline matcher — async MQ consumer resolving `pipeline_event_waiters` (JSONB containment) and firing MQ-triggered pipelines; single-replica via advisory lock; independent transactions per effect
+- `find_matching_waiter_step_ids` in orchestrator service — JSONB `<@` containment query with status guard
+- `resolve_pipeline_event_waiter` transition corrected to `awaiting_event → pending`
+- MQ-trigger `args_from_payload` semantic validation in loader
+- `orchestrator_matcher_queue` and `orchestrator_matcher_bindings` bootstrap settings
+- Beat timeout sweep — expired `pipeline_event_waiters` trigger `failed_timeout` on step and run with `error='event_timeout'`; sweep runs inside the existing beat tick under the same `pg_try_advisory_lock`; bounded batch of 100 waiters per tick (`_EXPIRY_SWEEP_BATCH_SIZE`). `BeatTickResult` gains `expired_run_ids` and `expire_failure_count`. (Phase 18 Step 16)
+- Beat schedule-firing task in `platform_api` lifespan with `pg_try_advisory_lock` multi-replica safety (`platform/orchestrator/beat.py`)
+- Shared duration parser `_durations.py` extracted from runner (package-private; reused by beat)
+- `croniter>=2.0.0` dependency (Apache-2.0) for cron expression parsing
+- Event routing keys (Phase 18 orchestrator): `pipeline.run.created`, `pipeline.run.started`, `pipeline.run.completed`, `pipeline.run.failed`, `pipeline.run.cancelled`, `pipeline.run.heartbeat_lost`; `pipeline.step.started`, `pipeline.step.completed`, `pipeline.step.failed`, `pipeline.step.aborted`; `executor.process.heartbeat`; `connector.result.received` (Steps 7, 10, 12a, 13, 18, 20)
+- CLI kernel-side note: `al pipelines list/show/run` and `al pipelines runs list/get/cancel/retry` client commands shipped in `aurelion-cli` (Steps 24a–24b); detailed CLI changelog in `aurelion-cli/CHANGELOG.md`
+
+### Fixed
+
+- test infra: fix pre-existing `_make_access_fact` helper in `engines/effective_access/tests/test_repository.py` to INSERT a real row into the `access_facts` shim table instead of returning a bare UUID; also fix test 5 to capture `subject_id` and call `_make_access_fact` per resource (25 tests now pass)
 
 ### Removed
 
+- `bulk_approve_run_pending_items` from `engines/reconciliation/repository.py` (relocated to `engines/sync_apply/repository.py`; zero behaviour change).
 - `engines/lake_migration` slice retired (Phase 17 Step 13 — one-shot PG → Iceberg migration tool, completed in all deployed environments). Removed: `POST /api/v0/lake-migrations` and `GET /api/v0/lake-migrations/{id}` and `GET /api/v0/lake-migrations` endpoints. Database table `lake_migration_runs` and enums `lake_migration_dataset` / `lake_migration_status` and partial unique index `uq_reconciliation_delta_items_pg_migration` dropped via Alembic revision `c2f5a8d91b04` (down_revision `b1e4f7c20d83`). `lake_batches` and `platform/lake` are unaffected.
 - `LogEvent.event_type` schema field — deprecated since Phase 10 Step 23; hard-removed. `LogEvent` no longer carries an `event_type` field; `extra='forbid'` makes stale producers fail loudly at the consumer.
 - `log_event_buffer.event_type` DB column — dropped via Alembic migration `phase_17_step_04_drop_log_event_buffer_event_type`. Historical values are not recovered on downgrade (downgrade re-adds the column with `server_default=''`).
@@ -20,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `engines/ingest/service.py` — `connector.result.received` event payload now includes `now` (ISO-8601 UTC datetime); required by `application_sync.yaml` pipeline `args_from_payload` contract; previously missing field would cause JSON Schema validation failure on first real MQ delivery (Phase 18 Step 21 review)
+- `engines/reconciliation/master_data_apply.py` — `_ACCEPTABLE_STATUSES` widened from `{pending_apply}` to `{pending_apply, applied, partially_applied}`; allows fan-out parallel `master_data_apply` steps (person/org_unit/employee) to complete without raising `ValueError` when a sibling step advances run status first (Phase 18 Step 21 review)
+- `effective_access.project_application` action: `idempotent=False` → `idempotent=True` — service already implements UPSERT into `effective_grants` (safe to retry); flip mandated by ARCH_CONTEXT §355 (Phase 18 Step 21)
 - TODO/FIXME comment hygiene pass (Phase 17 Step 23): 3 duplicate docstring TODO lines removed from `capability_grants/capability_projector.py`; 1 inline comment rewritten to `TODO(housekeeping-backlog):`; `runtime_settings/service.py` marker re-tagged from `TODO(tech-debt):` to `TODO(housekeeping-backlog):`. Comment-only diff; zero behaviour change.
 - Enabled ruff `BLE001` (blind-except) rule across `aurelion-kernel/src/`. Every legitimate `except Exception` site now carries `# noqa: BLE001 # allowed-broad: <reason>` from a fixed 8-token vocabulary (`provider boundary`, `best-effort cleanup`, `task-loop guard`, `pipeline boundary`, `event handler swallow`, `best-effort log`, `test fixture cleanup`, `test orchestration`). New meta-test `src/platform/logs/tests/test_broad_except_discipline.py` enforces the companion comment and vocabulary. No behavioural change. (Phase 17 Step 21)
 - Split `src/routers/v0.py` (118 LoC, 55 flat `include_router` calls) into three layer-scoped helper modules: `src/routers/_platform.py` (12 routers), `src/routers/_inventory.py` (31 routers), `src/routers/_engines.py` (12 routers). `src/routers/v0.py` is now a thin aggregator (~17 LoC) calling `include_platform_routers` / `include_inventory_routers` / `include_engine_routers` in order. No public REST surface change — every `/api/v0/...` path, method, and contract is byte-identical. Three external importers of the `router` symbol (`runtimes/platform_api/main.py`, `src/conftest.py`, `src/integration_tests/conftest.py`) continue to work unchanged. (Phase 17 Step 20)
@@ -28,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runner parks pipeline runs on `wait_for_event` steps: `_parse_duration` helper (accepts `s`/`m`/`h`/`d` suffixes; rejects zero/invalid); `_park_wait_for_event` creates a `StepRun` + `PipelineEventWaiter`, flips step to `awaiting_event`, clears `worker_id`, flips run to `awaiting_event`, and returns `'awaiting_event'` sentinel so the worker slot is immediately freed. Fail-fast order: parse timeout → resolve match templates → DB writes. Invalid timeout or template failure calls `mark_pipeline_failed` with no DB rows created. `run_one_iteration` docstring updated to include `"awaiting_event"` outcome. 15 new tests (6 unit in `TestParseDuration`, 6 unit in `TestWaitForEventStep`, 1 integration in `TestWaitForEventIntegration`, unsupported-step-kind test rewritten). 168/168 orchestrator tests green; ruff + mypy clean. Resumption lands in Step 17. (Phase 18 Step 14)
+- Orchestrator stale-run reclaim sweep: `reclaim_stale_run` + `list_stale_run_ids` in `PipelineOrchestratorService`
+- `pipeline.run.heartbeat_lost` and `pipeline.step.aborted` event types
+- `reclaim_sweep_tick` and `drain_active_run` coroutines + `RunHandle` dataclass in `runner.py`
+- SIGTERM drain with `EXECUTOR_DRAIN_TIMEOUT_SECONDS` env var (Bootstrap tier) and `max(value, threshold+5)` clamp
+- `PipelineOrchestratorService.refresh_heartbeat(run_id, worker_id) -> bool` (Phase 18 Step 12b): status-guarded UPDATE of `pipeline_runs.last_heartbeat_at`; the single documented exception to the event-emission invariant (liveness signal, not state transition). `_heartbeat_refresher` coroutine in `runner.py`: opens its own session per 3-second tick, survives `False`/exception, exits via `stop_event`. `run_one_iteration` now creates a refresher task around the action dispatch and awaits it in `finally`. 11 new tests (5 service, 4 refresher unit, 2 integration); 131/131 orchestrator tests green; ruff + mypy clean.
+- `platform_executor_node` standalone runtime + `platform/orchestrator/runner.py` work loop (Phase 18 Step 12a). `WorkerIdentity` frozen dataclass (`<hostname>-<pid>-<slot_index>`). `run_one_iteration` two-session protocol: session A claims + commits; step_run committed before action; session B runs action; session C persists failure on rollback. `_resolve_templates` recursive walker supporting `${args.X}` (native type preserved on pure-reference match) and `${steps.<s>.result.<path>}` (dotted walk). `work_loop` polls at 1 Hz; respects `shutdown_event`. `PipelineOrchestratorService.claim_pending_run` added: `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` + status-guarded UPDATE + `pipeline.run.started` emission. 22 new tests (5 claim, 10 runner unit incl. 8 `_resolve_templates`, 2 integration); 120/120 orchestrator + executor_node tests green; ruff + mypy clean on new files. Known limitation: SIGTERM during action waits for completion (drain + abort in Step 13).
+- REST endpoints for the pipeline orchestrator: `GET /api/v0/pipelines`, `GET /api/v0/pipelines/{name}`, `GET /api/v0/pipeline-runs`, `GET /api/v0/pipeline-runs/{id}`, `GET /api/v0/pipeline-runs/{id}/steps/{step_name}`, `POST /api/v0/pipeline-runs` (201 fresh / 200 idempotent duplicate). Well-known discovery endpoints: `GET /api/v0/.well-known/pipeline-schema.json` (bundled grammar + additive per-action arg/result schemas under `$defs`) and `GET /api/v0/.well-known/pipeline-actions.json` (full `ACTION_REGISTRY` catalogue). Pipeline definitions served from `app.state.pipelines` (loader cache). Manual runs sit in `pending` until Step 12 (runner). No runner, no cancel/retry, no auth.
+- Ingest engine emits `connector.result.received` after staging insert on inline/lake_ref paths (Phase 18 Step 10). Routing key equals `event_type`; payload: `{result_id, application_id, task_id}` (all UUID strings). `artifacts_bulk` branch is unaffected.
+- `effective_access` read actions (`list_grants`, `explain_access`, `get_grant`) registered in `ACTION_REGISTRY`; all `idempotent=True`; read-only orchestrator surface — HTTP routes unchanged
+- Engine actions for `policy_assessment.sod` (`evaluate`, `what_if`), `access_analysis.assessment_preview` (`detect_orphans`, `detect_terminated`), `access_analysis.capability_preview` (`resolve`), and `access_analysis.reports` (`deterministic`) registered in `ACTION_REGISTRY`; all `idempotent=True`
+- `PipelineOrchestratorService` — sole writer for orchestrator tables with all status transitions, trigger-idempotency, cancel-vs-complete race handling, and heartbeat-lost reclaim
+- `PipelineDefinitionLoader` in `platform/orchestrator/loader.py`: fail-fast YAML loader for `pipelines/*.yaml`. Validates structurally against `schema.json` (JSON Schema Draft 2020-12) and semantically via five checks — action-ref lookup against `ACTION_REGISTRY`, backward-only `requires` ordering, `${...}` templating ref resolution via BFS transitive closure, ≤1 schedule trigger per pipeline, and schedule-trigger-args ⊂ pipeline-args JSON Schema. Returns typed `PipelineDefinition` frozen dataclasses (9 fields, slots=True, sha256 `content_hash`). Six exception classes: `PipelineLoadError` base + `PipelineSchemaError`, `PipelineActionRefError`, `PipelineRequiresOrderError`, `PipelineTemplatingError`, `PipelineTriggerError`. Missing/empty directory returns `{}` without error. `jsonschema` promoted from dev group to main `dependencies`. `types-PyYAML` added to dev group. (Phase 18 Step 6)
+- `ActionRegistry` foundation: `@register_action` decorator, `ActionContext` dataclass, `platform/orchestrator/registry.py`. In-memory singleton keyed by `(engine, action)`; `register`/`get`/`dispatch`/`all` methods; 5 custom exception classes (`ActionRegistryError`, `DuplicateActionError`, `ActionNotFoundError`, `ActionArgsValidationError`, `ActionResultValidationError`). Non-empty `engine`/`action` guard added per Guardian recommendation. No actions registered yet. (Phase 18 Step 5)
+- Orchestrator storage foundation: `pipeline_runs`, `step_runs`, `pipeline_event_waiters` tables with four PG enum types and partial UNIQUE idempotency index (Alembic `a7e3b9d2f041`)
+- `pipelines/schema.json` — JSON Schema Draft 2020-12 for pipeline YAML grammar (engine-call and wait-for-event step types; mq and schedule trigger types)
 - `emit_safe` naming-discipline meta-test (`src/platform/logs/tests/test_emit_safe_discipline.py`): textual line-scan over `src/engines/**/service.py` + `src/inventory/**/service.py` requiring every `LogService.emit_safe(...)` call to carry an explicit `# allowed-emit-safe: <reason>` marker. ~45 existing call sites annotated with reasons from a fixed vocabulary (`observability`, `provider boundary`, `best-effort warning`). Zero behavioural change. (Phase 17 Step 17)
 - Engines-wide layer-invariant guard test (`src/engines/tests/test_no_product_imports.py`): AST-scans `src/engines/**/*.py` for `from src.products` / `import src.products` and fails on any hit. Zero hits today; guard fires the day a `src/products/` layer is introduced (Phase 17 Step 16).
 - Test coverage backfill (Phase 17 Step 15): cartridge DSL edge cases (`greater_than` against string-ish numbers and `None`; deeply nested mixed `all`/`any` trees, 4 levels) and an explicit double-apply idempotency assertion at the Iceberg level for sync-apply (ARCH_CONTEXT line 292 invariant: "Idempotency MUST be enforced at the Iceberg level, not just via PG status"). Zero production code changes.
@@ -110,6 +162,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - `PUT /api/v0/runtime-settings/{key}` has no AuthN/AuthZ in this release — gate at reverse proxy / service mesh in non-dev deployments
+
+### Notes
+
+- Phase 18 — Native Pipeline Orchestrator — closed 2026-05-11 (Step 27). Roadmap: `aurelion-mas/roadmap/phase_18.md`. User docs: `aurelion-docs/docs/concepts/pipeline-orchestrator.md`.
 
 ## [0.1.7] - 2026-04-27
 
