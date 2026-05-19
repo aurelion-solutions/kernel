@@ -100,7 +100,7 @@ async def test_update_account_status_only_emits_event(
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH status=active emits inventory.account.updated with changed_fields=['status']."""
+    """PATCH status=active emits inventory.account.updated with changes.status."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         account = await _seed_account(session, app_id, status=AccountStatus.unknown)
@@ -121,7 +121,9 @@ async def test_update_account_status_only_emits_event(
     assert envelope.target_kind == EventParticipantKind.SYSTEM
     assert envelope.target_id == str(account_id)
     assert envelope.payload['account_id'] == str(account_id)
-    assert envelope.payload['changed_fields'] == ['status']
+    assert envelope.payload['changes'] == {
+        'status': {'old': AccountStatus.unknown.value, 'new': AccountStatus.active.value},
+    }
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,7 @@ async def test_update_account_subject_only_emits_event(
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH subject_id emits inventory.account.updated with changed_fields=['subject_id']."""
+    """PATCH subject_id emits inventory.account.updated with changes.subject_id."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         subject_id = await _seed_subject(session)
@@ -146,7 +148,9 @@ async def test_update_account_subject_only_emits_event(
     assert updated.subject_id == subject_id
     emitted = capturing_events.filter_by_type('inventory.account.updated')
     assert len(emitted) == 1
-    assert emitted[0].payload['changed_fields'] == ['subject_id']
+    assert emitted[0].payload['changes'] == {
+        'subject_id': {'old': None, 'new': str(subject_id)},
+    }
 
 
 @pytest.mark.asyncio
@@ -155,7 +159,7 @@ async def test_update_account_both_fields_emits_single_event(
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH both fields emits single inventory.account.updated with sorted changed_fields."""
+    """PATCH both fields emits single inventory.account.updated with both keys in changes."""
     async with session_factory() as session:
         app_id = await _seed_application(session)
         subject_id = await _seed_subject(session)
@@ -170,7 +174,9 @@ async def test_update_account_both_fields_emits_single_event(
 
     emitted = capturing_events.filter_by_type('inventory.account.updated')
     assert len(emitted) == 1
-    assert emitted[0].payload['changed_fields'] == ['status', 'subject_id']
+    assert set(emitted[0].payload['changes'].keys()) == {'status', 'subject_id'}
+    assert emitted[0].payload['changes']['status']['new'] == AccountStatus.active.value
+    assert emitted[0].payload['changes']['subject_id']['new'] == str(subject_id)
 
 
 @pytest.mark.asyncio

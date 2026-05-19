@@ -50,12 +50,18 @@ async def query_buffered_log_events(
     actor_type: str | None = None,
     actor_id: str | None = None,
     level: str | None = None,
+    payload_step_run_id: str | None = None,
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
     order_desc: bool = True,
     limit: int,
 ) -> Sequence[LogEventBufferRow]:
-    """Select buffer rows matching optional filters, ordered by event ``timestamp``."""
+    """Select buffer rows matching optional filters, ordered by event ``timestamp``.
+
+    ``payload_step_run_id`` filters on ``payload->>'step_run_id'`` — the side-
+    channel attribute stamped by the runner and the step-scoped log façade.
+    Used by the per-step Logs panel in the Journey UI.
+    """
     stmt = select(LogEventBufferRow)
     conditions: list = []
     if correlation_id is not None:
@@ -74,6 +80,8 @@ async def query_buffered_log_events(
         conditions.append(LogEventBufferRow.actor_id == actor_id)
     if level is not None:
         conditions.append(LogEventBufferRow.level == level)
+    if payload_step_run_id is not None:
+        conditions.append(LogEventBufferRow.payload['step_run_id'].astext == payload_step_run_id)
     if from_ts is not None:
         conditions.append(LogEventBufferRow.timestamp >= from_ts)
     if to_ts is not None:

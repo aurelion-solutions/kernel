@@ -1,0 +1,6 @@
+{% block subject %}Confirm leaver apply — destructive change ({{ destructive_count | default(0) }} items){% endblock %}
+{% block body %}
+The leaver pipeline for case {{ case_id }} computed a plan that revokes
+{{ destructive_count | default(0) }} access facts, which exceeds the safe
+threshold. Open the case and click "Confirm apply" to proceed.
+{% endblock %}

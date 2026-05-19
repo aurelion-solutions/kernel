@@ -4,20 +4,35 @@
 
 # access_plan_subject_triggers — fire access_plan.plan on subject-level events.
 #
-# Covered routing keys (subject.context.changed, subject.employment_status.changed,
-# subject.replan.required, inventory.nhi.expired):
+# All triggers in this file carry payload.subject_ref = Subject.id (the
+# kernel Subject row UUID). access_plan.plan receives Subject.id via
+# args.subject_ref for every routing key below.
 #
-# All four events carry a `subject_id` field in their payload that maps directly
-# to the `subject_ref` arg expected by access_plan.plan.
+# Covered routing keys:
 #
-# Deduplification: upstream emitters include an `idempotency_key` field in
-# the payload.  The orchestrator's unique constraint on
-# (pipeline_name, idempotency_key) collapses duplicates.
-# When no idempotency_key is present the run uses a UUID — no dedup, safe.
+#   - inventory.employee.updated       (any inventory employee change)
+#   - inventory.nhi.updated            (any inventory NHI change)
+#   - subject.replan.required          (explicit operator replan)
+#   - inventory.nhi.expired            (deactivation)
+#
+# inventory.<entity>.updated carries:
+#   { employee_id|nhi_id, subject_ref, subject_type, changes: {field: {old, new}} }
+# subject_ref is Subject.id — exactly what access_plan.plan expects.
+#
+# For the *.updated events the trigger also uses match.changes to filter:
+# we only replan when one of the planning-relevant fields actually moves
+# (employment_status / org_unit_id / any attribute). The matcher uses
+# JSONB containment, so a payload containing changes.employment_status
+# satisfies `match: {changes: {employment_status: {}}}` — any nested
+# value is accepted.
+#
+# Deduplification: upstream emitters MAY include an `idempotency_key`
+# field. When absent the orchestrator falls back to a UUID — no dedup,
+# safe.
 
 pipeline:
   name: access_plan_subject_triggers
-  version: 1
+  version: 2
   schema_version: 1
 
   args:
@@ -33,15 +48,27 @@ pipeline:
 
   triggers:
     - type: mq
-      routing_key: "subject.context.changed"
+      routing_key: "inventory.employee.updated"
+      match:
+        changes:
+          employment_status: {}
       args_from_payload:
-        subject_ref: subject_id
+        subject_ref: subject_ref
         idempotency_key: idempotency_key
 
     - type: mq
-      routing_key: "subject.employment_status.changed"
+      routing_key: "inventory.employee.updated"
+      match:
+        changes:
+          org_unit_id: {}
       args_from_payload:
-        subject_ref: subject_id
+        subject_ref: subject_ref
+        idempotency_key: idempotency_key
+
+    - type: mq
+      routing_key: "inventory.nhi.updated"
+      args_from_payload:
+        subject_ref: subject_ref
         idempotency_key: idempotency_key
 
     - type: mq
@@ -53,7 +80,7 @@ pipeline:
     - type: mq
       routing_key: "inventory.nhi.expired"
       args_from_payload:
-        subject_ref: nhi_id
+        subject_ref: subject_ref
         idempotency_key: idempotency_key
 
   steps:

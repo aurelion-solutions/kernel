@@ -84,14 +84,13 @@ Contact licensing@aurelion.solutions for commercial licensing.
 
 The license change applies to the **source code**, not to your running system. Your data, schemas, configurations, and integrations all continue to work. You get a license upgrade to AGPL for free — and with it, more freedoms (e.g., you can then relicense your own modifications under compatible terms).
 
-## Does BSL 1.1 apply to the Aurelion CLI, GUI, Engineering Studio, or Docs?
+## Does BSL 1.1 apply to the Aurelion CLI, Engineering Studio, or Docs?
 
 **No. Those components are Apache 2.0.**
 
 BSL 1.1 applies only to **Aurelion Kernel** — the core platform (REST API, database, message queue, domain logic). The following components are fully open source under Apache 2.0:
 
 - `aurelion-cli` — CLI client
-- `aurelion-gui` — Web UI (React)
 - `aurelion-engineering-studio` — VS Code extension
 - `aurelion-docs` — documentation site
 - `aurelion-connector-templates` — connector templates

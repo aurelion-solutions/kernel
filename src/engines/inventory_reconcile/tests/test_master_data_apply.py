@@ -199,3 +199,81 @@ async def test_apply_master_data_delta_noop_when_partially_applied(session_facto
 
     assert result.applied_count == 0
     assert result.failed_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Subject service integration test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_employees_delta_uses_subject_service(session_factory) -> None:
+    """apply_employees_delta via apply_master_data_delta produces a Subject for the new employee.
+
+    Verifies:
+    1. The delta item is applied (employee row created).
+    2. A Subject with kind=employee is created pointing at the new employee.
+    3. The inventory.subject.created event is observed.
+    """
+    import sqlalchemy as sa  # noqa: PLC0415
+    from src.inventory.subjects.models import Subject, SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.service import SubjectService  # noqa: PLC0415
+    from src.platform.events.service import EventService  # noqa: PLC0415
+    from src.platform.events.testing import CapturingEventService  # noqa: PLC0415
+
+    capturing = CapturingEventService()
+    event_service = EventService(sink=capturing)
+    subject_service = SubjectService(event_service=event_service)
+
+    async with session_factory() as session:
+        # Seed a person so the employee FK resolves
+        from src.inventory.persons.models import Person  # noqa: PLC0415
+
+        person = Person(external_id=f'mda-subj-{uuid.uuid4()}', full_name='MDA Subj')
+        session.add(person)
+        await session.flush()
+        person_external_id = person.external_id
+
+        run = await create_run(session, application_id=None, entity_type=ReconciliationEntityType.employee)
+        run.status = ReconciliationRunStatus.pending_apply
+        item = ReconciliationDeltaItem(
+            reconciliation_run_id=run.id,
+            entity_type=ReconciliationEntityType.employee,
+            operation=ReconciliationDeltaOperation.create,
+            after_json={'person_external_id': person_external_id},
+        )
+        session.add(item)
+        await session.flush()
+
+        result = await apply_master_data_delta(
+            session,
+            run_id=run.id,
+            entity_type=ReconciliationEntityType.employee,
+            event_service=event_service,
+            subject_service=subject_service,
+        )
+        await session.commit()
+
+    assert result.applied_count == 1
+    assert result.failed_count == 0
+
+    # Verify Subject row exists
+    async with session_factory() as session:
+        from src.inventory.employees.models import Employee  # noqa: PLC0415
+
+        emp_result = await session.execute(sa.select(Employee).where(Employee.person_id == person.id))
+        employee = emp_result.scalar_one()
+
+        subj_count = (
+            await session.execute(
+                sa.select(sa.func.count()).where(
+                    Subject.kind == SubjectKind.employee,
+                    Subject.principal_employee_id == employee.id,
+                )
+            )
+        ).scalar()
+        assert subj_count == 1
+
+    # Verify event was emitted
+    created_events = [e for e in capturing.emitted if e.event_type == 'inventory.subject.created']
+    assert len(created_events) == 1

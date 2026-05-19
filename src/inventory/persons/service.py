@@ -31,7 +31,7 @@ from src.inventory.persons.repository import (
     list_person_attributes as repo_list_person_attributes,
 )
 from src.inventory.persons.repository import (
-    list_persons as repo_list_persons,
+    list_persons_page as repo_list_persons_page,
 )
 from src.inventory.persons.schemas import PersonBulkItem
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
@@ -112,9 +112,15 @@ class PersonService:
         """Get person by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
         return await repo_get_person_by_id(session, person_id)
 
-    async def list_persons(self, session: AsyncSession) -> list[Person]:
-        """List all persons."""
-        return await repo_list_persons(session)
+    async def list_persons(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Person], int]:
+        """Return (rows, total) for paginated GET /persons."""
+        return await repo_list_persons_page(session, limit=limit, offset=offset)
 
     async def list_attributes(
         self,

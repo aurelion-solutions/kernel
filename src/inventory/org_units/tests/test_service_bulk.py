@@ -36,11 +36,13 @@ def _item(
     external_id: str,
     name: str,
     parent_external_id: str | None = None,
+    is_internal: bool = True,
 ) -> OrgUnitBulkItem:
     return OrgUnitBulkItem(
         external_id=external_id,
         name=name,
         parent_external_id=parent_external_id,
+        is_internal=is_internal,
     )
 
 
@@ -79,7 +81,12 @@ async def test_idempotent_reupsert(
     capturing_events: CapturingEventService,
     session_factory: Any,
 ) -> None:
-    """Same items upserted twice — row count stays 2, name updated, IDs stable."""
+    """Same items upserted twice — row count stays 2, name updated, IDs stable.
+
+    Also verifies that re-upsert with a flipped is_internal updates the column.
+    Note: flip from True → False is only valid when no children exist; the
+    trigger would reject a root flip when children are present.
+    """
     items = [
         _item('ou-idem-1', 'Department A'),
         _item('ou-idem-2', 'Department B'),
@@ -103,6 +110,49 @@ async def test_idempotent_reupsert(
     for ou in second:
         assert ou.id == first_ids[ou.external_id]
         assert 'Updated' in ou.name
+
+    # Third call flips is_internal — root rows (no children) should be accepted.
+    items3 = [
+        _item('ou-idem-1', 'Department A Updated', is_internal=False),
+        _item('ou-idem-2', 'Department B Updated', is_internal=False),
+    ]
+    async with session_factory() as session:
+        third = await service.bulk_upsert_org_units(session, items3)
+        await session.commit()
+
+    assert len(third) == 2
+    for ou in third:
+        assert ou.is_internal is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_defaults_is_internal_true(
+    service: OrgUnitService,
+    session_factory: Any,
+) -> None:
+    """Items without explicit is_internal land with is_internal=True."""
+    items = [_item('ou-default-1', 'Engineering')]
+    async with session_factory() as session:
+        result = await service.bulk_upsert_org_units(session, items)
+        await session.commit()
+
+    assert len(result) == 1
+    assert result[0].is_internal is True
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_explicit_is_internal_false(
+    service: OrgUnitService,
+    session_factory: Any,
+) -> None:
+    """Items with is_internal=False are persisted as False (root row, no children)."""
+    items = [_item('ou-external-1', 'Vendor Corp', is_internal=False)]
+    async with session_factory() as session:
+        result = await service.bulk_upsert_org_units(session, items)
+        await session.commit()
+
+    assert len(result) == 1
+    assert result[0].is_internal is False
 
 
 @pytest.mark.asyncio

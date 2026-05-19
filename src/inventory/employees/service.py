@@ -37,7 +37,10 @@ from src.inventory.employees.repository import (
     list_employee_attributes as repo_list_employee_attributes,
 )
 from src.inventory.employees.repository import (
-    list_employees as repo_list_employees,
+    list_employees_page as repo_list_employees_page,
+)
+from src.inventory.employees.repository import (
+    org_unit_exists as repo_org_unit_exists,
 )
 from src.inventory.employees.repository import (
     resolve_persons_by_external_ids as repo_resolve_persons_by_external_ids,
@@ -50,6 +53,8 @@ from src.inventory.org_units.repository import (
     get_by_external_ids as repo_get_org_units_by_external_ids,
 )
 from src.inventory.persons.repository import get_person_by_id as repo_get_person_by_id
+from src.inventory.subjects.models import SubjectKind
+from src.inventory.subjects.service import SubjectService
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
 
@@ -106,24 +111,50 @@ class EmployeeOrgUnitNotFoundError(Exception):
         super().__init__(f'Unknown org_unit_external_ids: {", ".join(missing)}')
 
 
+class InvalidOrgUnitIdError(Exception):
+    """Raised when org_unit_id does not reference an existing OrgUnit."""
+
+    def __init__(self, org_unit_id: uuid.UUID) -> None:
+        self.org_unit_id = org_unit_id
+        super().__init__(f'Org-unit not found: {org_unit_id}')
+
+
 # ---------------------------------------------------------------------------
 # Event builders
 # ---------------------------------------------------------------------------
 
 
-def _build_subject_context_changed_event(
+def _build_employee_created_event(
     employee_id: uuid.UUID,
-    correlation_id: str,
+    subject_id: uuid.UUID,
+    person_id: uuid.UUID,
+    is_locked: bool,
+    description: str | None,
+    org_unit_id: uuid.UUID | None,
+    correlation_id: str | None,
 ) -> EventEnvelope:
+    """Build ``inventory.employee.created`` event.
+
+    Payload contract:
+      - employee_id: str(uuid)
+      - subject_ref: str(Subject.id)
+      - subject_type: 'employee'
+      - person_id, is_locked, description, org_unit_id
+    """
     return EventEnvelope(
         event_id=uuid.uuid4(),
-        event_type='subject.context.changed',
+        event_type='inventory.employee.created',
         occurred_at=datetime.now(UTC),
-        correlation_id=correlation_id,
+        correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
         causation_id=None,
         payload={
-            'subject_id': str(employee_id),
+            'employee_id': str(employee_id),
+            'subject_ref': str(subject_id),
             'subject_type': 'employee',
+            'person_id': str(person_id),
+            'is_locked': is_locked,
+            'description': description,
+            'org_unit_id': str(org_unit_id) if org_unit_id is not None else None,
         },
         actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
@@ -132,23 +163,31 @@ def _build_subject_context_changed_event(
     )
 
 
-def _build_employment_status_changed_event(
+def _build_employee_updated_event(
     employee_id: uuid.UUID,
-    old_value: str | None,
-    new_value: str,
+    subject_id: uuid.UUID,
+    changes: dict[str, dict[str, object | None]],
     correlation_id: str,
 ) -> EventEnvelope:
+    """Build the unified ``inventory.employee.updated`` event.
+
+    Payload contract:
+      - employee_id: str(uuid)
+      - subject_ref: str(Subject.id)
+      - subject_type: 'employee'
+      - changes: {field: {'old': ..., 'new': ...}}
+    """
     return EventEnvelope(
         event_id=uuid.uuid4(),
-        event_type='subject.employment_status.changed',
+        event_type='inventory.employee.updated',
         occurred_at=datetime.now(UTC),
         correlation_id=correlation_id,
         causation_id=None,
         payload={
-            'subject_id': str(employee_id),
+            'employee_id': str(employee_id),
+            'subject_ref': str(subject_id),
             'subject_type': 'employee',
-            'old_value': old_value,
-            'new_value': new_value,
+            'changes': changes,
         },
         actor_kind=EventParticipantKind.COMPONENT,
         actor_id=_COMPONENT,
@@ -160,8 +199,15 @@ def _build_employment_status_changed_event(
 class EmployeeService:
     """Orchestrates employee creation, retrieval, attribute write, and event emission."""
 
-    def __init__(self, event_service: EventService | None = None) -> None:
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+        subject_service: SubjectService | None = None,
+    ) -> None:
         self._events = event_service if event_service is not None else noop_event_service
+        self._subject_service = (
+            subject_service if subject_service is not None else SubjectService(event_service=event_service)
+        )
 
     async def create_employee(
         self,
@@ -169,35 +215,39 @@ class EmployeeService:
         person_id: uuid.UUID,
         is_locked: bool = False,
         description: str | None = None,
+        org_unit_id: uuid.UUID | None = None,
         correlation_id: str | None = None,
     ) -> Employee:
-        """Create an employee and emit inventory.employee.created. Validates person_id exists."""
+        """Create an employee and emit inventory.employee.created. Validates person_id and org_unit_id exist."""
         person = await repo_get_person_by_id(session, person_id)
         if person is None:
             raise InvalidPersonIdError(person_id)
+        if org_unit_id is not None:
+            exists = await repo_org_unit_exists(session, org_unit_id)
+            if not exists:
+                raise InvalidOrgUnitIdError(org_unit_id)
         employee = await repo_create_employee(
             session,
             person_id=person_id,
             is_locked=is_locked,
             description=description,
+            org_unit_id=org_unit_id,
+        )
+        subject = await self._subject_service.ensure_for_principal(
+            session,
+            kind=SubjectKind.employee,
+            principal_id=employee.id,
+            correlation_id=correlation_id,
         )
         await self._events.emit(
-            EventEnvelope(
-                event_id=uuid.uuid4(),
-                event_type='inventory.employee.created',
-                occurred_at=datetime.now(UTC),
-                correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
-                causation_id=None,
-                payload={
-                    'employee_id': str(employee.id),
-                    'person_id': str(employee.person_id),
-                    'is_locked': employee.is_locked,
-                    'description': employee.description,
-                },
-                actor_kind=EventParticipantKind.COMPONENT,
-                actor_id=_COMPONENT,
-                target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(employee.id),
+            _build_employee_created_event(
+                employee_id=employee.id,
+                subject_id=subject.id,
+                person_id=employee.person_id,
+                is_locked=employee.is_locked,
+                description=employee.description,
+                org_unit_id=employee.org_unit_id,
+                correlation_id=correlation_id,
             )
         )
         return employee
@@ -210,9 +260,15 @@ class EmployeeService:
         """Get employee by id. No event emitted (Q1 — read-side audit deferred to future audit.* slice)."""
         return await repo_get_employee_by_id(session, employee_id)
 
-    async def list_employees(self, session: AsyncSession) -> list[Employee]:
-        """List all employees."""
-        return await repo_list_employees(session)
+    async def list_employees(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Employee], int]:
+        """Return (rows, total) for paginated GET /employees."""
+        return await repo_list_employees_page(session, limit=limit, offset=offset)
 
     async def list_attributes(
         self,
@@ -306,51 +362,57 @@ class EmployeeService:
         patch: EmployeePatch,
         correlation_id: str | None = None,
     ) -> Employee:
-        """Patch employee fields and emit context-change events.
+        """Patch employee fields and emit one ``inventory.employee.updated`` event.
 
-        Context-changing changes (org_unit_id, attributes) emit
-        subject.context.changed. Changing attributes.employment_status
-        additionally emits subject.employment_status.changed with old/new values.
-        Changing description only does not emit context events.
+        Emits a single fat event per call with ``changes: {field: {old, new}}``.
+        ``attributes.<key>`` shows up as ``changes["attributes.<key>"]``.
+        If nothing actually changes (every field already at the target value),
+        no event is emitted.
         """
         employee = await repo_get_employee_by_id(session, employee_id)
         if employee is None:
             raise EmployeeNotFoundError(employee_id)
 
         corr_id = correlation_id if correlation_id is not None else uuid.uuid4().hex
-        context_changed = False
+        changes: dict[str, dict[str, object | None]] = {}
 
-        if patch.org_unit_id is not None:
+        if patch.org_unit_id is not None and employee.org_unit_id != patch.org_unit_id:
+            changes['org_unit_id'] = {
+                'old': str(employee.org_unit_id) if employee.org_unit_id is not None else None,
+                'new': str(patch.org_unit_id),
+            }
             employee.org_unit_id = patch.org_unit_id
-            context_changed = True
 
-        if patch.description is not None:
+        if patch.description is not None and employee.description != patch.description:
+            changes['description'] = {
+                'old': employee.description,
+                'new': patch.description,
+            }
             employee.description = patch.description
 
         if patch.attributes is not None:
             for key, value in patch.attributes.items():
-                if key == 'employment_status':
-                    old_attr = await repo_get_employee_attribute_by_key(session, employee_id, 'employment_status')
-                    old_value = old_attr.value if old_attr is not None else None
-                    await repo_upsert_employee_attribute(session, employee_id=employee_id, key=key, value=value)
-                    await self._events.emit(
-                        _build_employment_status_changed_event(
-                            employee_id=employee_id,
-                            old_value=old_value,
-                            new_value=value,
-                            correlation_id=corr_id,
-                        )
-                    )
-                else:
-                    await repo_upsert_employee_attribute(session, employee_id=employee_id, key=key, value=value)
-                context_changed = True
+                old_attr = await repo_get_employee_attribute_by_key(session, employee_id, key)
+                old_value = old_attr.value if old_attr is not None else None
+                if old_value == value:
+                    continue
+                await repo_upsert_employee_attribute(session, employee_id=employee_id, key=key, value=value)
+                changes[f'attributes.{key}'] = {'old': old_value, 'new': value}
 
         await session.flush()
 
-        if context_changed:
+        if changes:
+            subject = await self._subject_service.ensure_for_principal(
+                session,
+                kind=SubjectKind.employee,
+                principal_id=employee_id,
+                correlation_id=corr_id,
+            )
             await self._events.emit(
-                _build_subject_context_changed_event(
+                _build_employee_updated_event(
                     employee_id=employee_id,
+                    subject_id=subject.id,
+                    changes=changes,
                     correlation_id=corr_id,
                 )
             )
@@ -396,6 +458,14 @@ class EmployeeService:
             for item in items
         ]
         employees = await repo_bulk_upsert_employees(session, upsert_rows)
+
+        for employee in employees:
+            await self._subject_service.ensure_for_principal(
+                session,
+                kind=SubjectKind.employee,
+                principal_id=employee.id,
+                correlation_id=correlation_id,
+            )
 
         await self._events.emit(
             EventEnvelope(

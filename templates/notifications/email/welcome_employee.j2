@@ -1,0 +1,9 @@
+{% block subject %}Welcome to {{ org_name | default("Aurelion", true) }}{% endblock %}
+{% block body %}
+Hi {{ first_name | default("there") }},
+
+Welcome aboard. Your account is being provisioned now — you'll receive
+follow-up emails as each application is ready.
+
+— Aurelion Journey
+{% endblock %}

@@ -14,8 +14,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "description": "Pipeline identifier. Lowercase, digits, underscores; must start with a letter."
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+          "description": "Pipeline identifier. Lowercase, digits, underscores; dot-separated namespaces allowed (e.g. journey.joiner)."
         },
         "version": {
           "type": "integer",

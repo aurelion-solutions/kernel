@@ -107,6 +107,12 @@ class CustomerService:
             is_locked=is_locked,
             description=description,
         )
+        subject = await self._subject_service.ensure_for_principal(
+            session,
+            kind=SubjectKind.customer,
+            principal_id=customer.id,
+            correlation_id=correlation_id,
+        )
         await self._events.emit(
             EventEnvelope(
                 event_id=uuid.uuid4(),
@@ -116,6 +122,8 @@ class CustomerService:
                 causation_id=None,
                 payload={
                     'customer_id': str(customer.id),
+                    'subject_ref': str(subject.id),
+                    'subject_type': 'customer',
                     'external_id': customer.external_id,
                     'tenant_id': customer.tenant_id,
                     'plan_tier': customer.plan_tier.value if customer.plan_tier else None,
@@ -167,6 +175,12 @@ class CustomerService:
             plan_tier=patch.plan_tier,
         )
         if changed_fields:
+            subject = await self._subject_service.ensure_for_principal(
+                session,
+                kind=SubjectKind.customer,
+                principal_id=customer_id,
+                correlation_id=correlation_id,
+            )
             await self._events.emit(
                 EventEnvelope(
                     event_id=uuid.uuid4(),
@@ -176,6 +190,8 @@ class CustomerService:
                     causation_id=None,
                     payload={
                         'customer_id': str(customer_id),
+                        'subject_ref': str(subject.id),
+                        'subject_type': 'customer',
                         'changed_fields': sorted(changed_fields),
                     },
                     actor_kind=EventParticipantKind.COMPONENT,

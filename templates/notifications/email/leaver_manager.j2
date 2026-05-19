@@ -1,0 +1,12 @@
+{% block subject %}Leaver process complete — {{ subject_name | default("the subject") }}{% endblock %}
+{% block body %}
+Hi {{ manager_name | default("manager") }},
+
+The leaver process for {{ subject_name | default("your reportee") }} has
+completed. All entitlements have been revoked and accounts marked as
+inactive.
+
+Case id: {{ case_id | default("<unknown>") }}.
+
+— Aurelion Journey
+{% endblock %}

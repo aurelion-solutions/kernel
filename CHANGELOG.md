@@ -5,6 +5,128 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`StepScopedLogService` log facade for runner-driven step emits.** New `platform/orchestrator/step_scoped_logs.py` wraps the per-run `LogService` for the duration of a single step and auto-injects two things into every action-side emit: the six engine-action participant keys (`pipeline_run_id`, `step_run_id`, `engine`, `action`, `target_type`, `target_id`) when missing, and a side-channel `payload['step_run_id']` so the buffer can filter by step. The action's own `target_id` (e.g. plan id, account id) is preserved — the side-channel sits on `payload`, not `target_id`. `LogService` gains a public `sink` property and `PARTICIPANT_PAYLOAD_KEYS` is exported as a constant for the wrapper. `runner.py` wraps `logs` before passing it to `ActionContext`. 6 new unit tests.
+- **`payload_step_run_id` query parameter on `GET /api/v0/log-buffer`.** Filters buffered log events by `payload->>'step_run_id'`. Accepted as a sole discriminator (no longer 400s if other params are absent). Backed by Alembic revision `a3b4c5d6e7f8` (`log_buffer_step_run_id_index`) which adds a partial expression index `ON log_event_buffer ((payload ->> 'step_run_id')) WHERE payload ? 'step_run_id'` so per-step Logs panels in product UIs no longer hit a full table scan.
+- **`platform/orchestrator/cartridge_paths.py`** — single source of truth for `PIPELINE_SOURCE_DIRS` (kernel pipelines dir + `<monorepo-root>/cartridges/journey/`). Imported by both `orchestrator/deps.py::get_loaded_pipelines` and `runtimes/platform_executor_node/main.py` to avoid drift.
+
+### Changed
+
+- **Executor runtime now bootstraps the lake stack and shares MQ publisher between event and log sinks.** `runtimes/platform_executor_node/main.py::_run` builds `RuntimeSettingsService` → `LakeSettings` → catalog → `ensure_tables` → `LakeSessionFactory` → `set_process_lake_deps(...)` so lake-backed actions (`access_apply.execute_plan`, `effective_access.project_application`, etc.) no longer fail with "Process lake session factory not initialised" when run inside the executor. The single `AsyncRabbitMQPublisher` is reused as both the event sink and the log sink (`AURELION_EVENTS_PROVIDER=mq`, `AURELION_LOG_SINK_PROVIDER=mq`) so executor-side `pipeline.run.*` events and per-step log lines reach RabbitMQ in production. Sink defaults remain `noop` / `file` for test-safety; real deployments must flip both via env (the kernel `.env` is updated; `.env.example` documents the contract). `runtimes/platform_api/main.py` gains the matching `set_process_lake_deps(...)` call so API-side lake-backed reads work identically.
+- **`access_plan` per-subject lookup simplified.** `engines/access_plan/repository.py::fetch_current_initiatives_for_subject` no longer falls back to a `JOIN access_facts` lookup — that Postgres table was dropped during the lake migration and the join started raising `relation "access_facts" does not exist` whenever an `access_plan.plan` action ran. The remaining direct `initiatives.subject_ref` path is the sole lookup.
+
+### Removed
+
+- **`confirm_destructive` arg removed from `access_apply.execute_plan` invocations in `cartridges/journey/{joiner,leaver,on_leave,return_from_leave}.yaml`.** `ExecutePlanArgs(extra='forbid')` rejected the arg outright — the cartridge action contract derives destructive intent from the plan content, not a per-call flag. Misleading comments in `leaver.yaml` and `on_leave.yaml` were rewritten to match the action signature.
+
+### Changed
+
+- **`subject_ref` on domain events now carries `Subject.id` (Slice B — subject_ref contract flip).** Every `inventory.{employee,nhi,customer}.{created,updated,bulk_upserted}` event payload now sets `subject_ref` to the kernel `Subject.id` UUID. The previous value was the principal id (employee_id / nhi_id / customer_id). Principal ids remain on the payload under their own dedicated keys (`employee_id`, `nhi_id`, `customer_id`). `NHIService._resolve_nhi_subject_id` has been removed; `ensure_for_principal` (idempotent) is called instead. `inventory.nhi.updated` and `inventory.nhi.expired` no longer carry the transient `subject_id` field. `inventory.customer.created` and `inventory.customer.updated` now carry `subject_ref` and `subject_type='customer'` for contract uniformity. The `pipelines/access_plan_subject_triggers.yaml` `inventory.nhi.expired` trigger now extracts `subject_ref` from the payload instead of `nhi_id`.
+
+- **`GET /api/v0/subjects` — filter params and paginated envelope.** Endpoint now accepts `principal_employee_id`, `principal_nhi_id`, `principal_customer_id` (UUID, optional, AND-combined), `limit` (default 100, max 1000), `offset` (default 0). Response shape changes from `list[SubjectRead]` to `SubjectListResponse { items, total, limit, offset }`.
+
+- **`PATCH /api/v0/org-units/{id}` replaces `PUT /api/v0/org-units/{id}` (Phase 20 M-B).** The update endpoint for external org-units now uses the PATCH verb. The request body, response schema, and status codes are unchanged; only the HTTP method changes. Kernel tests updated to use `client.patch`.
+
+- **`OrgUnitListItem` returned by `GET /api/v0/org-units` now carries `parent_id` (Phase 20 M-D).** `parent_id` is `UUID | null` — UUID string when the org-unit has a parent, `null` when it is a root. `OrgUnitRead.parent_id` (single-row `GET /org-units/{id}`) is unchanged.
+
+- **`EmployeeCreate` and `EmployeeRead` carry `org_unit_id` (Phase 20 M-C).** `POST /api/v0/employees` accepts `org_unit_id` (nullable UUID); the service validates the org-unit row exists before inserting (404 on unknown id). `GET /api/v0/employees` and `GET /api/v0/persons` now require `limit` and `offset` query params (calling without them returns 422) and return the envelope `{items, total, limit, offset}` with page size capped at 1000. `inventory.employee.created` event payload gains the `org_unit_id` field. **Breaking change:** bare `GET /api/v0/employees` and `GET /api/v0/persons` without pagination params no longer work.
+
+- **`GET /api/v0/org-units` pagination (Phase 20 K-O).** `limit` and `offset` are required query params; calling the endpoint without them is a contract error (422). Response envelope is `{items, total, limit, offset}`. Page size capped at 1000. Stable ordering by `external_id ASC`. Repository function `list_all_org_units` replaced by `list_org_units_page(session, *, limit, offset) -> tuple[list[OrgUnit], int]`.
+
+### Added
+
+- **Auto-create Subject for every Employee, NHI, and Customer at the service layer (`SubjectService.ensure_for_principal`).** `EmployeeService`, `NHIService`, and `CustomerService` now call the new idempotent `ensure_for_principal` method post-flush on every create path, producing a `Subject` row in the same transaction. The existing reconcile-path helper `_ensure_subject_for_employee` is replaced by the same method. Alembic data migration `fa1b2c3d4e5f` backfills missing Subject rows for existing principals. (Phase Subject-A)
+
+- **`PATCH /api/v0/employees/{id}` endpoint.** Accepts `EmployeePatch` body (any of `org_unit_id`, `description`, `attributes`). Emits one fat `inventory.employee.updated` event with `changes` map; attribute upserts surface as `changes["attributes.<key>"]`. The service method already existed; this exposes it over HTTP so Journey can drive the lifecycle joiner transition from the contractor onboarding flow.
+
+- **Single-row CRUD on `/api/v0/org-units` (Phase 20 M-A).** POST, GET `/{id}`, PUT `/{id}`, DELETE `/{id}` for external org-units. Internal org-units are reconcile-owned — the endpoints reject mutations on them (409). New nullable `description` column on `org_units`. Alembic migration `2026_05_16_0900_phase_20_ma_org_units_description` is fully reversible.
+
+- **`org_units.is_internal` column (Phase 20 K-N).** Adds `is_internal BOOLEAN NOT NULL DEFAULT TRUE`
+  to the `org_units` table. Exposed on `GET /api/v0/org-units` responses (`OrgUnitListItem`).
+  Accepted (but not yet propagated through the lake path) on `POST /api/v0/org-units/bulk`
+  (`OrgUnitBulkItem`). `OrgUnitService.bulk_upsert_org_units` passes the field through to the
+  repository upsert. A PL/pgSQL trigger (`trg_org_units_is_internal_consistency`) enforces that
+  every node in a connected org-unit tree shares the same `is_internal` value. The trigger fires
+  on every INSERT and UPDATE; any single-row flip that contradicts the current parent or any child
+  is rejected. **Subtree flips of >1 node are not supported via plain UPDATE in K-N** — to convert
+  a multi-node subtree, drop it and recreate it with the new value. Alembic migration
+  `2026_05_15_2331_phase_20_kn_org_units_is_internal` is fully reversible.
+
+- **Four default Journey pipeline cartridges (Phase 20 K-J).** YAML files
+  shipped in `<monorepo-root>/cartridges/journey/`:
+  - `joiner.yaml` (`journey.joiner`) — non-destructive null → active:
+    `access_plan.plan` → `access_apply.execute_plan(confirm_destructive=false)`
+    → welcome `notifications.send_email`.
+  - `leaver.yaml` (`journey.leaver`) — destructive active → terminated:
+    `access_plan.plan` → `notifications.send_inapp` (operator confirm
+    request) → `wait_for_event` (`journey.case.apply_confirmed`, 7d
+    timeout) → `access_apply.execute_plan(confirm_destructive=true)` →
+    manager `notifications.send_email`.
+  - `on_leave.yaml` (`journey.on_leave`) — same confirm-gated skeleton as
+    leaver, ending in an SMS notification.
+  - `return_from_leave.yaml` (`journey.return_from_leave`) — non-destructive
+    mirror of joiner.
+  All four name themselves under the `journey.*` namespace so admin tools
+  can filter the cartridge picker to Journey pipelines only. Loader
+  validation pass with `validate_action_refs=True` confirms every step
+  references a registered action. 5 new smoke tests verifying the
+  load path + structural sanity.
+
+- **`engines/notifications/` actions and Jinja2 templates (Phase 20 K-I).** Four pipeline-callable actions register at import time via `@register_action`, all `idempotent=False`:
+  - `notifications.send_email(template, to, ctx, locale, correlation_id?)`
+  - `notifications.send_sms(template, to, ctx, locale, correlation_id?)`
+  - `notifications.send_webhook(url, template, ctx, headers, correlation_id?)`
+  - `notifications.send_inapp(template, recipient_kind, recipient_id, routing_key, ctx, link_to?, case_id?, correlation_id?)`
+  Each action renders the named template via the new template engine
+  (`engines/notifications/template_engine.render(channel, name, ctx)`),
+  builds the channel's `Message` dataclass, and delegates to the
+  factory-resolved provider. Missing templates and provider-side failures
+  surface as `sent=False` with a descriptive `reason`. Initial template
+  set: `email/welcome_employee`, `email/leaver_manager`,
+  `inapp/leaver_confirm_required`, `sms/leave_starts`,
+  `webhook/case_completed`.
+- New top-level deps in `pyproject.toml`: `jinja2>=3.1.0`,
+  `httpx>=0.28.1` (was dev-only). `uv.lock` regenerated.
+- 11 unit tests for the template engine and the four actions
+  (registry membership, file-provider round-trip per channel, missing
+  template → typed failure).
+
+- **`platform/notifications/{email,sms,webhook,inapp}/` subsystems (Phase 20 K-C/K-D/K-E/K-F).** Four sibling channels modelled on `platform/secrets/` and `platform/storage/`: each ships `interface.py` (typed Protocol + `Message` / `SendResult` dataclasses), `factory.py` (env-driven provider resolution via `AURELION_NOTIFICATIONS_<CHANNEL>_PROVIDER`), a mandatory `file` provider that appends JSON-lines records to a configurable path, and at least one real provider:
+  - `email/providers/smtp.py` — SMTP via `smtplib`, configured from kernel secret store under `notifications/email/smtp/*`.
+  - `sms/providers/twilio.py` — Twilio REST via `httpx`, configured under `notifications/sms/twilio/*`.
+  - `webhook/providers/http.py` — generic JSON POST via `httpx`.
+  - `inapp/providers/eventbus.py` — emits an MQ event on the caller-supplied `routing_key` (e.g. `notifications.inapp_journey.dispatched`) so the product-side MQ subscriber (J-G) persists a `JourneyNotification` row.
+- 19 unit tests across the four subsystems (file provider + factory contract; eventbus emission for inapp).
+- `PipelineDefinitionLoader.load_many(paths)` (Phase 20 K-H): scan multiple directories and merge into one dict; cross-directory `pipeline.name` collisions surface as `PipelineLoadError` exactly as intra-directory collisions do; missing directories contribute zero pipelines silently. 4 new tests.
+- `_JOURNEY_CARTRIDGES_DIR` wired into `platform/orchestrator/deps.py::get_loaded_pipelines`: the kernel now picks up Journey pipeline cartridges from `<monorepo-root>/cartridges/journey/` in addition to the kernel-shipped `aurelion-kernel/pipelines/`. A missing directory is a no-op.
+- `cartridges/journey/` directory tracked in the monorepo (currently `.gitkeep` only; default cartridges land in K-J).
+- **Per-row event emission from reconciliation apply (Phase 20 K-B + K-G).** All four `engines/inventory_reconcile/master_data_apply::apply_*_delta` functions now accept an optional `event_service` parameter (defaults to `noop_event_service` so existing callers keep working). When wired with a real `EventService` they emit one event per successfully applied delta item:
+  - `inventory.person.created` / `inventory.person.updated`
+  - `inventory.org_unit.created` / `inventory.org_unit.updated`
+  - `inventory.employee.created` / `inventory.employee.updated` (carries `subject_ref`, `subject_type` for access-plan trigger compatibility)
+  - `inventory.account.created` / `inventory.account.updated` — `revoke` and `reactivate` operations also emit `updated` with a `status` change so downstream subscribers see the lifecycle move.
+- `apply_employees_delta` now applies arbitrary `attributes` keys from the delta payload into `ent_employee_attributes` (previously only `is_locked` / `description` / `org_unit_external_id` were applied — attribute changes were silently dropped). Per-attribute deltas appear in the emitted `inventory.employee.updated` payload under `changes["attributes.<key>"]`.
+- `apply_master_data_delta` dispatcher forwards the new `event_service` parameter to the underlying entity-specific function.
+- 6 new unit tests covering create/update/revoke event emission per entity type, attribute-change emission for employees, and the noop default path.
+
+### Removed
+
+- Event keys `subject.context.changed` and `subject.employment_status.changed` removed entirely from kernel. No deprecation period — no in-tree or external consumer depended on them outside of the `access_plan_subject_triggers` pipeline, which is migrated below. Test suite assertions and docstrings rewritten to the new event shape.
+
+### Changed
+
+- **Unified inventory `<entity>.updated` event shape (Phase 20 K-A).** `EmployeeService.update_employee`, `NHIService.update_nhi`, and `AccountService.update_account` now each emit a single fat `inventory.<entity>.updated` event per change-bearing call. Payload contract: `{entity_id, [subject_ref, subject_type,] changes: {field: {old, new}}}`. For employees and NHIs `subject_ref` is the entity id, matching the access-plan trigger contract. Per-attribute changes appear under `changes["attributes.<key>"]`. A patch that targets fields already at the requested value emits nothing (true no-op). `inventory.account.updated` migrated from `changed_fields: [...]` to `changes: {field: {old, new}}`.
+- `pipelines/access_plan_subject_triggers.yaml` rewritten (`version: 2`) to bind on `inventory.employee.updated` (with `match.changes.employment_status: {}` and `match.changes.org_unit_id: {}` containment filters) and `inventory.nhi.updated` (no extra matcher — every NHI update replans). `subject.replan.required` and `inventory.nhi.expired` bindings unchanged.
+- `inventory/accounts/repository.py::update_account` return type changed from `set[str]` to `dict[str, dict[str, object | None]]` mapping field → `{old, new}`. Enum and UUID values are coerced to JSON-friendly primitives.
+- `pipelines/schema.json::pipeline.name` regex relaxed to allow dot-separated namespaces (e.g. `journey.joiner`).
+
+- `PipelineDefinitionLoader.load_many(paths)` (Phase 20 K-H): scan multiple directories and merge into one dict; cross-directory `pipeline.name` collisions surface as `PipelineLoadError` exactly as intra-directory collisions do; missing directories contribute zero pipelines silently. 4 new tests.
+- `_JOURNEY_CARTRIDGES_DIR` wired into `platform/orchestrator/deps.py::get_loaded_pipelines`: the kernel now picks up Journey pipeline cartridges from `<monorepo-root>/cartridges/journey/` in addition to the kernel-shipped `aurelion-kernel/pipelines/`. A missing directory is a no-op.
+- `cartridges/journey/` directory tracked in the monorepo (currently `.gitkeep` only; default cartridges land in K-J).
+
 ## [0.12.0] - 2026-05-13
 
 ### Removed

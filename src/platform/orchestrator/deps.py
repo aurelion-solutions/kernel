@@ -28,7 +28,6 @@ in routes.py must both change. Cost of reversal: ~20 LOC.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, Request
@@ -37,16 +36,12 @@ from src.core.db.deps import get_db
 from src.platform.events.factory import event_sink_factory
 from src.platform.events.service import EventService
 from src.platform.logs.deps import get_log_service
+from src.platform.orchestrator.cartridge_paths import PIPELINE_SOURCE_DIRS as _PIPELINE_SOURCE_DIRS
 from src.platform.orchestrator.loader import PipelineDefinition, PipelineDefinitionLoader
 from src.platform.orchestrator.service import PipelineOrchestratorService
 
 if TYPE_CHECKING:
     from src.platform.logs.service import LogService, NoOpLogService
-
-# Directory that contains pipeline YAML files.
-# Hardcoded for this phase — see TASK.md §9: if it ever becomes configurable
-# it belongs in RuntimeSettingsConfig. Deferred, not silently ignored.
-_PIPELINES_DIR = Path(__file__).parent.parent.parent.parent / 'pipelines'
 
 
 def _build_event_service() -> EventService:
@@ -69,15 +64,17 @@ def get_pipeline_loader(request: Request) -> PipelineDefinitionLoader:
 def get_loaded_pipelines(request: Request) -> dict[str, PipelineDefinition]:
     """Return the cached pipeline definitions dict from app.state.
 
-    On first access, calls loader.load_dir(<repo>/pipelines) and stores the
-    result on app.state.pipelines. Subsequent requests return the cached dict.
+    On first access, calls loader.load_many(_PIPELINE_SOURCE_DIRS) — which
+    scans the kernel-shipped ``pipelines/`` directory and the monorepo-root
+    ``cartridges/journey/`` directory — and stores the merged result on
+    app.state.pipelines. Subsequent requests return the cached dict.
 
     In tests: stays empty (``{}``) unless the test explicitly seeds
     ``app.state.pipelines`` with fake PipelineDefinition instances.
     """
     if not hasattr(request.app.state, 'pipelines'):
         loader = get_pipeline_loader(request)
-        request.app.state.pipelines = loader.load_dir(_PIPELINES_DIR)
+        request.app.state.pipelines = loader.load_many(_PIPELINE_SOURCE_DIRS)
     return request.app.state.pipelines  # type: ignore[no-any-return]
 
 

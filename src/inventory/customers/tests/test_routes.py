@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from src.core.db.deps import get_db
 from src.inventory.customers.routes import router as customers_router
+from src.inventory.subjects.routes import router as subjects_router
 
 
 @pytest.fixture
@@ -325,3 +326,62 @@ async def test_get_customer_attributes_returns_list(app_with_customers) -> None:
     data = attrs_resp.json()
     assert isinstance(data, list)
     assert len(data) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Subject auto-creation integration test
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_with_customers_and_subjects(engine):
+    """App with customer + subjects routes using test engine."""
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    session_factory = async_sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        autoflush=False,
+        autocommit=False,
+        class_=AsyncSession,
+    )
+
+    async def override_get_db():
+        async with session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
+                await session.rollback()
+                raise
+
+    app = FastAPI()
+    app.include_router(customers_router, prefix='/api/v0')
+    app.include_router(subjects_router, prefix='/api/v0')
+    app.dependency_overrides[get_db] = override_get_db
+    return app
+
+
+@pytest.mark.asyncio
+async def test_post_customers_then_get_subjects_shows_new_row(
+    app_with_customers_and_subjects,
+) -> None:
+    """POST /customers then GET /subjects?kind=customer finds the auto-created Subject."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_customers_and_subjects),
+        base_url='http://testserver',
+    ) as client:
+        create_resp = await client.post(
+            '/api/v0/customers',
+            json={'external_id': 'cust-subj-api-test'},
+        )
+        assert create_resp.status_code == 201
+        customer_id = create_resp.json()['id']
+
+        subj_resp = await client.get('/api/v0/subjects', params={'kind': 'customer'})
+        assert subj_resp.status_code == 200
+
+    subjects_data = subj_resp.json()
+    matching = [s for s in subjects_data['items'] if s.get('principal_customer_id') == customer_id]
+    assert len(matching) == 1

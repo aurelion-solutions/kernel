@@ -57,15 +57,34 @@ async def list_subjects(
     *,
     kind: SubjectKind | None = None,
     status: SubjectStatus | None = None,
-) -> list[Subject]:
-    """List subjects with optional filters."""
+    principal_employee_id: uuid.UUID | None = None,
+    principal_nhi_id: uuid.UUID | None = None,
+    principal_customer_id: uuid.UUID | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Subject], int]:
+    """List subjects with optional filters. Returns (rows, total)."""
+    from sqlalchemy import func  # noqa: PLC0415
+
     query = select(Subject).order_by(Subject.id)
     if kind is not None:
         query = query.where(Subject.kind == kind)
     if status is not None:
         query = query.where(Subject.status == status)
-    result = await session.execute(query)
-    return list(result.scalars().all())
+    if principal_employee_id is not None:
+        query = query.where(Subject.principal_employee_id == principal_employee_id)
+    if principal_nhi_id is not None:
+        query = query.where(Subject.principal_nhi_id == principal_nhi_id)
+    if principal_customer_id is not None:
+        query = query.where(Subject.principal_customer_id == principal_customer_id)
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await session.execute(count_query)
+    total = total_result.scalar_one()
+
+    paginated = query.limit(limit).offset(offset)
+    result = await session.execute(paginated)
+    return list(result.scalars().all()), total
 
 
 async def update_subject(

@@ -1,0 +1,7 @@
+{% block body %}{
+  "event": "journey.case.completed",
+  "case_id": "{{ case_id }}",
+  "subject_ref": "{{ subject_ref }}",
+  "from_state": {{ from_state | tojson }},
+  "to_state": "{{ to_state }}"
+}{% endblock %}

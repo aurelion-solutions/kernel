@@ -135,12 +135,14 @@ async def test_create_customer_emits_inventory_customer_created(
     assert envelope.causation_id is None
     assert len(envelope.correlation_id) == 32
     assert envelope.correlation_id == envelope.correlation_id.lower()
-    assert envelope.payload == {
-        'customer_id': str(customer.id),
-        'external_id': 'svc-log-001',
-        'tenant_id': None,
-        'plan_tier': 'pro',
-    }
+    # subject_ref is Subject.id — must be set and distinct from customer.id
+    assert 'subject_ref' in envelope.payload
+    assert envelope.payload['subject_ref'] != str(customer.id)
+    assert envelope.payload['subject_type'] == 'customer'
+    assert envelope.payload['customer_id'] == str(customer.id)
+    assert envelope.payload['external_id'] == 'svc-log-001'
+    assert envelope.payload['tenant_id'] is None
+    assert envelope.payload['plan_tier'] == 'pro'
 
 
 @pytest.mark.asyncio
@@ -168,6 +170,8 @@ async def test_update_customer_emits_inventory_customer_updated(
     assert envelope.target_id == str(customer_id)
     assert envelope.payload['changed_fields'] == ['is_locked']
     assert envelope.payload['customer_id'] == str(customer_id)
+    assert 'subject_ref' in envelope.payload
+    assert envelope.payload['subject_type'] == 'customer'
 
 
 @pytest.mark.asyncio
@@ -406,3 +410,37 @@ def test_customer_service_explicit_event_service_propagates_to_default_subject_s
     """
     svc = CustomerService(event_service=event_service)
     assert svc._subject_service._events is event_service
+
+
+# ---------------------------------------------------------------------------
+# Subject auto-creation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_customer_creates_subject(
+    event_service: EventService,
+    session_factory,
+) -> None:
+    """create_customer leaves exactly one Subject for the new customer."""
+    import sqlalchemy as sa  # noqa: PLC0415
+    from src.inventory.subjects.models import Subject, SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.service import SubjectService  # noqa: PLC0415
+
+    subject_service = SubjectService(event_service=event_service)
+    svc = CustomerService(event_service=event_service, subject_service=subject_service)
+
+    async with session_factory() as session:
+        customer = await svc.create_customer(session, external_id='cust-subj-create')
+        await session.commit()
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count()).where(
+                    Subject.kind == SubjectKind.customer,
+                    Subject.principal_customer_id == customer.id,
+                )
+            )
+        ).scalar()
+    assert count == 1

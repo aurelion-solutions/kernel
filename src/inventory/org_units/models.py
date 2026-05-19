@@ -7,7 +7,7 @@
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -37,6 +37,15 @@ class OrgUnit(Base):
         UUID(as_uuid=True),
         ForeignKey('org_units.id', ondelete='SET NULL'),
         nullable=True,
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    is_internal: Mapped[bool] = mapped_column(
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.text('true'),
     )
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True),

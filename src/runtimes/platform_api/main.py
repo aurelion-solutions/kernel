@@ -21,7 +21,26 @@ from src.core.db.session import get_engine
 from src.core.middleware.correlation import CorrelationIdMiddleware
 from src.core.mq.async_publisher import AsyncRabbitMQPublisher
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient
+
+# Pipeline-action registry must be populated before the orchestrator loader runs
+# its action-ref validation (`/api/v0/pipelines` calls `loader.load_many(...)` on
+# first access — without these imports the registry is empty, every YAML
+# referencing e.g. `(access_plan, cleanup_stale_apply_leases)` fails validation,
+# and the endpoint returns 500. The executor runtime preloads the same set in
+# `platform_executor_node/main.py` for the same reason; the two lists must stay
+# in sync until Step 14 introduces auto-discovery.
+import src.engines.access_analysis.assessment_preview.actions  # noqa: F401
+import src.engines.access_analysis.capability_preview.actions  # noqa: F401
+import src.engines.access_analysis.reports.actions  # noqa: F401
+import src.engines.access_apply.actions  # noqa: F401
+import src.engines.access_effective.actions  # noqa: F401
+import src.engines.access_plan.actions  # noqa: F401
+import src.engines.inventory_reconcile.actions  # noqa: F401
 import src.engines.inventory_reconcile.handlers  # noqa: F401 — bootstrap handler registry
+import src.engines.inventory_sync.actions  # noqa: F401
+import src.engines.notifications.actions  # noqa: F401
+import src.engines.policy_assessment.policy_types.sod.actions  # noqa: F401
+import src.inventory.initiatives.actions  # noqa: F401
 from src.platform.connectors.client import ConnectorClient
 from src.platform.connectors.registration_consumer import run_connector_registration_consumer
 from src.platform.events.buffer import InMemoryEventBuffer, InMemoryEventBufferSink
@@ -31,6 +50,7 @@ from src.platform.events.tee_sink import TeeEventSink
 from src.platform.lake.catalog import get_catalog
 from src.platform.lake.config import build_lake_settings
 from src.platform.lake.duckdb_session import LakeSessionFactory
+from src.platform.lake.factory import set_process_lake_deps
 from src.platform.lake.provisioning import ensure_tables
 from src.platform.logs.providers.mq import RabbitMQLogSink
 from src.platform.logs.service import LogService, set_main_loop
@@ -117,6 +137,15 @@ async def lifespan(app: FastAPI):
     app.state.lake_settings = lake_settings
     app.state.lake_catalog = lake_catalog
     app.state.lake_session_factory = lake_session_factory
+
+    # Register process-scoped lake deps so engine actions invoked outside a
+    # FastAPI request (e.g. background tasks within this process) can resolve
+    # a DuckDB session via src.platform.lake.factory.
+    set_process_lake_deps(
+        catalog=lake_catalog,
+        session_factory=lake_session_factory,
+        settings=lake_settings,
+    )
 
     # Read registration topology from env (out of Phase 11 Step 1 Settings field list).
     registration_exchange = os.environ.get(

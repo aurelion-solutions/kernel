@@ -203,7 +203,7 @@ async def load_references(
     # Resources
     resource_ext_map = {
         'repo_kernel': 'ghe/repos/aurelion-kernel',
-        'repo_gui': 'ghe/repos/aurelion-gui',
+        'repo_gui': 'ghe/repos/customer-portal',
         'repo_infra': 'ghe/repos/infrastructure',
         'team_platform': 'ghe/orgs/aurelion/teams/platform',
         'group_platform_parent': 'gws/groups/platform-eng',
@@ -980,7 +980,7 @@ async def seed_plan_on_leave_revoke(
         kind=PlanItemKind.revoke_role,
         application='GHE',
         account_ref='pavel.morozov',
-        target_descriptor={'repo': 'aurelion-gui', 'permission': 'read', 'action': 'revoke'},
+        target_descriptor={'repo': 'customer-portal', 'permission': 'read', 'action': 'revoke'},
         initiative_refs=[str(uuid.uuid5(uuid.NAMESPACE_OID, 'seed-phase19-demo-init-grace-onleave'))],
         decision_snapshot={
             'rule_id': 'lifecycle-on-leave-revoke-v1',

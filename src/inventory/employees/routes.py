@@ -6,7 +6,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.inventory.employees.deps import get_employee_service
@@ -21,6 +21,9 @@ from src.inventory.employees.schemas import (
     EmployeeBulkRequest,
     EmployeeBulkResponse,
     EmployeeCreate,
+    EmployeeListItem,
+    EmployeeListResponse,
+    EmployeePatch,
     EmployeeRead,
 )
 from src.inventory.employees.service import (
@@ -28,6 +31,7 @@ from src.inventory.employees.service import (
     EmployeeAttributeNotFoundError,
     EmployeeNotFoundError,
     EmployeeService,
+    InvalidOrgUnitIdError,
     InvalidPersonIdError,
 )
 
@@ -66,24 +70,37 @@ async def create_employee(
             person_id=body.person_id,
             is_locked=body.is_locked,
             description=body.description,
+            org_unit_id=body.org_unit_id,
         )
     except InvalidPersonIdError:
         raise HTTPException(
             status_code=404,
             detail='Person not found',
         ) from None
+    except InvalidOrgUnitIdError:
+        raise HTTPException(
+            status_code=404,
+            detail='Org-unit not found',
+        ) from None
     await session.commit()
     return EmployeeRead.model_validate(employee)
 
 
-@router.get('', response_model=list[EmployeeRead])
+@router.get('', response_model=EmployeeListResponse)
 async def list_employees(
     session: AsyncSession = DependsSession,
     service: EmployeeService = DependsService,
-) -> list[EmployeeRead]:
-    """List all employees."""
-    employees = await service.list_employees(session)
-    return [EmployeeRead.model_validate(e) for e in employees]
+    limit: int = Query(..., ge=1, le=1000),
+    offset: int = Query(..., ge=0),
+) -> EmployeeListResponse:
+    """Return employees ordered by id ascending, paginated by limit/offset."""
+    employees, total = await service.list_employees(session, limit=limit, offset=offset)
+    return EmployeeListResponse(
+        items=[EmployeeListItem.model_validate(e) for e in employees],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get('/{employee_id}', response_model=EmployeeRead)
@@ -96,6 +113,24 @@ async def get_employee(
     employee = await service.get_employee(session, employee_id)
     if employee is None:
         raise HTTPException(status_code=404, detail='Employee not found')
+    return EmployeeRead.model_validate(employee)
+
+
+@router.patch('/{employee_id}', response_model=EmployeeRead)
+async def patch_employee(
+    employee_id: uuid.UUID,
+    body: EmployeePatch,
+    session: AsyncSession = DependsSession,
+    service: EmployeeService = DependsService,
+) -> EmployeeRead:
+    """Patch employee fields and/or attributes. Emits one ``inventory.employee.updated``."""
+    try:
+        employee = await service.update_employee(session, employee_id, body)
+    except EmployeeNotFoundError:
+        raise HTTPException(status_code=404, detail='Employee not found') from None
+    except InvalidOrgUnitIdError:
+        raise HTTPException(status_code=404, detail='Org-unit not found') from None
+    await session.commit()
     return EmployeeRead.model_validate(employee)
 
 

@@ -16,7 +16,7 @@ from src.inventory.employees.repository import (
     delete_employee_attribute,
     get_employee_by_id,
     list_employee_attributes,
-    list_employees,
+    list_employees_page,
 )
 from src.inventory.persons.repository import create_person
 
@@ -61,8 +61,8 @@ async def test_get_employee_by_id_returns_none_when_missing(session_factory) -> 
 
 
 @pytest.mark.asyncio
-async def test_list_employees(session_factory) -> None:
-    """list_employees returns all employees."""
+async def test_list_employees_page_happy(session_factory) -> None:
+    """list_employees_page returns rows and total for a normal page."""
     async with session_factory() as session:
         person1 = await create_person(session, external_id='p-4a', full_name='Dave')
         person2 = await create_person(session, external_id='p-4b', full_name='Dave2')
@@ -72,8 +72,24 @@ async def test_list_employees(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        employees = await list_employees(session)
-    assert len(employees) >= 2
+        rows, total = await list_employees_page(session, limit=100, offset=0)
+    assert len(rows) >= 2
+    assert total >= 2
+
+
+@pytest.mark.asyncio
+async def test_list_employees_page_past_the_end(session_factory) -> None:
+    """list_employees_page with offset beyond total returns empty rows but correct total."""
+    async with session_factory() as session:
+        person = await create_person(session, external_id='p-pe-1', full_name='PastEnd')
+        await session.flush()
+        await create_employee(session, person_id=person.id)
+        await session.commit()
+
+    async with session_factory() as session:
+        rows, total = await list_employees_page(session, limit=10, offset=9999)
+    assert rows == []
+    assert total >= 1
 
 
 @pytest.mark.asyncio

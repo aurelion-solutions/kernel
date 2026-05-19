@@ -17,7 +17,7 @@ from src.inventory.persons.repository import (
     get_person_by_external_id,
     get_person_by_id,
     list_person_attributes,
-    list_persons,
+    list_persons_page,
 )
 
 
@@ -73,19 +73,33 @@ async def test_get_person_by_external_id(session_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_persons(session_factory) -> None:
-    """list_persons returns all persons."""
+async def test_list_persons_page_happy(session_factory) -> None:
+    """list_persons_page returns rows and total for a normal page."""
     async with session_factory() as session:
-        await create_person(session, external_id='ext-a', full_name='A')
-        await create_person(session, external_id='ext-b', full_name='B')
+        await create_person(session, external_id='ext-page-a', full_name='PageA')
+        await create_person(session, external_id='ext-page-b', full_name='PageB')
         await session.commit()
 
     async with session_factory() as session:
-        persons = await list_persons(session)
-    assert len(persons) == 2
-    external_ids = [p.external_id for p in persons]
-    assert 'ext-a' in external_ids
-    assert 'ext-b' in external_ids
+        rows, total = await list_persons_page(session, limit=100, offset=0)
+    assert len(rows) >= 2
+    assert total >= 2
+    external_ids = [p.external_id for p in rows]
+    assert 'ext-page-a' in external_ids
+    assert 'ext-page-b' in external_ids
+
+
+@pytest.mark.asyncio
+async def test_list_persons_page_past_the_end(session_factory) -> None:
+    """list_persons_page with offset beyond total returns empty rows but correct total."""
+    async with session_factory() as session:
+        await create_person(session, external_id='ext-pp-1', full_name='PastPagePerson')
+        await session.commit()
+
+    async with session_factory() as session:
+        rows, total = await list_persons_page(session, limit=10, offset=9999)
+    assert rows == []
+    assert total >= 1
 
 
 @pytest.mark.asyncio

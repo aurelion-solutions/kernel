@@ -33,7 +33,8 @@ from src.inventory.nhi.repository import (
     list_nhi_attributes as repo_list_nhi_attributes,
 )
 from src.inventory.nhi.schemas import NHIPatch
-from src.inventory.subjects.models import Subject, SubjectKind
+from src.inventory.subjects.models import SubjectKind
+from src.inventory.subjects.service import SubjectService
 from src.platform.applications.repository import get_application_by_id as repo_get_application_by_id
 from src.platform.events.schemas import EventEnvelope, EventParticipantKind
 from src.platform.events.service import EventService, noop_event_service
@@ -86,8 +87,15 @@ class DuplicateNHIAttributeError(Exception):
 class NHIService:
     """Orchestrates NHI CRUD and event emission."""
 
-    def __init__(self, event_service: EventService | None = None) -> None:
+    def __init__(
+        self,
+        event_service: EventService | None = None,
+        subject_service: SubjectService | None = None,
+    ) -> None:
         self._events = event_service if event_service is not None else noop_event_service
+        self._subject_service = (
+            subject_service if subject_service is not None else SubjectService(event_service=event_service)
+        )
 
     async def create_nhi(
         self,
@@ -120,6 +128,12 @@ class NHIService:
             owner_employee_id=owner_employee_id,
             application_id=application_id,
         )
+        subject = await self._subject_service.ensure_for_principal(
+            session,
+            kind=SubjectKind.nhi,
+            principal_id=nhi.id,
+            correlation_id=correlation_id,
+        )
         await self._events.emit(
             EventEnvelope(
                 event_id=uuid.uuid4(),
@@ -129,6 +143,8 @@ class NHIService:
                 causation_id=None,
                 payload={
                     'nhi_id': str(nhi.id),
+                    'subject_ref': str(subject.id),
+                    'subject_type': 'nhi',
                     'external_id': nhi.external_id,
                 },
                 actor_kind=EventParticipantKind.COMPONENT,
@@ -234,17 +250,6 @@ class NHIService:
             )
         )
 
-    async def _resolve_nhi_subject_id(self, session: AsyncSession, nhi_id: uuid.UUID) -> str:
-        """Return the Subject.id string for the given NHI, or nhi_id as fallback."""
-        subject_result = await session.execute(
-            sa.select(Subject).where(
-                Subject.kind == SubjectKind.nhi,
-                Subject.principal_nhi_id == nhi_id,
-            )
-        )
-        subject = subject_result.scalar_one_or_none()
-        return str(subject.id) if subject is not None else str(nhi_id)
-
     async def update_nhi(
         self,
         session: AsyncSession,
@@ -254,71 +259,91 @@ class NHIService:
     ) -> NHI:
         """PATCH NHI fields and/or attributes.
 
-        Context fields (name, application_id, owner_employee_id) emit
-        subject.context.changed (subject_type=nhi).
-        Attribute changes also emit subject.context.changed.
-        Non-context fields (description, is_locked) emit no domain event.
+        Emits one fat ``inventory.nhi.updated`` event with payload
+        ``{nhi_id, subject_ref, subject_type, changes}``. Attribute updates
+        appear in ``changes`` under key ``attributes.<key>``. No event is
+        emitted when nothing actually changes.
         """
         nhi = await repo_get_nhi_by_id(session, nhi_id)
         if nhi is None:
             raise NHINotFoundError(nhi_id)
 
-        context_changed = False
+        changes: dict[str, dict[str, object | None]] = {}
 
-        if patch.name is not None:
+        if patch.name is not None and nhi.name != patch.name:
+            changes['name'] = {'old': nhi.name, 'new': patch.name}
             nhi.name = patch.name
-            context_changed = True
-        if patch.description is not None:
+        if patch.description is not None and nhi.description != patch.description:
+            changes['description'] = {'old': nhi.description, 'new': patch.description}
             nhi.description = patch.description
-        if patch.is_locked is not None:
+        if patch.is_locked is not None and nhi.is_locked != patch.is_locked:
+            changes['is_locked'] = {'old': nhi.is_locked, 'new': patch.is_locked}
             nhi.is_locked = patch.is_locked
-        if patch.owner_employee_id is not None:
+        if patch.owner_employee_id is not None and nhi.owner_employee_id != patch.owner_employee_id:
             emp = await repo_get_employee_by_id(session, patch.owner_employee_id)
             if emp is None:
                 raise InvalidOwnerEmployeeIdError(patch.owner_employee_id)
+            changes['owner_employee_id'] = {
+                'old': str(nhi.owner_employee_id) if nhi.owner_employee_id is not None else None,
+                'new': str(patch.owner_employee_id),
+            }
             nhi.owner_employee_id = patch.owner_employee_id
-            context_changed = True
-        if patch.application_id is not None:
+        if patch.application_id is not None and nhi.application_id != patch.application_id:
             app = await repo_get_application_by_id(session, patch.application_id)
             if app is None:
                 raise InvalidApplicationIdError(patch.application_id)
+            changes['application_id'] = {
+                'old': str(nhi.application_id) if nhi.application_id is not None else None,
+                'new': str(patch.application_id),
+            }
             nhi.application_id = patch.application_id
-            context_changed = True
 
         if patch.attributes is not None:
-            context_changed = True
             for key, value in patch.attributes.items():
-                try:
+                existing_result = await session.execute(
+                    sa.select(NHIAttribute).where(NHIAttribute.nhi_id == nhi_id, NHIAttribute.key == key)
+                )
+                existing_attr = existing_result.scalar_one_or_none()
+                old_value = existing_attr.value if existing_attr is not None else None
+                if old_value == value:
+                    continue
+                if existing_attr is None:
                     await repo_create_nhi_attribute(session, nhi_id=nhi_id, key=key, value=value)
-                except IntegrityError:
-                    # Attribute already exists — update in place
+                else:
                     await session.execute(
                         sa.update(NHIAttribute)
                         .where(NHIAttribute.nhi_id == nhi_id, NHIAttribute.key == key)
                         .values(value=value)
                     )
+                changes[f'attributes.{key}'] = {'old': old_value, 'new': value}
 
         await session.flush()
         await session.refresh(nhi)
 
-        if context_changed:
-            subject_id = await self._resolve_nhi_subject_id(session, nhi_id)
+        if changes:
+            subject = await self._subject_service.ensure_for_principal(
+                session,
+                kind=SubjectKind.nhi,
+                principal_id=nhi_id,
+                correlation_id=correlation_id,
+            )
             await self._events.emit(
                 EventEnvelope(
                     event_id=uuid.uuid4(),
-                    event_type='subject.context.changed',
+                    event_type='inventory.nhi.updated',
                     occurred_at=datetime.now(UTC),
                     correlation_id=correlation_id if correlation_id is not None else uuid.uuid4().hex,
                     causation_id=None,
                     payload={
-                        'subject_id': subject_id,
-                        'subject_type': 'nhi',
                         'nhi_id': str(nhi_id),
+                        'subject_ref': str(subject.id),
+                        'subject_type': 'nhi',
+                        'changes': changes,
                     },
                     actor_kind=EventParticipantKind.COMPONENT,
                     actor_id=_COMPONENT,
                     target_kind=EventParticipantKind.SYSTEM,
-                    target_id=subject_id,
+                    target_id=str(subject.id),
                 )
             )
         return nhi
@@ -342,7 +367,12 @@ class NHIService:
         await session.flush()
         await session.refresh(nhi)
 
-        subject_id = await self._resolve_nhi_subject_id(session, nhi_id)
+        subject = await self._subject_service.ensure_for_principal(
+            session,
+            kind=SubjectKind.nhi,
+            principal_id=nhi_id,
+            correlation_id=correlation_id,
+        )
 
         await self._events.emit(
             EventEnvelope(
@@ -353,13 +383,13 @@ class NHIService:
                 causation_id=None,
                 payload={
                     'nhi_id': str(nhi_id),
-                    'subject_id': subject_id,
+                    'subject_ref': str(subject.id),
                     'subject_type': 'nhi',
                 },
                 actor_kind=EventParticipantKind.COMPONENT,
                 actor_id=_COMPONENT,
                 target_kind=EventParticipantKind.SYSTEM,
-                target_id=str(nhi_id),
+                target_id=str(subject.id),
             )
         )
         return nhi

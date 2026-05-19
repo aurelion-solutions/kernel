@@ -37,6 +37,7 @@ from src.platform.orchestrator._durations import parse_duration
 from src.platform.orchestrator.models import PipelineRun, PipelineRunStatus
 from src.platform.orchestrator.registry import ACTION_REGISTRY, ActionContext
 from src.platform.orchestrator.service import PipelineOrchestratorService, _run_cancelled_event
+from src.platform.orchestrator.step_scoped_logs import StepScopedLogService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -638,9 +639,25 @@ async def _execute_run(
         )
         try:
             async with session_factory() as session_b:
+                # Wrap the runner-wide LogService so every emit from the action
+                # defaults to target_id = step_run_id (rather than the parent
+                # run id or being dropped for missing participants). Action
+                # handlers can still set explicit participants in their payload
+                # and the wrapper will respect them. NoOpLogService is not a
+                # subclass of LogService, so the isinstance check falls through
+                # to the bare assignment.
+                step_logs: LogService | NoOpLogService
+                if isinstance(logs, LogService):
+                    step_logs = StepScopedLogService(
+                        logs,
+                        step_run_id=step_run_id,
+                        component_id=step['engine'],
+                    )
+                else:
+                    step_logs = logs
                 ctx = ActionContext(
                     session=session_b,
-                    log_service=logs,  # type: ignore[arg-type]
+                    log_service=step_logs,  # type: ignore[arg-type]
                     pipeline_run_id=run_id,
                     step_run_id=step_run_id,
                     attempt=step_run_attempt,

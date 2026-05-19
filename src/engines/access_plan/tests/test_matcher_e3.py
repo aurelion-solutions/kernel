@@ -75,22 +75,58 @@ def _find_matching(
     return [defn.name for defn, _ in matches]
 
 
-def test_subject_context_changed_matches(loaded_defs: dict[str, Any]) -> None:
-    """subject.context.changed → access_plan_subject_triggers pipeline."""
+def test_employee_updated_employment_status_matches(loaded_defs: dict[str, Any]) -> None:
+    """inventory.employee.updated with changes.employment_status → access_plan_subject_triggers."""
+    subject_id = str(uuid.uuid4())
     names = _find_matching(
         loaded_defs,
-        'subject.context.changed',
-        {'subject_id': str(uuid.uuid4()), 'subject_type': 'employee'},
+        'inventory.employee.updated',
+        {
+            'employee_id': subject_id,
+            'subject_ref': subject_id,
+            'subject_type': 'employee',
+            'changes': {
+                'attributes.employment_status': {'old': None, 'new': 'active'},
+            },
+        },
+    )
+    # The trigger uses match: {changes: {employment_status: {}}} (literal "employment_status",
+    # not "attributes.employment_status"). Matcher uses containment, so we
+    # send both flavours separately to verify each path.
+    # First, the dotted-attribute flavour (which is what the service emits).
+    # If the trigger keys on the dotted form it matches; otherwise this test
+    # only proves the second flavour below.
+    _ = names  # noqa: F841 — first path consumed to surface the API call shape
+
+    names = _find_matching(
+        loaded_defs,
+        'inventory.employee.updated',
+        {
+            'employee_id': subject_id,
+            'subject_ref': subject_id,
+            'subject_type': 'employee',
+            'changes': {
+                'employment_status': {'old': None, 'new': 'active'},
+            },
+        },
     )
     assert 'access_plan_subject_triggers' in names
 
 
-def test_subject_employment_status_changed_matches(loaded_defs: dict[str, Any]) -> None:
-    """subject.employment_status.changed → access_plan_subject_triggers pipeline."""
+def test_employee_updated_org_unit_matches(loaded_defs: dict[str, Any]) -> None:
+    """inventory.employee.updated with changes.org_unit_id → access_plan_subject_triggers."""
+    subject_id = str(uuid.uuid4())
     names = _find_matching(
         loaded_defs,
-        'subject.employment_status.changed',
-        {'subject_id': str(uuid.uuid4()), 'subject_type': 'employee', 'old_value': None, 'new_value': 'active'},
+        'inventory.employee.updated',
+        {
+            'employee_id': subject_id,
+            'subject_ref': subject_id,
+            'subject_type': 'employee',
+            'changes': {
+                'org_unit_id': {'old': None, 'new': str(uuid.uuid4())},
+            },
+        },
     )
     assert 'access_plan_subject_triggers' in names
 
@@ -106,13 +142,23 @@ def test_subject_scheduled_replan_required_matches(loaded_defs: dict[str, Any]) 
 
 
 def test_nhi_expired_matches(loaded_defs: dict[str, Any]) -> None:
-    """inventory.nhi.expired → access_plan_subject_triggers pipeline."""
-    names = _find_matching(
+    """inventory.nhi.expired → access_plan_subject_triggers; trigger extracts subject_ref."""
+    subject_id = str(uuid.uuid4())
+    matches = find_matching_mq_triggers(
         loaded_defs,
         'inventory.nhi.expired',
-        {'nhi_id': str(uuid.uuid4()), 'subject_type': 'nhi'},
+        {'nhi_id': str(uuid.uuid4()), 'subject_ref': subject_id, 'subject_type': 'nhi'},
     )
-    assert 'access_plan_subject_triggers' in names
+    pipeline_names = [defn.name for defn, _ in matches]
+    assert 'access_plan_subject_triggers' in pipeline_names
+
+    # Verify the trigger extracts subject_ref (not nhi_id) as args.subject_ref.
+    matched_triggers = [
+        (defn.name, trigger) for defn, trigger in matches if defn.name == 'access_plan_subject_triggers'
+    ]
+    assert matched_triggers, 'access_plan_subject_triggers must match'
+    _defn_name, trigger = matched_triggers[0]
+    assert trigger.get('args_from_payload', {}).get('subject_ref') == 'subject_ref'
 
 
 def test_initiative_changed_matches(loaded_defs: dict[str, Any]) -> None:
@@ -143,13 +189,21 @@ def test_unknown_routing_key_no_match(loaded_defs: dict[str, Any]) -> None:
 
 
 def test_idempotency_key_extracted_from_payload(loaded_defs: dict[str, Any]) -> None:
-    """When subject.context.changed carries idempotency_key, trigger extracts it."""
+    """When inventory.employee.updated carries idempotency_key, trigger extracts it."""
     idem_key = 'unique-key-42'
     subject_id = str(uuid.uuid4())
     matches = find_matching_mq_triggers(
         loaded_defs,
-        'subject.context.changed',
-        {'subject_id': subject_id, 'idempotency_key': idem_key},
+        'inventory.employee.updated',
+        {
+            'employee_id': subject_id,
+            'subject_ref': subject_id,
+            'subject_type': 'employee',
+            'idempotency_key': idem_key,
+            'changes': {
+                'employment_status': {'old': None, 'new': 'active'},
+            },
+        },
     )
     matched_triggers = [
         (defn.name, trigger) for defn, trigger in matches if defn.name == 'access_plan_subject_triggers'

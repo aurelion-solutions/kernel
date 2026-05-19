@@ -153,7 +153,7 @@ async def test_post_subjects_customer_returns_201(app_with_subjects, engine) -> 
 
 @pytest.mark.asyncio
 async def test_get_subjects_returns_list(app_with_subjects, engine) -> None:
-    """GET /subjects returns 200 and a list."""
+    """GET /subjects returns 200 with paginated envelope."""
     emp_id = await _make_employee_id(engine)
     async with AsyncClient(
         transport=ASGITransport(app=app_with_subjects),
@@ -170,13 +170,18 @@ async def test_get_subjects_returns_list(app_with_subjects, engine) -> None:
         )
         response = await client.get('/api/v0/subjects')
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
-    assert len(response.json()) >= 1
+    data = response.json()
+    assert 'items' in data
+    assert 'total' in data
+    assert 'limit' in data
+    assert 'offset' in data
+    assert isinstance(data['items'], list)
+    assert data['total'] >= 1
 
 
 @pytest.mark.asyncio
 async def test_get_subjects_filter_by_kind(app_with_subjects, engine) -> None:
-    """GET /subjects?kind=employee returns only employees."""
+    """GET /subjects?kind=employee returns only employees in paginated envelope."""
     emp_id = await _make_employee_id(engine)
     cust_id = await _make_customer_id(engine)
     async with AsyncClient(
@@ -204,7 +209,95 @@ async def test_get_subjects_filter_by_kind(app_with_subjects, engine) -> None:
         response = await client.get('/api/v0/subjects?kind=employee')
     assert response.status_code == 200
     data = response.json()
-    assert all(s['kind'] == 'employee' for s in data)
+    assert all(s['kind'] == 'employee' for s in data['items'])
+
+
+@pytest.mark.asyncio
+async def test_list_subjects_filter_by_principal_employee_id(app_with_subjects, engine) -> None:
+    """GET /subjects?principal_employee_id=<id> returns only that subject."""
+    emp_id = await _make_employee_id(engine)
+    emp_id2 = await _make_employee_id(engine)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_subjects),
+        base_url='http://testserver',
+    ) as client:
+        r1 = await client.post(
+            '/api/v0/subjects',
+            json={
+                'external_id': 'flt-peid-1',
+                'kind': 'employee',
+                'principal_employee_id': str(emp_id),
+                'status': 'active',
+            },
+        )
+        assert r1.status_code == 201
+        await client.post(
+            '/api/v0/subjects',
+            json={
+                'external_id': 'flt-peid-2',
+                'kind': 'employee',
+                'principal_employee_id': str(emp_id2),
+                'status': 'active',
+            },
+        )
+        response = await client.get(f'/api/v0/subjects?principal_employee_id={emp_id}')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['total'] == 1
+    assert len(data['items']) == 1
+    assert data['items'][0]['principal_employee_id'] == str(emp_id)
+
+
+@pytest.mark.asyncio
+async def test_list_subjects_pagination(app_with_subjects, engine) -> None:
+    """GET /subjects?limit=1&offset=0 returns paginated results."""
+    emp_id1 = await _make_employee_id(engine)
+    emp_id2 = await _make_employee_id(engine)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_subjects),
+        base_url='http://testserver',
+    ) as client:
+        await client.post(
+            '/api/v0/subjects',
+            json={
+                'external_id': 'pag-1',
+                'kind': 'employee',
+                'principal_employee_id': str(emp_id1),
+                'status': 'active',
+            },
+        )
+        await client.post(
+            '/api/v0/subjects',
+            json={
+                'external_id': 'pag-2',
+                'kind': 'employee',
+                'principal_employee_id': str(emp_id2),
+                'status': 'active',
+            },
+        )
+        response = await client.get('/api/v0/subjects?limit=1&offset=0')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['limit'] == 1
+    assert data['offset'] == 0
+    assert len(data['items']) == 1
+    assert data['total'] >= 2
+
+
+@pytest.mark.asyncio
+async def test_list_subjects_response_envelope(app_with_subjects, engine) -> None:
+    """GET /subjects returns SubjectListResponse envelope fields."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_subjects),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get('/api/v0/subjects?limit=50&offset=0')
+    assert response.status_code == 200
+    data = response.json()
+    assert 'items' in data
+    assert 'total' in data
+    assert data['limit'] == 50
+    assert data['offset'] == 0
 
 
 @pytest.mark.asyncio

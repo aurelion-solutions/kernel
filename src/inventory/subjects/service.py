@@ -367,9 +367,23 @@ class SubjectService:
         *,
         kind: SubjectKind | None = None,
         status: SubjectStatus | None = None,
-    ) -> list[Subject]:
-        """List subjects. No event emitted."""
-        return await repo_list_subjects(session, kind=kind, status=status)
+        principal_employee_id: uuid.UUID | None = None,
+        principal_nhi_id: uuid.UUID | None = None,
+        principal_customer_id: uuid.UUID | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[Subject], int]:
+        """List subjects with optional filters. Returns (rows, total). No event emitted."""
+        return await repo_list_subjects(
+            session,
+            kind=kind,
+            status=status,
+            principal_employee_id=principal_employee_id,
+            principal_nhi_id=principal_nhi_id,
+            principal_customer_id=principal_customer_id,
+            limit=limit,
+            offset=offset,
+        )
 
     async def update_subject(
         self,
@@ -482,6 +496,72 @@ class SubjectService:
 
         await self._events.emit(
             _build_subject_status_changed_event(subject, previous_status, new_status, correlation_id)
+        )
+        return subject
+
+    async def ensure_for_principal(
+        self,
+        session: AsyncSession,
+        *,
+        kind: SubjectKind,
+        principal_id: uuid.UUID,
+        correlation_id: str | None = None,
+    ) -> Subject:
+        """Return the Subject bound to (kind, principal_id), creating one if absent.
+
+        Idempotent: if a Subject already references the principal via the
+        matching principal_<kind>_id column, it is returned as-is. Otherwise
+        a new row is inserted with external_id=uuid4().hex, status derived
+        from the principal (Employee/NHI/Customer is_locked / email_verified
+        rules — same logic as recompute_status_for_principal), and the
+        appropriate principal_<kind>_id FK set.
+
+        Emits ``inventory.subject.created`` IFF a new row was inserted. Does
+        not emit on the return-existing branch.
+
+        Does NOT commit. Caller owns the transaction boundary.
+
+        Raises SubjectStatusRecomputePrincipalMissingError if the principal
+        does not exist (same FK-integrity signal as recompute_status_for_principal).
+        """
+        subject = await repo_get_subject_by_principal(session, kind, principal_id)
+        if subject is not None:
+            return subject
+
+        principal = await _load_principal(session, kind, principal_id)
+        if principal is None:
+            raise SubjectStatusRecomputePrincipalMissingError(
+                uuid.UUID(int=0),
+                kind,
+                principal_id,
+            )
+
+        status: str = derive_subject_status(kind, principal)
+
+        nhi_kind: SubjectNHIKind | None = None
+        if kind == SubjectKind.nhi:
+            nhi_kind = SubjectNHIKind.service_account
+
+        principal_employee_id: uuid.UUID | None = None
+        principal_nhi_id: uuid.UUID | None = None
+        principal_customer_id: uuid.UUID | None = None
+        if kind == SubjectKind.employee:
+            principal_employee_id = principal_id
+        elif kind == SubjectKind.nhi:
+            principal_nhi_id = principal_id
+        elif kind == SubjectKind.customer:
+            principal_customer_id = principal_id
+
+        subject = await self.create_subject(
+            session,
+            external_id=uuid.uuid4().hex,
+            kind=kind,
+            nhi_kind=nhi_kind,
+            principal_employee_id=principal_employee_id,
+            principal_nhi_id=principal_nhi_id,
+            principal_customer_id=principal_customer_id,
+            status=status,
+            correlation_id=correlation_id,
         )
         return subject
 

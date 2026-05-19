@@ -7,7 +7,7 @@
 from dataclasses import dataclass, field
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.employees.models import Employee, EmployeeAttribute
@@ -31,12 +31,14 @@ async def create_employee(
     person_id: uuid.UUID,
     is_locked: bool = False,
     description: str | None = None,
+    org_unit_id: uuid.UUID | None = None,
 ) -> Employee:
     """Create and persist an employee."""
     employee = Employee(
         person_id=person_id,
         is_locked=is_locked,
         description=description,
+        org_unit_id=org_unit_id,
     )
     session.add(employee)
     await session.flush()
@@ -53,10 +55,32 @@ async def get_employee_by_id(
     return result.scalar_one_or_none()
 
 
-async def list_employees(session: AsyncSession) -> list[Employee]:
-    """List all employees."""
-    result = await session.execute(select(Employee).order_by(Employee.id))
-    return list(result.scalars().all())
+async def list_employees_page(
+    session: AsyncSession,
+    *,
+    limit: int,
+    offset: int,
+) -> tuple[list[Employee], int]:
+    """Return (rows, total) for paginated GET /employees.
+
+    Rows are ordered by id ASC and paginated by limit/offset.
+    total is the unfiltered row count.
+    """
+    rows_result = await session.execute(select(Employee).order_by(Employee.id.asc()).limit(limit).offset(offset))
+    rows = list(rows_result.scalars().all())
+
+    count_result = await session.execute(select(func.count()).select_from(Employee))
+    total: int = count_result.scalar_one()
+
+    return rows, total
+
+
+async def org_unit_exists(session: AsyncSession, org_unit_id: uuid.UUID) -> bool:
+    """Return True if an org_unit row with the given id exists."""
+    from src.inventory.org_units.models import OrgUnit  # local import avoids circular at module level
+
+    result = await session.execute(select(OrgUnit.id).where(OrgUnit.id == org_unit_id).limit(1))
+    return result.scalar_one_or_none() is not None
 
 
 async def list_employee_attributes(

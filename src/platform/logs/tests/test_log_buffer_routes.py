@@ -315,3 +315,61 @@ async def test_log_buffer_filter_from_ts_to_ts(client, session_factory) -> None:
     assert r.status_code == 200
     messages = [row['message'] for row in r.json()]
     assert messages == ['in']
+
+
+@pytest.mark.asyncio
+async def test_log_buffer_filter_by_payload_step_run_id(client, session_factory) -> None:
+    """Per-step UI scopes logs by ``payload->>'step_run_id'`` — the side-channel
+    attribute stamped by the runner and the step-scoped log façade."""
+    e_match = new_root_log_event(
+        level=LogLevel.INFO,
+        message='step-tagged',
+        component='test',
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='i',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='a',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='default',
+        correlation_id='step-payload-test',
+        payload={'step_run_id': 'step-abc', 'other': 1},
+    )
+    e_other_step = new_root_log_event(
+        level=LogLevel.INFO,
+        message='other-step',
+        component='test',
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='i',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='a',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='default',
+        correlation_id='step-payload-test',
+        payload={'step_run_id': 'step-xyz'},
+    )
+    e_no_step = new_root_log_event(
+        level=LogLevel.INFO,
+        message='no-step',
+        component='test',
+        initiator_type=LogParticipantKind.SYSTEM,
+        initiator_id='i',
+        actor_type=LogParticipantKind.SYSTEM,
+        actor_id='a',
+        target_type=LogParticipantKind.SYSTEM,
+        target_id='default',
+        correlation_id='step-payload-test',
+        payload={},
+    )
+    async with session_factory() as session:
+        for e in (e_match, e_other_step, e_no_step):
+            await insert_buffered_log_event(session, e)
+        await session.commit()
+
+    r = await client.get(
+        '/api/v0/log-buffer',
+        params={'payload_step_run_id': 'step-abc'},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]['message'] == 'step-tagged'

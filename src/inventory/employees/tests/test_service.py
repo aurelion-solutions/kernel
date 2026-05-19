@@ -13,8 +13,10 @@ from src.inventory.employees.service import (
     EmployeeAttributeNotFoundError,
     EmployeeNotFoundError,
     EmployeeService,
+    InvalidOrgUnitIdError,
     InvalidPersonIdError,
 )
+from src.inventory.org_units.repository import create_org_unit
 from src.inventory.persons.repository import create_person
 from src.platform.events.schemas import EventParticipantKind
 from src.platform.events.service import EventService
@@ -104,7 +106,7 @@ async def test_get_employee_returns_none_when_missing(
 
 @pytest.mark.asyncio
 async def test_list_employees(service: EmployeeService, session_factory) -> None:
-    """list_employees returns all employees."""
+    """list_employees returns paginated employees."""
     async with session_factory() as session:
         person1 = await create_person(session, external_id='p-list-1', full_name='L1')
         person2 = await create_person(session, external_id='p-list-2', full_name='L2')
@@ -114,8 +116,9 @@ async def test_list_employees(service: EmployeeService, session_factory) -> None
         await session.commit()
 
     async with session_factory() as session:
-        employees = await service.list_employees(session)
+        employees, total = await service.list_employees(session, limit=100, offset=0)
     assert len(employees) >= 2
+    assert total >= 2
 
 
 @pytest.mark.asyncio
@@ -263,6 +266,75 @@ async def test_create_employee_emits_inventory_employee_created(
     assert envelope.payload['person_id'] == str(person.id)
     assert envelope.payload['is_locked'] is False
     assert envelope.payload['description'] == 'Alice'
+    assert envelope.payload['org_unit_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_create_employee_with_org_unit_id_emits_org_unit_id_in_payload(
+    service: EmployeeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_employee with valid org_unit_id emits org_unit_id as stringified UUID in payload."""
+    async with session_factory() as session:
+        person = await create_person(session, external_id='p-ou-emit', full_name='OrgEmit')
+        org_unit = await create_org_unit(
+            session,
+            external_id='ou-emit-test',
+            name='Emit Org',
+            description=None,
+            is_internal=False,
+            parent_id=None,
+        )
+        await session.flush()
+        employee = await service.create_employee(
+            session,
+            person_id=person.id,
+            org_unit_id=org_unit.id,
+        )
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.employee.created')
+    assert len(emitted) == 1
+    envelope = emitted[0]
+    assert envelope.payload['org_unit_id'] == str(org_unit.id)
+    assert employee.org_unit_id == org_unit.id
+
+
+@pytest.mark.asyncio
+async def test_create_employee_without_org_unit_id_emits_none_in_payload(
+    service: EmployeeService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """create_employee without org_unit_id emits org_unit_id: null in payload."""
+    async with session_factory() as session:
+        person = await create_person(session, external_id='p-no-ou', full_name='NoOU')
+        await session.flush()
+        await service.create_employee(session, person_id=person.id)
+        await session.commit()
+
+    emitted = capturing_events.filter_by_type('inventory.employee.created')
+    assert len(emitted) == 1
+    assert emitted[0].payload['org_unit_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_create_employee_invalid_org_unit_id_raises(
+    service: EmployeeService,
+    session_factory,
+) -> None:
+    """create_employee raises InvalidOrgUnitIdError when org_unit_id not found."""
+    with pytest.raises(InvalidOrgUnitIdError):
+        async with session_factory() as session:
+            person = await create_person(session, external_id='p-bad-ou', full_name='BadOU')
+            await session.flush()
+            await service.create_employee(
+                session,
+                person_id=person.id,
+                org_unit_id=uuid.uuid4(),
+            )
+            await session.commit()
 
 
 @pytest.mark.asyncio
@@ -437,3 +509,83 @@ def test_service_has_no_log_service_attribute(service: EmployeeService) -> None:
     """EmployeeService must not have a _log attribute (DROP variant — LogService removed)."""
     assert getattr(service, '_log', None) is None
     assert not hasattr(service, '_log')
+
+
+# ---------------------------------------------------------------------------
+# Subject auto-creation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_employee_creates_subject(
+    event_service: EventService,
+    session_factory,
+) -> None:
+    """create_employee leaves exactly one Subject for the new employee."""
+    import sqlalchemy as sa  # noqa: PLC0415
+    from src.inventory.subjects.models import Subject, SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.service import SubjectService  # noqa: PLC0415
+
+    subject_service = SubjectService(event_service=event_service)
+    svc = EmployeeService(event_service=event_service, subject_service=subject_service)
+
+    async with session_factory() as session:
+        person = await create_person(session, external_id='p-subj-create', full_name='SubjCreate')
+        await session.flush()
+        employee = await svc.create_employee(session, person_id=person.id)
+        await session.commit()
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count()).where(
+                    Subject.kind == SubjectKind.employee,
+                    Subject.principal_employee_id == employee.id,
+                )
+            )
+        ).scalar()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_employees_creates_subject_per_row(
+    event_service: EventService,
+    session_factory,
+) -> None:
+    """bulk_upsert_employees ensures a Subject exists for each resulting employee."""
+    import sqlalchemy as sa  # noqa: PLC0415
+    from src.inventory.employees.schemas import EmployeeBulkItem  # noqa: PLC0415
+    from src.inventory.subjects.models import Subject, SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.service import SubjectService  # noqa: PLC0415
+
+    subject_service = SubjectService(event_service=event_service)
+    svc = EmployeeService(event_service=event_service, subject_service=subject_service)
+
+    async with session_factory() as session:
+        await create_person(session, external_id='p-bulk-s1', full_name='Bulk S1')
+        await create_person(session, external_id='p-bulk-s2', full_name='Bulk S2')
+        await session.commit()
+
+    async with session_factory() as session:
+        employees = await svc.bulk_upsert_employees(
+            session,
+            [
+                EmployeeBulkItem(person_external_id='p-bulk-s1'),
+                EmployeeBulkItem(person_external_id='p-bulk-s2'),
+            ],
+        )
+        await session.commit()
+
+    assert len(employees) == 2
+
+    async with session_factory() as session:
+        for emp in employees:
+            count = (
+                await session.execute(
+                    sa.select(sa.func.count()).where(
+                        Subject.kind == SubjectKind.employee,
+                        Subject.principal_employee_id == emp.id,
+                    )
+                )
+            ).scalar()
+            assert count == 1, f'Expected 1 Subject for employee {emp.id}, got {count}'

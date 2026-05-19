@@ -72,3 +72,26 @@ class PersonBulkResponse(BaseModel):
     row_count: int
     snapshot_id: int | None
     backend: str = 'iceberg'
+
+
+class PersonListItem(BaseModel):
+    """Single item in the person list response."""
+
+    id: uuid.UUID
+    external_id: str
+    full_name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PersonListResponse(BaseModel):
+    """Response for GET /persons.
+
+    ``total`` is the unfiltered row count.
+    ``limit`` and ``offset`` echo the validated params used for this page.
+    """
+
+    items: list[PersonListItem]
+    total: int
+    limit: int
+    offset: int

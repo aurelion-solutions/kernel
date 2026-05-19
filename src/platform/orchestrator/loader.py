@@ -198,6 +198,39 @@ class PipelineDefinitionLoader:
 
         return result
 
+    def load_many(self, paths: tuple[Path, ...] | list[Path]) -> dict[str, PipelineDefinition]:
+        """Load YAML pipelines from every directory in *paths* and merge.
+
+        Each directory is processed with the same rules as :meth:`load_dir`
+        (missing directories quietly contribute zero pipelines, sorted scan,
+        ``schema.json`` excluded). After every directory has been loaded, the
+        merged result rejects a duplicate ``pipeline.name`` across
+        directories with :class:`PipelineLoadError` — the cross-directory
+        rule is identical to the intra-directory rule, so a name collision
+        between ``aurelion-kernel/pipelines/`` and
+        ``cartridges/journey/`` is surfaced loudly rather than silently
+        shadowing one definition.
+
+        Order of *paths* is the conflict-resolution authority: the first
+        directory wins in the error message (it is the one already in
+        ``result`` when the second directory's duplicate is encountered),
+        which makes the error text deterministic.
+        """
+        result: dict[str, PipelineDefinition] = {}
+        owning_path: dict[str, Path] = {}
+
+        for source in paths:
+            local = self.load_dir(source)
+            for name, defn in local.items():
+                if name in result:
+                    raise PipelineLoadError(
+                        f'Duplicate pipeline name {name!r}: found in {owning_path[name]} and {defn.source_path}'
+                    )
+                result[name] = defn
+                owning_path[name] = defn.source_path
+
+        return result
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------

@@ -443,3 +443,64 @@ def test_duplicate_pipeline_name_across_files(tmp_path: Path, loader: PipelineDe
     assert set(result_a.keys()) == set(result_b.keys())
     for name in result_a:
         assert result_a[name].content_hash == result_b[name].content_hash
+
+
+# ---------------------------------------------------------------------------
+# load_many — multi-directory loading (Phase 20 K-H)
+# ---------------------------------------------------------------------------
+
+
+def test_load_many_merges_two_dirs(tmp_path: Path, loader: PipelineDefinitionLoader) -> None:
+    """load_many: pipelines from both dirs merged into one dict."""
+    _register('eng', 'act')
+
+    a_dir = tmp_path / 'a'
+    a_dir.mkdir()
+    b_dir = tmp_path / 'b'
+    b_dir.mkdir()
+
+    _write_yaml(a_dir, 'one.yaml', _MINIMAL_YAML)  # name: my_pipe
+    journey_yaml = _MINIMAL_YAML.replace('name: my_pipe', 'name: journey.joiner')
+    _write_yaml(b_dir, 'joiner.yaml', journey_yaml)
+
+    result = loader.load_many((a_dir, b_dir))
+    assert set(result.keys()) == {'my_pipe', 'journey.joiner'}
+    assert result['journey.joiner'].source_path == b_dir / 'joiner.yaml'
+
+
+def test_load_many_missing_dir_skipped(tmp_path: Path, loader: PipelineDefinitionLoader) -> None:
+    """load_many: a missing directory contributes zero pipelines, never raises."""
+    _register('eng', 'act')
+
+    a_dir = tmp_path / 'a'
+    a_dir.mkdir()
+    _write_yaml(a_dir, 'one.yaml', _MINIMAL_YAML)
+    missing = tmp_path / 'this-does-not-exist'
+
+    result = loader.load_many((a_dir, missing))
+    assert set(result.keys()) == {'my_pipe'}
+
+
+def test_load_many_empty_paths(loader: PipelineDefinitionLoader) -> None:
+    """load_many: empty paths tuple returns empty dict."""
+    assert loader.load_many(()) == {}
+
+
+def test_load_many_duplicate_name_across_dirs(tmp_path: Path, loader: PipelineDefinitionLoader) -> None:
+    """load_many: a duplicate pipeline name across two dirs raises PipelineLoadError."""
+    _register('eng', 'act')
+
+    a_dir = tmp_path / 'a'
+    a_dir.mkdir()
+    b_dir = tmp_path / 'b'
+    b_dir.mkdir()
+    _write_yaml(a_dir, 'one.yaml', _MINIMAL_YAML)
+    _write_yaml(b_dir, 'two.yaml', _MINIMAL_YAML)  # same name → collision
+
+    with pytest.raises(PipelineLoadError) as exc_info:
+        loader.load_many((a_dir, b_dir))
+
+    msg = str(exc_info.value)
+    assert 'my_pipe' in msg
+    assert 'one.yaml' in msg
+    assert 'two.yaml' in msg

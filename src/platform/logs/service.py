@@ -53,7 +53,7 @@ def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 # Keys LogService may take from ``payload`` and forward to :func:`new_root_log_event` only
 # when all are present (mechanical pass-through; no defaults or interpretation).
-_PARTICIPANT_PAYLOAD_KEYS: tuple[str, ...] = (
+PARTICIPANT_PAYLOAD_KEYS: tuple[str, ...] = (
     'initiator_type',
     'initiator_id',
     'actor_type',
@@ -61,6 +61,9 @@ _PARTICIPANT_PAYLOAD_KEYS: tuple[str, ...] = (
     'target_type',
     'target_id',
 )
+# Backwards-compatible alias (kept as a leading-underscore private name so the
+# rest of the module's references don't need to change in this patch).
+_PARTICIPANT_PAYLOAD_KEYS = PARTICIPANT_PAYLOAD_KEYS
 
 
 def _pop_participants_if_complete(merged: dict[str, Any]) -> dict[str, Any] | None:
@@ -198,6 +201,16 @@ class LogService:
 
     def __init__(self, sink: LogSink) -> None:
         self._sink = sink
+
+    @property
+    def sink(self) -> LogSink:
+        """The configured underlying sink.
+
+        Exposed so a wrapper (e.g. ``StepScopedLogService``) can construct a
+        subclass that delegates to the same transport without reaching into
+        a private attribute.
+        """
+        return self._sink
 
     async def emit_event(self, event: LogEvent) -> None:
         """Emit a fully built event to the configured sink. Re-raises on failure."""

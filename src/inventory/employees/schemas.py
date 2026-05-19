@@ -15,6 +15,7 @@ class EmployeeCreate(BaseModel):
     person_id: uuid.UUID
     is_locked: bool = False
     description: str | None = Field(None, max_length=255)
+    org_unit_id: uuid.UUID | None = None
 
 
 class EmployeeRead(BaseModel):
@@ -24,8 +25,34 @@ class EmployeeRead(BaseModel):
     person_id: uuid.UUID
     is_locked: bool
     description: str | None
+    org_unit_id: uuid.UUID | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EmployeeListItem(BaseModel):
+    """Single item in the employee list response."""
+
+    id: uuid.UUID
+    person_id: uuid.UUID
+    is_locked: bool
+    description: str | None
+    org_unit_id: uuid.UUID | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmployeeListResponse(BaseModel):
+    """Response for GET /employees.
+
+    ``total`` is the unfiltered row count.
+    ``limit`` and ``offset`` echo the validated params used for this page.
+    """
+
+    items: list[EmployeeListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 class EmployeeAttributeCreate(BaseModel):
@@ -82,9 +109,9 @@ class EmployeeBulkResponse(BaseModel):
 class EmployeePatch(BaseModel):
     """Request body for PATCH /employees/{id}.
 
-    All fields are optional — only set fields are applied.
-    Context-changing fields (org_unit_id, attributes) trigger
-    subject.context.changed event emission.
+    All fields are optional — only set fields are applied. Any change to any
+    field (org_unit_id, description, attributes) emits a single
+    ``inventory.employee.updated`` event carrying a ``changes`` map.
     """
 
     org_unit_id: uuid.UUID | None = Field(default=None)

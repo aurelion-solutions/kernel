@@ -2,13 +2,11 @@
 #
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Tests for E2 event emission in NHIService.
+"""Tests for the unified ``inventory.nhi.updated`` fat event.
 
-Verifies:
-- PATCH context fields → subject.context.changed (subject_type=nhi)
-- PATCH attributes → subject.context.changed (subject_type=nhi)
-- deactivate_nhi → nhi.expired
-- PATCH non-context fields (description, is_locked) → no subject.context.changed
+Phase 20 K-A / Slice B: ``inventory.nhi.updated`` carries
+``{nhi_id, subject_ref, subject_type, changes}`` where ``subject_ref``
+is ``Subject.id`` (not ``nhi_id``). The ``subject_id`` field has been removed.
 """
 
 from __future__ import annotations
@@ -36,15 +34,21 @@ def service(event_service: EventService) -> NHIService:
 
 
 @pytest.mark.asyncio
-async def test_patch_nhi_name_emits_context_changed(
+async def test_patch_nhi_name_emits_updated_with_name_change(
     service: NHIService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH name (context field) → subject.context.changed (subject_type=nhi)."""
+    """PATCH name → inventory.nhi.updated with changes.name; subject_ref = Subject.id."""
+    from src.inventory.subjects.models import SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.repository import get_subject_by_principal  # noqa: PLC0415
+
     async with session_factory() as session:
         nhi = await service.create_nhi(session, external_id='nhi-ctx-e2', name='OldName', kind='bot')
         await session.flush()
+
+        subject = await get_subject_by_principal(session, SubjectKind.nhi, nhi.id)
+        assert subject is not None
 
         capturing_events.clear()
 
@@ -52,19 +56,25 @@ async def test_patch_nhi_name_emits_context_changed(
         await session.commit()
 
     assert updated.name == 'NewName'
-    ctx_events = capturing_events.filter_by_type('subject.context.changed')
-    assert len(ctx_events) == 1
-    assert ctx_events[0].payload['subject_type'] == 'nhi'
-    assert ctx_events[0].payload['subject_id'] == str(nhi.id)
+    events = capturing_events.filter_by_type('inventory.nhi.updated')
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload['nhi_id'] == str(nhi.id)
+    assert payload['subject_ref'] == str(subject.id)
+    assert payload['subject_type'] == 'nhi'
+    assert 'subject_id' not in payload
+    assert payload['changes'] == {
+        'name': {'old': 'OldName', 'new': 'NewName'},
+    }
 
 
 @pytest.mark.asyncio
-async def test_patch_nhi_attributes_emits_context_changed(
+async def test_patch_nhi_attributes_emits_updated_with_attribute_change(
     service: NHIService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH attributes → subject.context.changed (subject_type=nhi)."""
+    """PATCH attributes → inventory.nhi.updated with changes['attributes.<key>']."""
     async with session_factory() as session:
         nhi = await service.create_nhi(session, external_id='nhi-attr-e2', name='N', kind='bot')
         await session.flush()
@@ -74,9 +84,11 @@ async def test_patch_nhi_attributes_emits_context_changed(
         await service.update_nhi(session, nhi.id, NHIPatch(attributes={'env': 'production'}))
         await session.commit()
 
-    ctx_events = capturing_events.filter_by_type('subject.context.changed')
-    assert len(ctx_events) == 1
-    assert ctx_events[0].payload['subject_type'] == 'nhi'
+    events = capturing_events.filter_by_type('inventory.nhi.updated')
+    assert len(events) == 1
+    assert events[0].payload['changes'] == {
+        'attributes.env': {'old': None, 'new': 'production'},
+    }
 
 
 @pytest.mark.asyncio
@@ -85,10 +97,16 @@ async def test_deactivate_nhi_emits_expired(
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """deactivate_nhi → nhi.expired event emitted."""
+    """deactivate_nhi → inventory.nhi.expired with subject_ref = Subject.id."""
+    from src.inventory.subjects.models import SubjectKind  # noqa: PLC0415
+    from src.inventory.subjects.repository import get_subject_by_principal  # noqa: PLC0415
+
     async with session_factory() as session:
         nhi = await service.create_nhi(session, external_id='nhi-deact-e2', name='ToDeactivate', kind='bot')
         await session.flush()
+
+        subject = await get_subject_by_principal(session, SubjectKind.nhi, nhi.id)
+        assert subject is not None
 
         capturing_events.clear()
 
@@ -99,8 +117,11 @@ async def test_deactivate_nhi_emits_expired(
 
     expired_events = capturing_events.filter_by_type('inventory.nhi.expired')
     assert len(expired_events) == 1
-    assert expired_events[0].payload['nhi_id'] == str(nhi.id)
-    assert expired_events[0].payload['subject_type'] == 'nhi'
+    payload = expired_events[0].payload
+    assert payload['nhi_id'] == str(nhi.id)
+    assert payload['subject_ref'] == str(subject.id)
+    assert payload['subject_type'] == 'nhi'
+    assert 'subject_id' not in payload
 
 
 @pytest.mark.asyncio
@@ -117,12 +138,12 @@ async def test_deactivate_nhi_not_found_raises(
 
 
 @pytest.mark.asyncio
-async def test_patch_nhi_description_no_context_event(
+async def test_patch_nhi_description_emits_updated_with_description_change(
     service: NHIService,
     capturing_events: CapturingEventService,
     session_factory,
 ) -> None:
-    """PATCH description (non-context field) → no subject.context.changed."""
+    """PATCH description → updated with changes.description (was a no-event field pre-K-A)."""
     async with session_factory() as session:
         nhi = await service.create_nhi(session, external_id='nhi-desc-e2', name='N', kind='bot')
         await session.flush()
@@ -132,4 +153,33 @@ async def test_patch_nhi_description_no_context_event(
         await service.update_nhi(session, nhi.id, NHIPatch(description='new desc'))
         await session.commit()
 
-    assert len(capturing_events.filter_by_type('subject.context.changed')) == 0
+    events = capturing_events.filter_by_type('inventory.nhi.updated')
+    assert len(events) == 1
+    assert events[0].payload['changes'] == {
+        'description': {'old': None, 'new': 'new desc'},
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_nhi_noop_does_not_emit(
+    service: NHIService,
+    capturing_events: CapturingEventService,
+    session_factory,
+) -> None:
+    """PATCH that does not change anything emits no event."""
+    async with session_factory() as session:
+        nhi = await service.create_nhi(
+            session,
+            external_id='nhi-noop-e2',
+            name='Same',
+            kind='bot',
+            description='same desc',
+        )
+        await session.flush()
+
+        capturing_events.clear()
+
+        await service.update_nhi(session, nhi.id, NHIPatch(name='Same', description='same desc'))
+        await session.commit()
+
+    assert capturing_events.filter_by_type('inventory.nhi.updated') == []

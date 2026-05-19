@@ -30,6 +30,10 @@ _q_initiator_id = Query(None, description='Requires initiator_type when set.')
 _q_actor_type = Query(None, description='Requires actor_id when set.')
 _q_actor_id = Query(None, description='Requires actor_type when set.')
 _q_level = Query(None, description='Filter by level (e.g. info, error).')
+_q_payload_step_run_id = Query(
+    None,
+    description="Filter by payload->>'step_run_id' (set by the runner and the step-scoped log façade).",
+)
 _q_from_ts = Query(None, description='Inclusive lower bound on event timestamp (ISO 8601).')
 _q_to_ts = Query(None, description='Inclusive upper bound on event timestamp (ISO 8601).')
 _q_order = Query(
@@ -67,6 +71,7 @@ async def list_buffered_logs(
     actor_type: str | None = _q_actor_type,
     actor_id: str | None = _q_actor_id,
     level: str | None = _q_level,
+    payload_step_run_id: str | None = _q_payload_step_run_id,
     from_ts: datetime | None = _q_from_ts,
     to_ts: datetime | None = _q_to_ts,
     order: SortOrder = _q_order,
@@ -77,6 +82,7 @@ async def list_buffered_logs(
     target_id = _blank_to_none(target_id)
     initiator_id = _blank_to_none(initiator_id)
     actor_id = _blank_to_none(actor_id)
+    payload_step_run_id = _blank_to_none(payload_step_run_id)
 
     target_type = _lower_opt(target_type)
     initiator_type = _lower_opt(initiator_type)
@@ -105,13 +111,14 @@ async def list_buffered_logs(
         or (initiator_type is not None and initiator_id is not None)
         or (actor_type is not None and actor_id is not None)
         or level is not None
+        or payload_step_run_id is not None
     )
     if not has_discriminator:
         raise HTTPException(
             status_code=400,
             detail=(
                 'Provide at least one filter: correlation_id, target_type+target_id, '
-                'initiator_type+initiator_id, actor_type+actor_id, or level'
+                'initiator_type+initiator_id, actor_type+actor_id, level, or payload_step_run_id'
             ),
         )
 
@@ -125,6 +132,7 @@ async def list_buffered_logs(
         actor_type=actor_type,
         actor_id=actor_id,
         level=level,
+        payload_step_run_id=payload_step_run_id,
         from_ts=from_ts,
         to_ts=to_ts,
         order_desc=(order == 'desc'),

@@ -70,3 +70,6 @@ venv
 
 # Logs (file provider)
 .logs/
+
+# Notifications (file provider)
+.notifications/

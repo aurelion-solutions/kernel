@@ -87,7 +87,7 @@ class AccountService:
             raise AccountNotFoundError(account_id)
 
         try:
-            changed = await repo_update_account(
+            changes = await repo_update_account(
                 session,
                 account,
                 status=patch.status,
@@ -99,7 +99,7 @@ class AccountService:
                 raise AccountSubjectNotFoundError(patch.subject_id) from None
             raise
 
-        if changed:
+        if changes:
             await self._events.emit(
                 EventEnvelope(
                     event_id=uuid.uuid4(),
@@ -109,7 +109,7 @@ class AccountService:
                     causation_id=None,
                     payload={
                         'account_id': str(account_id),
-                        'changed_fields': sorted(changed),
+                        'changes': changes,
                     },
                     actor_kind=EventParticipantKind.COMPONENT,
                     actor_id=_COMPONENT,

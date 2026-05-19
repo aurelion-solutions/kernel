@@ -12,6 +12,7 @@ from src.core.db.deps import get_db
 from src.inventory.employees.models import Employee
 from src.inventory.nhi.routes import router as nhi_router
 from src.inventory.persons.models import Person
+from src.inventory.subjects.routes import router as subjects_router
 from src.platform.applications.models import Application
 
 
@@ -305,3 +306,66 @@ async def test_post_nhi_with_fks(
     data = response.json()
     assert data['owner_employee_id'] == str(emp_id)
     assert data['application_id'] == str(app_id)
+
+
+# ---------------------------------------------------------------------------
+# Subject auto-creation integration test
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_with_nhi_and_subjects(engine):
+    """App with NHI + subjects routes using test engine."""
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    session_factory = async_sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        autoflush=False,
+        autocommit=False,
+        class_=AsyncSession,
+    )
+
+    async def override_get_db():
+        async with session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:  # noqa: BLE001 # allowed-broad: test fixture cleanup
+                await session.rollback()
+                raise
+
+    app = FastAPI()
+    app.include_router(nhi_router, prefix='/api/v0')
+    app.include_router(subjects_router, prefix='/api/v0')
+    app.dependency_overrides[get_db] = override_get_db
+    return app
+
+
+@pytest.mark.asyncio
+async def test_post_nhis_then_get_subjects_shows_new_row(
+    app_with_nhi_and_subjects,
+) -> None:
+    """POST /nhi then GET /subjects?kind=nhi finds the auto-created Subject."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_nhi_and_subjects),
+        base_url='http://testserver',
+    ) as client:
+        create_resp = await client.post(
+            '/api/v0/nhi',
+            json={
+                'external_id': 'nhi-subj-api-test',
+                'name': 'NHI Subj API',
+                'kind': 'service_account',
+            },
+        )
+        assert create_resp.status_code == 201
+        nhi_id = create_resp.json()['id']
+
+        subj_resp = await client.get('/api/v0/subjects', params={'kind': 'nhi'})
+        assert subj_resp.status_code == 200
+
+    subjects_data = subj_resp.json()
+    matching = [s for s in subjects_data['items'] if s.get('principal_nhi_id') == nhi_id]
+    assert len(matching) == 1

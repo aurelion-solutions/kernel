@@ -28,63 +28,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # ------------------------------------------------------------------
-    # Extend account_status enum with 'invited'
-    # Uses the Postgres ALTER TYPE ... ADD VALUE approach (non-transactional).
-    # ------------------------------------------------------------------
+    # Extend account_status enum with 'invited'.
+    # ALTER TYPE ... ADD VALUE is non-transactional on PostgreSQL.
     op.execute("ALTER TYPE account_status ADD VALUE IF NOT EXISTS 'invited'")
-
-    # ------------------------------------------------------------------
-    # New PG enum types for access_plan engine
-    # ------------------------------------------------------------------
-    op.execute(
-        """
-        DO $$ BEGIN
-            CREATE TYPE access_plan_status AS ENUM ('active', 'superseded', 'cancelled', 'invalid');
-        EXCEPTION WHEN duplicate_object THEN NULL;
-        END $$;
-        """
-    )
-    op.execute(
-        """
-        DO $$ BEGIN
-            CREATE TYPE plan_invalidation_reason AS ENUM ('structural', 'stale_after_apply');
-        EXCEPTION WHEN duplicate_object THEN NULL;
-        END $$;
-        """
-    )
-    op.execute(
-        """
-        DO $$ BEGIN
-            CREATE TYPE plan_item_kind AS ENUM (
-                'account_create', 'account_invite', 'account_activate',
-                'account_suspend', 'account_disable',
-                'grant_role', 'revoke_role',
-                'group_add', 'group_remove',
-                'entitlement_attach', 'entitlement_detach'
-            );
-        EXCEPTION WHEN duplicate_object THEN NULL;
-        END $$;
-        """
-    )
-    op.execute(
-        """
-        DO $$ BEGIN
-            CREATE TYPE plan_item_execution_status AS ENUM ('proposed', 'executing', 'done', 'failed');
-        EXCEPTION WHEN duplicate_object THEN NULL;
-        END $$;
-        """
-    )
-    op.execute(
-        """
-        DO $$ BEGIN
-            CREATE TYPE plan_item_failure_reason AS ENUM (
-                'precondition', 'apply_error', 'verify_mismatch', 'verify_timeout'
-            );
-        EXCEPTION WHEN duplicate_object THEN NULL;
-        END $$;
-        """
-    )
 
     # ------------------------------------------------------------------
     # access_plans — immutable plan header
@@ -116,7 +62,6 @@ def upgrade() -> None:
             sa.Enum(
                 'active', 'superseded', 'cancelled', 'invalid',
                 name='access_plan_status',
-                create_type=False,
             ),
             server_default=sa.text("'active'"),
             nullable=False,
@@ -126,7 +71,6 @@ def upgrade() -> None:
             sa.Enum(
                 'structural', 'stale_after_apply',
                 name='plan_invalidation_reason',
-                create_type=False,
             ),
             nullable=True,
         ),
@@ -193,7 +137,6 @@ def upgrade() -> None:
                 'group_add', 'group_remove',
                 'entitlement_attach', 'entitlement_detach',
                 name='plan_item_kind',
-                create_type=False,
             ),
             nullable=False,
         ),
@@ -284,7 +227,6 @@ def upgrade() -> None:
             sa.Enum(
                 'proposed', 'executing', 'done', 'failed',
                 name='plan_item_execution_status',
-                create_type=False,
             ),
             server_default=sa.text("'proposed'"),
             nullable=False,
@@ -294,7 +236,6 @@ def upgrade() -> None:
             sa.Enum(
                 'precondition', 'apply_error', 'verify_mismatch', 'verify_timeout',
                 name='plan_item_failure_reason',
-                create_type=False,
             ),
             nullable=True,
         ),

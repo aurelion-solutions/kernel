@@ -8,7 +8,7 @@ Scenario:
 1. Create Employee + apply initial plan (reuses G3 setup fixtures).
    Initial context: role=engineer → birthright_account_create + birthright_grant_engineer items.
 2. PATCH employee attributes (role → senior_engineer OR change org_unit_id).
-   EmployeeService.update_employee() emits subject.context.changed.
+   EmployeeService.update_employee() emits inventory.employee.updated (post-K-A).
 3. MQ matcher (E3) catches event → invokes access_plan.plan action for subject_ref.
    Simulated by directly calling service.create_plan() which is what the action does.
 4. Service creates new AccessPlan with different diff (role changed → different grant).
@@ -355,7 +355,7 @@ async def test_context_change_replan_supersedes(session_factory) -> None:  # typ
 
     Phase 19 Step G4 exit criterion:
     1. Initial plan created for employee with role=engineer.
-    2. Employee attributes patched: role → senior_engineer (emits subject.context.changed).
+    2. Employee attributes patched: role → senior_engineer (emits inventory.employee.updated).
     3. Matcher triggers replanning: create_plan called → new plan created.
     4. New plan supersedes_plan_id = old plan id; old plan status = superseded.
     5. POST /plans/{new_id}/apply → 201.
@@ -412,7 +412,7 @@ async def test_context_change_replan_supersedes(session_factory) -> None:  # typ
 
     # -------------------------------------------------------------------
     # Step 3: PATCH employee role → senior_engineer
-    # This emits subject.context.changed (E2).
+    # This emits inventory.employee.updated (E2, post-K-A).
     # Matcher (E3) would trigger access_plan.plan action.
     # We simulate this by calling the service directly (same code path).
     # -------------------------------------------------------------------

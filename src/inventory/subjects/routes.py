@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Annotated, cast
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.core.http.errors import translate_service_errors
@@ -21,6 +21,7 @@ from src.inventory.subjects.schemas import (
     SubjectBulkResponse,
     SubjectCreate,
     SubjectKind,
+    SubjectListResponse,
     SubjectPatch,
     SubjectRead,
     SubjectStatus,
@@ -110,16 +111,35 @@ async def create_subject(
     return SubjectRead.model_validate(subject)
 
 
-@router.get('', response_model=list[SubjectRead])
+@router.get('', response_model=SubjectListResponse)
 async def list_subjects(
     kind: SubjectKind | None = None,
     status: SubjectStatus | None = None,
+    principal_employee_id: Annotated[uuid.UUID | None, Query()] = None,
+    principal_nhi_id: Annotated[uuid.UUID | None, Query()] = None,
+    principal_customer_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     session: AsyncSession = DependsSession,
     service: SubjectService = DependsService,
-) -> list[SubjectRead]:
-    """List subjects with optional filters."""
-    subjects = await service.list_subjects(session, kind=kind, status=status)
-    return [SubjectRead.model_validate(s) for s in subjects]
+) -> SubjectListResponse:
+    """List subjects with optional filters and pagination."""
+    subjects, total = await service.list_subjects(
+        session,
+        kind=kind,
+        status=status,
+        principal_employee_id=principal_employee_id,
+        principal_nhi_id=principal_nhi_id,
+        principal_customer_id=principal_customer_id,
+        limit=limit,
+        offset=offset,
+    )
+    return SubjectListResponse(
+        items=[SubjectRead.model_validate(s) for s in subjects],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get('/{subject_id}', response_model=SubjectRead)

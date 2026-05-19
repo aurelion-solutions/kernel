@@ -60,8 +60,8 @@ async def test_post_persons_returns_201(app_with_persons) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_persons_returns_200(app_with_persons) -> None:
-    """GET /persons returns 200 and list."""
+async def test_get_persons_returns_envelope(app_with_persons) -> None:
+    """GET /persons?limit=10&offset=0 returns 200 with envelope."""
     async with AsyncClient(
         transport=ASGITransport(app=app_with_persons),
         base_url='http://testserver',
@@ -70,11 +70,81 @@ async def test_get_persons_returns_200(app_with_persons) -> None:
             '/api/v0/persons',
             json={'external_id': 'ext-list', 'full_name': 'For list'},
         )
-        response = await client.get('/api/v0/persons')
+        response = await client.get('/api/v0/persons?limit=10&offset=0')
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) >= 1
+    assert 'items' in data
+    assert 'total' in data
+    assert 'limit' in data
+    assert 'offset' in data
+    assert isinstance(data['items'], list)
+    assert len(data['items']) >= 1
+    assert data['limit'] == 10
+    assert data['offset'] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_persons_missing_params_returns_422(app_with_persons) -> None:
+    """GET /persons without params returns 422."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_persons),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get('/api/v0/persons')
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_persons_missing_offset_returns_422(app_with_persons) -> None:
+    """GET /persons?limit=10 without offset returns 422."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_persons),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get('/api/v0/persons?limit=10')
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_persons_limit_zero_returns_422(app_with_persons) -> None:
+    """GET /persons?limit=0&offset=0 returns 422 (ge=1)."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_persons),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get('/api/v0/persons?limit=0&offset=0')
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_persons_limit_too_large_returns_422(app_with_persons) -> None:
+    """GET /persons?limit=1001&offset=0 returns 422 (le=1000)."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_persons),
+        base_url='http://testserver',
+    ) as client:
+        response = await client.get('/api/v0/persons?limit=1001&offset=0')
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_persons_past_the_end_returns_empty_items(app_with_persons) -> None:
+    """GET /persons?limit=10&offset=9999 returns 200 with empty items and real total."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_persons),
+        base_url='http://testserver',
+    ) as client:
+        await client.post(
+            '/api/v0/persons',
+            json={'external_id': 'ext-pe', 'full_name': 'Past end'},
+        )
+        response = await client.get('/api/v0/persons?limit=10&offset=9999')
+    assert response.status_code == 200
+    data = response.json()
+    assert data['items'] == []
+    assert data['total'] >= 1
+    assert data['limit'] == 10
+    assert data['offset'] == 9999
 
 
 @pytest.mark.asyncio

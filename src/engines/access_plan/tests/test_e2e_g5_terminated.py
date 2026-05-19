@@ -7,7 +7,7 @@
 Scenario:
 1. Create Employee + seed fake effective grants (simulating post-initial-plan state).
 2. PATCH employee.attributes['employment_status'] = 'terminated' (tenant-specific value).
-   EmployeeService emits subject.employment_status.changed (E2).
+   EmployeeService emits inventory.employee.updated (E2 after K-A refactor).
 3. MQ matcher (E3) triggers access_plan.plan for subject.
    Simulated by calling service.create_plan() which is what the action does.
 4. Policy fixture: terminated → no birthright rules match → PDP.generative returns

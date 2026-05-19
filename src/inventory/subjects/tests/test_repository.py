@@ -184,9 +184,10 @@ async def test_list_subjects_no_filter(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        subjects = await list_subjects(session)
+        subjects, total = await list_subjects(session)
 
     assert len(subjects) >= 2
+    assert total >= 2
 
 
 @pytest.mark.asyncio
@@ -212,9 +213,10 @@ async def test_list_subjects_filter_by_kind(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        subjects = await list_subjects(session, kind=SubjectKind.employee)
+        subjects, total = await list_subjects(session, kind=SubjectKind.employee)
 
     assert all(s.kind == SubjectKind.employee for s in subjects)
+    assert total == len(subjects)
 
 
 @pytest.mark.asyncio
@@ -240,9 +242,10 @@ async def test_list_subjects_filter_by_status(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
-        subjects = await list_subjects(session, status='active')
+        subjects, total = await list_subjects(session, status='active')
 
     assert all(s.status == 'active' for s in subjects)
+    assert total == len(subjects)
 
 
 # ---------------------------------------------------------------------------

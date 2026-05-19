@@ -26,7 +26,6 @@ Graceful shutdown:
 import asyncio
 from datetime import UTC, datetime
 import os
-from pathlib import Path
 import signal
 
 from dotenv import load_dotenv
@@ -39,21 +38,30 @@ register_default_providers()  # module-level: must precede get_settings()
 
 from src.core.config import get_settings  # noqa: E402
 from src.core.db.session import get_session_factory  # noqa: E402
+from src.core.mq.async_publisher import AsyncRabbitMQPublisher  # noqa: E402
 from src.core.mq.async_rpc_client import AsyncRabbitMQRPCClient  # noqa: E402
 from src.platform.connectors.client import ConnectorClient  # noqa: E402
 from src.platform.connectors.factory import set_process_connector_client  # noqa: E402
 from src.platform.events.factory import event_sink_factory  # noqa: E402
+from src.platform.events.providers.mq import RabbitMQEventSink  # noqa: E402
 from src.platform.events.service import EventService  # noqa: E402
+from src.platform.lake.catalog import get_catalog  # noqa: E402
+from src.platform.lake.config import build_lake_settings  # noqa: E402
+from src.platform.lake.duckdb_session import LakeSessionFactory  # noqa: E402
+from src.platform.lake.factory import set_process_lake_deps  # noqa: E402
+from src.platform.lake.provisioning import ensure_tables  # noqa: E402
 from src.platform.logs.factory import log_sink_factory  # noqa: E402
+from src.platform.logs.providers.mq import RabbitMQLogSink  # noqa: E402
 from src.platform.logs.schemas import LogLevel  # noqa: E402
 from src.platform.logs.service import LogService, merge_emit_component_trace_fields  # noqa: E402
+from src.platform.orchestrator.cartridge_paths import PIPELINE_SOURCE_DIRS as _PIPELINE_SOURCE_DIRS  # noqa: E402
 from src.platform.orchestrator.liveness import heartbeat_publisher  # noqa: E402
 from src.platform.orchestrator.loader import PipelineDefinition, PipelineDefinitionLoader  # noqa: E402
 from src.platform.orchestrator.runner import WorkerIdentity, work_loop  # noqa: E402
 from src.platform.orchestrator.service import _RECLAIM_STALE_THRESHOLD_SECONDS  # noqa: E402
+from src.platform.runtime_settings.service import RuntimeSettingsService  # noqa: E402
 
 _COMPONENT = 'pipeline_orchestrator.runner'
-_PIPELINES_DIR = Path(__file__).parents[3] / 'pipelines'
 
 # Bootstrap-tier default for the drain timeout.  Read from the environment so
 # ops can tune it without modifying the binary.  Must be > the stale-reclaim
@@ -146,7 +154,29 @@ def _load_heartbeat_interval(log_service: LogService) -> float:
 
 
 async def _run() -> None:
-    # --- Service wiring -------------------------------------------------------
+    # --- MQ publisher (shared by event sink + log sink) ----------------------
+    # Bring this up before constructing LogService so that both events AND
+    # logs from the executor reach the same RabbitMQ broker. Without an MQ
+    # log sink, the matcher/runner/action log lines never make it to
+    # `aurelion.logs.buffer` and the UI's per-step Logs panel stays empty.
+    settings = get_settings()
+    mq = settings.rabbitmq
+
+    mq_publisher = AsyncRabbitMQPublisher(url=mq.url)
+    await mq_publisher.connect()
+
+    log_sink_factory.register(
+        'mq',
+        lambda: RabbitMQLogSink(mq_publisher, exchange=mq.logs_exchange),
+    )
+    event_sink_factory.register(
+        'mq',
+        lambda: RabbitMQEventSink(mq_publisher, exchange=mq.events_exchange),
+    )
+
+    # Default to `file` for sinks so a test or one-off invocation that lacks
+    # the RabbitMQ broker can still boot. Real deployments set the env vars
+    # explicitly in .env / docker-compose / systemd unit.
     log_sink = log_sink_factory.get(os.environ.get('AURELION_LOG_SINK_PROVIDER', 'file'))
     log_service = LogService(sink=log_sink)
 
@@ -168,25 +198,71 @@ async def _run() -> None:
     import src.engines.access_plan.actions as _ap_actions  # noqa: F401, PLC0415
     import src.engines.inventory_reconcile.actions as _recon_actions  # noqa: F401, PLC0415
     import src.engines.inventory_sync.actions as _sa_actions  # noqa: F401, PLC0415
+    import src.engines.notifications.actions as _notif_actions  # noqa: F401, PLC0415
     import src.engines.policy_assessment.policy_types.sod.actions as _sod_actions  # noqa: F401, PLC0415
+
+    # SQLAlchemy needs every model class referenced by a `relationship(...)`
+    # string lookup to be importable when `configure_mappers()` runs (which
+    # the first DB query triggers). The Employee model declares a
+    # relationship to `EmployeeRecordMatch`; without the import below every
+    # work-loop tick fails with "failed to locate a name 'EmployeeRecordMatch'"
+    # and no pipeline run is ever claimed.
+    import src.inventory.employee_records.models  # noqa: F401, PLC0415
     import src.inventory.initiatives.actions as _init_actions  # noqa: F401, PLC0415
 
     # --- Connector RPC client (eager init for connector-backed actions) --------
     # Mirrors platform_api/main.py:73-78.  Opened once at process start so that
     # connector-backed action handlers do not pay a connection handshake per call.
-    _settings = get_settings()
-    _mq = _settings.rabbitmq
     rpc_client = AsyncRabbitMQRPCClient(
-        url=_mq.url,
-        commands_exchange=_mq.connector_commands_exchange,
-        responses_exchange=_mq.connector_responses_exchange,
+        url=mq.url,
+        commands_exchange=mq.connector_commands_exchange,
+        responses_exchange=mq.connector_responses_exchange,
     )
     await rpc_client.connect()
     set_process_connector_client(ConnectorClient(rpc_client=rpc_client))
 
+    # --- Lake bootstrap (catalog + DuckDB session factory) -------------------
+    # Mirrors the platform_api FastAPI lifespan: build LakeSettings from
+    # RuntimeSettings, materialise the Iceberg catalog, then register the
+    # process-scoped factory so engine actions can resolve a session outside
+    # a FastAPI request context (e.g. access_apply.execute_plan).
+    async with get_session_factory()() as session:
+        rt_service = RuntimeSettingsService(session, log_service)
+        await rt_service.ensure_defaults()
+        await session.commit()
+    async with get_session_factory()() as session:
+        rt_service = RuntimeSettingsService(session, log_service)
+        runtime_settings = await rt_service.load()
+
+    lake_settings = build_lake_settings(
+        settings.postgres,
+        runtime_settings,
+        catalog_name=settings.lake.catalog_name,
+        warehouse_uri=settings.lake.warehouse_uri,
+        storage_provider=settings.lake.storage_provider,  # type: ignore[arg-type]
+        artifacts_write_backend=settings.lake.artifacts_write_backend,  # type: ignore[arg-type]
+    )
+    lake_catalog = get_catalog(lake_settings, log_service)
+    ensure_tables(lake_catalog, log_service=log_service)
+    pg_dsn_for_lake = settings.postgres.dsn.replace('+asyncpg', '').replace('+psycopg2', '')
+    lake_session_factory = LakeSessionFactory(
+        settings=lake_settings,
+        log_service=log_service,
+        pg_dsn=pg_dsn_for_lake,
+    )
+    set_process_lake_deps(
+        catalog=lake_catalog,
+        session_factory=lake_session_factory,
+        settings=lake_settings,
+    )
+
     # --- Pipeline definitions -------------------------------------------------
+    # Same set of source dirs as platform_api/orchestrator/deps.py:
+    # kernel-shipped infra pipelines + Journey product cartridges. Without
+    # the journey/ entry the executor silently leaves `journey.*` runs in
+    # `pending` because the lookup never resolves them.
     loader = PipelineDefinitionLoader()
-    pipelines = loader.load_dir(_PIPELINES_DIR)
+    pipelines = loader.load_many(_PIPELINE_SOURCE_DIRS)
     pipeline_lookup = _PipelineLookup(pipelines)
 
     # --- Shutdown handling ---------------------------------------------------

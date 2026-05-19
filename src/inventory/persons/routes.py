@@ -6,7 +6,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.db.deps import get_db
 from src.inventory.persons.deps import get_person_service
@@ -21,6 +21,8 @@ from src.inventory.persons.schemas import (
     PersonBulkRequest,
     PersonBulkResponse,
     PersonCreate,
+    PersonListItem,
+    PersonListResponse,
     PersonRead,
 )
 from src.inventory.persons.service import (
@@ -68,14 +70,21 @@ async def create_person(
     return PersonRead.model_validate(person)
 
 
-@router.get('', response_model=list[PersonRead])
+@router.get('', response_model=PersonListResponse)
 async def list_persons(
     session: AsyncSession = DependsSession,
     service: PersonService = DependsService,
-) -> list[PersonRead]:
-    """List all persons."""
-    persons = await service.list_persons(session)
-    return [PersonRead.model_validate(p) for p in persons]
+    limit: int = Query(..., ge=1, le=1000),
+    offset: int = Query(..., ge=0),
+) -> PersonListResponse:
+    """Return persons ordered by external_id ascending, paginated by limit/offset."""
+    persons, total = await service.list_persons(session, limit=limit, offset=offset)
+    return PersonListResponse(
+        items=[PersonListItem.model_validate(p) for p in persons],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get('/{person_id}', response_model=PersonRead)

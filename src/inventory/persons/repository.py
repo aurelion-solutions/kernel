@@ -6,7 +6,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.inventory.persons.models import Person, PersonAttribute
@@ -44,10 +44,24 @@ async def get_person_by_external_id(
     return result.scalar_one_or_none()
 
 
-async def list_persons(session: AsyncSession) -> list[Person]:
-    """List all persons."""
-    result = await session.execute(select(Person).order_by(Person.external_id))
-    return list(result.scalars().all())
+async def list_persons_page(
+    session: AsyncSession,
+    *,
+    limit: int,
+    offset: int,
+) -> tuple[list[Person], int]:
+    """Return (rows, total) for paginated GET /persons.
+
+    Rows are ordered by external_id ASC and paginated by limit/offset.
+    total is the unfiltered row count.
+    """
+    rows_result = await session.execute(select(Person).order_by(Person.external_id.asc()).limit(limit).offset(offset))
+    rows = list(rows_result.scalars().all())
+
+    count_result = await session.execute(select(func.count()).select_from(Person))
+    total: int = count_result.scalar_one()
+
+    return rows, total
 
 
 async def list_person_attributes(

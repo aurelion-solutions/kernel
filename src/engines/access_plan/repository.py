@@ -6,8 +6,8 @@
 
 Responsibilities:
 - Fetch current effective grants for a subject (from access_effective).
-- Fetch current initiatives for a subject (from inventory.initiatives via
-  JOIN access_facts).
+- Fetch current initiatives for a subject (from inventory.initiatives by
+  ``subject_ref``).
 - Fetch SubjectContext (employee or NHI attributes).
 - DB queries for idempotency_key reuse and content_hash dedup.
 - Auto-supersedes: mark older active plans superseded within the same TX.
@@ -248,69 +248,33 @@ async def fetch_current_initiatives_for_subject(
     subject_id: uuid.UUID,
     now: datetime,
 ) -> list[Initiative]:
-    """Return active, non-expired initiatives for all access_facts owned by subject.
+    """Return active, non-expired initiatives owned by the given subject.
 
-    Two query paths are merged and deduplicated:
-    1. Legacy JOIN path: initiatives → access_facts (PG shim) → subjects.
-       Works when access_facts PG shim rows exist.
-    2. Direct subject_ref path: initiatives.subject_ref = :subject_id_str.
-       Works for initiatives created by access_apply F3 chain (Phase 19+)
-       which sets subject_ref directly (Initiative.subject_ref denormalised
-       column added in Step E4).
-
-    Results are deduplicated by initiative id so both paths can be safely
-    combined without double-counting.
+    Resolution is by ``Initiative.subject_ref`` — the denormalised column
+    populated by access_apply when an initiative is created.
     """
-    subject_id_str = str(subject_id)
-
-    # Path 1: legacy JOIN with access_facts shim table
-    legacy_stmt = sa.text(
-        """
-        SELECT i.id, i.access_fact_id, i.type, i.origin,
-               i.valid_from, i.valid_until, i.created_at, i.updated_at
-        FROM initiatives i
-        JOIN access_facts af ON af.id = i.access_fact_id
-        JOIN subjects s ON s.id = af.subject_id
-        WHERE s.id = :subject_id
-          AND (i.valid_until IS NULL OR i.valid_until > :now)
-        """
-    )
-
-    # Path 2: direct subject_ref lookup (Phase 19 F3-chain created initiatives)
-    direct_stmt = sa.text(
+    stmt = sa.text(
         """
         SELECT i.id, i.access_fact_id, i.type, i.origin,
                i.valid_from, i.valid_until, i.created_at, i.updated_at
         FROM initiatives i
         WHERE i.subject_ref = :subject_id_str
           AND (i.valid_until IS NULL OR i.valid_until > :now)
+        ORDER BY i.id
         """
     )
-
-    seen: set[uuid.UUID] = set()
-    initiatives: list[Initiative] = []
-
-    for stmt, params in [
-        (legacy_stmt, {'subject_id': subject_id, 'now': now}),
-        (direct_stmt, {'subject_id_str': subject_id_str, 'now': now}),
-    ]:
-        result = await session.execute(stmt, params)
-        for row in result.all():
-            if row.id in seen:
-                continue
-            seen.add(row.id)
-            init = Initiative(
-                id=row.id,
-                access_fact_id=row.access_fact_id,
-                type=InitiativeType(row.type),
-                origin=row.origin,
-                valid_from=row.valid_from,
-                valid_until=row.valid_until,
-            )
-            initiatives.append(init)
-
-    initiatives.sort(key=lambda i: i.id)
-    return initiatives
+    result = await session.execute(stmt, {'subject_id_str': str(subject_id), 'now': now})
+    return [
+        Initiative(
+            id=row.id,
+            access_fact_id=row.access_fact_id,
+            type=InitiativeType(row.type),
+            origin=row.origin,
+            valid_from=row.valid_from,
+            valid_until=row.valid_until,
+        )
+        for row in result.all()
+    ]
 
 
 # ---------------------------------------------------------------------------

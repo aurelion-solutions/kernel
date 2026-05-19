@@ -45,19 +45,30 @@ async def update_account(
     *,
     status: AccountStatus | None = None,
     subject_id: uuid.UUID | None = None,
-) -> set[str]:
-    """Apply partial update to account fields. Returns the set of changed field names."""
-    changed: set[str] = set()
+) -> dict[str, dict[str, object | None]]:
+    """Apply partial update to account fields.
+
+    Returns a ``{field: {'old': old_value, 'new': new_value}}`` map for emitting
+    the unified ``inventory.<entity>.updated`` event shape. Values are coerced
+    to JSON-friendly primitives (UUIDs → str, enums → value).
+    """
+    changes: dict[str, dict[str, object | None]] = {}
     if status is not None and account.status != status:
+        changes['status'] = {
+            'old': account.status.value if account.status is not None else None,
+            'new': status.value,
+        }
         account.status = status
-        changed.add('status')
     if subject_id is not None and account.subject_id != subject_id:
+        changes['subject_id'] = {
+            'old': str(account.subject_id) if account.subject_id is not None else None,
+            'new': str(subject_id),
+        }
         account.subject_id = subject_id
-        changed.add('subject_id')
-    if changed:
+    if changes:
         await session.flush()
         await session.refresh(account)
-    return changed
+    return changes
 
 
 async def list_by_application(

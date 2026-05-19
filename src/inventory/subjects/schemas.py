@@ -35,6 +35,7 @@ __all__ = [
     'SubjectBulkItem',
     'SubjectBulkRequest',
     'SubjectBulkResponse',
+    'SubjectListResponse',
 ]
 
 _EMPLOYEE_STATUSES = frozenset(v.value for v in SubjectEmployeeStatus)
@@ -175,3 +176,12 @@ class SubjectBulkResponse(BaseModel):
 
     upserted: int
     ids: list[uuid.UUID]
+
+
+class SubjectListResponse(BaseModel):
+    """Paginated response for GET /subjects."""
+
+    items: list[SubjectRead]
+    total: int
+    limit: int
+    offset: int

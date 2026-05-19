@@ -85,15 +85,16 @@ async def test_get_person_returns_none_when_missing(
 
 @pytest.mark.asyncio
 async def test_list_persons(service: PersonService, session_factory) -> None:
-    """list_persons returns all persons."""
+    """list_persons returns paginated persons."""
     async with session_factory() as session:
         await service.create_person(session, external_id='ext-1', full_name='One')
         await service.create_person(session, external_id='ext-2', full_name='Two')
         await session.commit()
 
     async with session_factory() as session:
-        persons = await service.list_persons(session)
+        persons, total = await service.list_persons(session, limit=100, offset=0)
     assert len(persons) >= 2
+    assert total >= 2
 
 
 @pytest.mark.asyncio
